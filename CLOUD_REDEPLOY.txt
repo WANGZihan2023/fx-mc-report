@@ -1,0 +1,2 @@
+# Force Streamlit Cloud to pick up latest news_llm exports (FREE_PROVIDERS / ollama_available).
+# Redeploy marker: 2026-07-24

@@ -16,7 +16,6 @@ from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
 from news_evidence import build_evidence_from_news
 from news_fetch import fetch_headlines_for_pair
-from news_llm import FREE_PROVIDERS, ollama_available, resolve_llm_config
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from strength import (
@@ -37,6 +36,42 @@ from weights import (
     evidence_score,
     resolve_bucket_edges,
 )
+
+# LLM helpers — keep resilient so Cloud doesn't crash on partial deploys
+try:
+    from news_llm import FREE_PROVIDERS, ollama_available, resolve_llm_config
+except Exception:  # pragma: no cover
+    FREE_PROVIDERS = {
+        "ollama": {
+            "label": "Ollama 本机（免费）",
+            "api_key": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama3.1:latest",
+        },
+        "groq": {
+            "label": "Groq",
+            "api_key": "",
+            "base_url": "https://api.groq.com/openai/v1",
+            "model": "llama-3.1-8b-instant",
+            "signup": "https://console.groq.com/keys",
+        },
+    }
+
+    def ollama_available(timeout: float = 1.5) -> bool:
+        return False
+
+    def resolve_llm_config(*, api_key=None, base_url=None, model=None, allow_ollama_auto=True):
+        try:
+            from news_llm import resolve_llm_config as _resolve
+
+            return _resolve(
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                allow_ollama_auto=allow_ollama_auto,
+            )
+        except Exception:
+            return None
 
 
 st.set_page_config(
