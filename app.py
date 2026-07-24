@@ -16,7 +16,7 @@ from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
 from news_evidence import build_evidence_from_news
 from news_fetch import fetch_headlines_for_pair
-from news_llm import resolve_llm_config
+from news_llm import FREE_PROVIDERS, ollama_available, resolve_llm_config
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from strength import (
@@ -132,10 +132,38 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         help="hybrid=大模型优先，失败回退关键词；llm=仅大模型；rules=仅关键词",
     )
     fetch_fulltext = st.sidebar.checkbox("抓取文章正文供大模型精读", value=True)
-    st.sidebar.caption("大模型需 API Key（侧栏粘贴或环境变量 OPENAI_API_KEY / LLM_API_KEY）")
-    llm_key = st.sidebar.text_input("LLM API Key", type="password", value="")
-    llm_base = st.sidebar.text_input("LLM Base URL", value="")
-    llm_model = st.sidebar.text_input("LLM Model", value="")
+
+    has_ollama = ollama_available()
+    provider_labels = {
+        "ollama": f"Ollama 本机免费{'（已检测到）' if has_ollama else '（未运行）'}",
+        "groq": "Groq 云端免费额度（需自行申请 Key）",
+        "custom": "自定义 / OpenAI 兼容",
+    }
+    default_provider = "ollama" if has_ollama else "custom"
+    provider = st.sidebar.selectbox(
+        "大模型通道",
+        options=list(provider_labels.keys()),
+        format_func=lambda k: provider_labels[k],
+        index=list(provider_labels.keys()).index(default_provider),
+    )
+    if provider == "ollama":
+        st.sidebar.info("使用本机 Ollama，无需云端 Key，不会公开、不产生费用。")
+        llm_key = "ollama"
+        llm_base = FREE_PROVIDERS["ollama"]["base_url"]
+        llm_model = st.sidebar.text_input("LLM Model", value=FREE_PROVIDERS["ollama"]["model"])
+    elif provider == "groq":
+        st.sidebar.markdown(f"免费申请：[Groq Console]({FREE_PROVIDERS['groq']['signup']})")
+        llm_key = st.sidebar.text_input("Groq API Key", type="password", value="")
+        llm_base = FREE_PROVIDERS["groq"]["base_url"]
+        llm_model = st.sidebar.text_input("LLM Model", value=FREE_PROVIDERS["groq"]["model"])
+    else:
+        st.sidebar.caption(
+            "Key 只存在于你的会话/本机 secrets，不会写入 Git。"
+            "公开网页若配置云端 Secrets，访客可能消耗你的额度（但看不到 Key）。"
+        )
+        llm_key = st.sidebar.text_input("LLM API Key", type="password", value="")
+        llm_base = st.sidebar.text_input("LLM Base URL", value="")
+        llm_model = st.sidebar.text_input("LLM Model", value="")
 
     st.sidebar.header("1. 模拟设置")
     n_sims = st.sidebar.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)

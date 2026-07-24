@@ -4,3 +4,6 @@ __pycache__/
 venv/
 output/
 .DS_Store
+.streamlit/secrets.toml
+.env
+.env.*

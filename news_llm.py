@@ -63,8 +63,34 @@ class LLMConfig:
     api_key: str
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
-    timeout: int = 60
+    timeout: int = 120
     max_article_chars: int = 3500
+
+
+FREE_PROVIDERS = {
+    "ollama": {
+        "label": "Ollama 本机（免费）",
+        "api_key": "ollama",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "llama3.1:latest",
+    },
+    "groq": {
+        "label": "Groq 云端免费额度",
+        "api_key": "",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.1-8b-instant",
+        "signup": "https://console.groq.com/keys",
+    },
+}
+
+
+def ollama_available(timeout: float = 1.5) -> bool:
+    try:
+        req = Request("http://127.0.0.1:11434/api/tags", method="GET")
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def resolve_llm_config(
@@ -72,29 +98,59 @@ def resolve_llm_config(
     api_key: str | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    allow_ollama_auto: bool = True,
 ) -> LLMConfig | None:
     key = (
         api_key
         or os.environ.get("LLM_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
         or os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("GROQ_API_KEY")
         or ""
     ).strip()
-    if not key:
-        return None
     base = (
         base_url
         or os.environ.get("LLM_BASE_URL")
         or os.environ.get("OPENAI_BASE_URL")
-        or "https://api.openai.com/v1"
+        or ""
     ).rstrip("/")
-    # DeepSeek convenience
-    if not base_url and os.environ.get("DEEPSEEK_API_KEY") and "OPENAI" not in os.environ:
-        if "api.openai.com" in base:
+    mdl = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") or ""
+
+    # Auto local free path: Ollama with llama3.1
+    if allow_ollama_auto and not key and not base:
+        if ollama_available():
+            p = FREE_PROVIDERS["ollama"]
+            return LLMConfig(
+                api_key=p["api_key"],
+                base_url=p["base_url"],
+                model=mdl or p["model"],
+            )
+
+    if not key and base and ("11434" in base or "localhost" in base or "127.0.0.1" in base):
+        key = "ollama"
+
+    if not key:
+        return None
+
+    if not base:
+        if os.environ.get("GROQ_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+            base = "https://api.groq.com/openai/v1"
+            mdl = mdl or "llama-3.1-8b-instant"
+        elif os.environ.get("DEEPSEEK_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
             base = "https://api.deepseek.com/v1"
-    mdl = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
-    if "deepseek.com" in base and mdl == "gpt-4o-mini":
-        mdl = "deepseek-chat"
+            mdl = mdl or "deepseek-chat"
+        else:
+            base = "https://api.openai.com/v1"
+            mdl = mdl or "gpt-4o-mini"
+    if not mdl:
+        if "11434" in base:
+            mdl = "llama3.1:latest"
+        elif "groq.com" in base:
+            mdl = "llama-3.1-8b-instant"
+        elif "deepseek.com" in base:
+            mdl = "deepseek-chat"
+        else:
+            mdl = "gpt-4o-mini"
     return LLMConfig(api_key=key, base_url=base, model=mdl)
 
 
@@ -136,40 +192,57 @@ def fetch_article_text(url: str, max_chars: int = 3500) -> str:
 
 
 def _chat_json(cfg: LLMConfig, system: str, user: str) -> dict[str, Any]:
-    payload = {
-        "model": cfg.model,
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = Request(
-        f"{cfg.base_url}/chat/completions",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg.api_key}",
-        },
-        method="POST",
-    )
-    try:
+    def _request(with_json_format: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": cfg.model,
+            "temperature": 0.1,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+        }
+        if with_json_format:
+            payload["response_format"] = {"type": "json_object"}
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(
+            f"{cfg.base_url}/chat/completions",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {cfg.api_key}",
+            },
+            method="POST",
+        )
         with urlopen(req, timeout=cfg.timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+            return json.loads(resp.read().decode("utf-8"))
+
+    is_local = "11434" in cfg.base_url or "localhost" in cfg.base_url
+    try:
+        body = _request(with_json_format=not is_local)
     except HTTPError as e:
         err = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"LLM HTTP {e.code}: {err[:400]}") from e
+        # Retry without response_format (Ollama / some providers)
+        if e.code in {400, 422} or "response_format" in err:
+            try:
+                body = _request(with_json_format=False)
+            except Exception as e2:
+                raise RuntimeError(f"LLM HTTP retry failed: {e2}") from e2
+        else:
+            raise RuntimeError(f"LLM HTTP {e.code}: {err[:400]}") from e
     except URLError as e:
         raise RuntimeError(f"LLM network error: {e}") from e
 
     content = body["choices"][0]["message"]["content"]
-    # Some models wrap ```json
     content = content.strip()
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*", "", content)
         content = re.sub(r"\s*```$", "", content)
+    # Extract first JSON object if model added prose
+    if not content.startswith("{"):
+        m = re.search(r"\{[\s\S]*\}", content)
+        if m:
+            content = m.group(0)
     return json.loads(content)
 
 
@@ -190,11 +263,17 @@ def _clamp_choice(value: str, allowed: set[str], default: str) -> str:
 SYSTEM_PROMPT = """你是外汇宏观分析助手。根据新闻标题与正文摘要，判断对指定货币对「窗口内最高价」的影响。
 
 分析口径 pair=BASE/QUOTE：
-- direction=+1 表示推高该报价的路径最高值（BASE相对QUOTE走强）
-- direction=-1 表示压制峰值（BASE相对QUOTE走弱）
-- relevant=false 表示与该货币对基本无关，应忽略
+- direction=+1：推高该报价路径最高值 = BASE 相对 QUOTE 走强
+- direction=-1：压制峰值 = BASE 相对 QUOTE 走弱
+- relevant=false：与该货币对基本无关则忽略
 
-必须只输出 JSON，格式：
+务必遵守（举例）：
+- pair=USD/CNH 时：美元走强 / 加息预期升温 → direction=+1
+- pair=USD/CNH 时：人民币走强 / PBOC 强化中间价 → direction=-1
+- pair=AUD/USD 时：澳元走强 → direction=+1；美元走强 → direction=-1
+- pair=EUR/USD 时：欧元走强 → direction=+1；美元走强 → direction=-1
+
+必须只输出 JSON：
 {
   "items": [
     {
@@ -206,7 +285,7 @@ SYSTEM_PROMPT = """你是外汇宏观分析助手。根据新闻标题与正文�
       "surprise": "none|small|medium|large|extreme",
       "scope": "idiosyncratic|pair_specific|g10_macro|systemic",
       "unpriced_hint": 0.0到1.0,
-      "rationale": "一句中文理由"
+      "rationale": "一句中文理由，并点明对 BASE/QUOTE 谁强"
     }
   ]
 }
