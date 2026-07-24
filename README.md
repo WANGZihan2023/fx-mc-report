@@ -3,6 +3,33 @@
 仿 Torchcast：任意 FX 货币对 → 证据强弱规则打分 → 情景加权 → 10 万次 MC → 分档报告。  
 侧栏公开全部隐藏参数，以及 **strength 判定清单**。
 
+## 头条 + 大模型精读
+
+侧栏可选：
+
+| 模式 | 行为 |
+|------|------|
+| `hybrid`（默认） | 大模型精读正文；失败则回退关键词规则 |
+| `llm` | 仅大模型（失败仍回退以免报告中断） |
+| `rules` | 仅关键词 |
+
+配置 API Key（任选其一）：
+
+1. 侧栏粘贴 **LLM API Key**（当前会话）
+2. 环境变量：`OPENAI_API_KEY` 或 `LLM_API_KEY`
+3. `.streamlit/secrets.toml`（见 `secrets.toml.example`）
+
+兼容 OpenAI 接口的模型均可，例如 DeepSeek：
+
+```bash
+export LLM_API_KEY=sk-...
+export LLM_BASE_URL=https://api.deepseek.com/v1
+export LLM_MODEL=deepseek-chat
+python run_cli.py --pair USD/CNH --mode llm
+```
+
+大模型会尽量抓取文章 HTML 正文摘录再判定方向/类别/强弱分项。
+
 ## 给别人看（一键）
 
 详见 **[给别人看.md](./给别人看.md)**：

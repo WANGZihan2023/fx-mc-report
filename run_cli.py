@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for any FX pair: fetch market + headlines → auto evidence → MC → report."""
+"""CLI: market + headlines → LLM/rules evidence → MC → report."""
 
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ from pathlib import Path
 
 from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
-from news_classify import headlines_to_evidence
+from news_evidence import build_evidence_from_news
 from news_fetch import fetch_headlines_for_pair
+from news_llm import resolve_llm_config
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from weights import (
@@ -35,6 +36,13 @@ def main() -> int:
     p.add_argument("--no-news", action="store_true", help="Skip headline fetch; use templates only")
     p.add_argument("--keep-templates", action="store_true", help="Merge templates with news evidence")
     p.add_argument("--max-news", type=int, default=10)
+    p.add_argument(
+        "--mode",
+        choices=["hybrid", "llm", "rules"],
+        default="hybrid",
+        help="Evidence classifier: hybrid|llm|rules",
+    )
+    p.add_argument("--no-fulltext", action="store_true", help="Do not fetch article HTML for LLM")
     args = p.parse_args()
 
     if args.ticker:
@@ -59,21 +67,36 @@ def main() -> int:
         print(f"  note: {n}")
 
     headlines = []
+    news_meta: dict = {}
     if not args.no_news:
         print("Fetching headlines…")
         headlines = fetch_headlines_for_pair(spec, max_items=30)
         print(f"  headlines fetched: {len(headlines)}")
         suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
-        auto = headlines_to_evidence(
-            headlines, spec, max_items=args.max_news, unpriced_cap=suggested_up
+        cfg = resolve_llm_config()
+        mode = args.mode
+        if mode in {"llm", "hybrid"} and cfg is None:
+            print("  no LLM API key; using rules")
+            mode = "rules"
+        elif cfg is not None:
+            print(f"  LLM: model={cfg.model} base={cfg.base_url}")
+
+        auto, news_meta = build_evidence_from_news(
+            headlines,
+            spec,
+            mode=mode,  # type: ignore[arg-type]
+            max_items=args.max_news,
+            unpriced_cap=suggested_up,
+            llm_cfg=cfg,
+            fetch_fulltext=not args.no_fulltext,
         )
-        print(f"  actionable evidence from news: {len(auto)}")
+        print(f"  evidence: {len(auto)}  meta={ {k: news_meta.get(k) for k in ('mode','rules_used')} }")
+        if news_meta.get("llm"):
+            print(f"  llm meta: {news_meta['llm']}")
         if auto:
             w.evidence = auto + (list(w.evidence) if args.keep_templates else [])
         else:
             print("  fallback to template evidence")
-    else:
-        suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
 
     suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
     for e in w.evidence:
@@ -99,8 +122,6 @@ def main() -> int:
         print(f"  scenario {s.name}: {s.weight:.1%}")
 
     edges = resolve_bucket_edges(w, market.spot)
-    print(f"bucket edges: {edges}")
-
     mc = run_mixture_monte_carlo(
         spot=market.spot,
         sigma_daily_base=market.sigma_daily,
@@ -143,6 +164,7 @@ def main() -> int:
         }
         for h in headlines
     ]
+    diag["news_meta"] = news_meta
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -150,9 +172,6 @@ def main() -> int:
     (out / f"{safe}_report.md").write_text(report, encoding="utf-8")
     (out / f"{safe}_diagnostics.json").write_text(
         json.dumps(diag, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    (out / f"{safe}_headlines.json").write_text(
-        json.dumps(diag["headlines"], ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"Wrote {out / (safe + '_report.md')}")
     return 0

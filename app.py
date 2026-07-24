@@ -14,8 +14,9 @@ import streamlit as st
 
 from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
-from news_classify import headlines_to_evidence
+from news_evidence import build_evidence_from_news
 from news_fetch import fetch_headlines_for_pair
+from news_llm import resolve_llm_config
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from strength import (
@@ -124,6 +125,17 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
     use_news = st.sidebar.checkbox("运行时抓取头条并自动填证据", value=True)
     keep_templates = st.sidebar.checkbox("保留模板证据（与头条合并）", value=False)
     max_news_ev = st.sidebar.slider("最多采用头条证据条数", 3, 20, 10, 1)
+    classify_mode = st.sidebar.selectbox(
+        "证据判定方式",
+        options=["hybrid", "llm", "rules"],
+        index=0,
+        help="hybrid=大模型优先，失败回退关键词；llm=仅大模型；rules=仅关键词",
+    )
+    fetch_fulltext = st.sidebar.checkbox("抓取文章正文供大模型精读", value=True)
+    st.sidebar.caption("大模型需 API Key（侧栏粘贴或环境变量 OPENAI_API_KEY / LLM_API_KEY）")
+    llm_key = st.sidebar.text_input("LLM API Key", type="password", value="")
+    llm_base = st.sidebar.text_input("LLM Base URL", value="")
+    llm_model = st.sidebar.text_input("LLM Model", value="")
 
     st.sidebar.header("1. 模拟设置")
     n_sims = st.sidebar.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)
@@ -266,7 +278,16 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         evidence_logit_scale=float(logit_scale),
         scenarios=scenarios,
         evidence=evidence,
-    ), {"use_news": use_news, "keep_templates": keep_templates, "max_news_ev": int(max_news_ev)}
+    ), {
+        "use_news": use_news,
+        "keep_templates": keep_templates,
+        "max_news_ev": int(max_news_ev),
+        "classify_mode": classify_mode,
+        "fetch_fulltext": fetch_fulltext,
+        "llm_key": llm_key.strip(),
+        "llm_base": llm_base.strip(),
+        "llm_model": llm_model.strip(),
+    }
 
 
 @st.cache_data(ttl=300, show_spinner="抓取头条…")
@@ -345,21 +366,60 @@ def main() -> None:
 
             headlines = []
             auto_evidence = []
+            news_meta = {}
             if news_opts["use_news"]:
                 headlines = cached_headlines(spec.pair, max_items=30)
                 suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
-                auto_evidence = headlines_to_evidence(
+
+                # Resolve API key: sidebar > env > streamlit secrets
+                key = news_opts.get("llm_key") or ""
+                if not key:
+                    try:
+                        key = str(st.secrets.get("LLM_API_KEY") or st.secrets.get("OPENAI_API_KEY") or "")
+                    except Exception:
+                        key = ""
+                base_url = news_opts.get("llm_base") or None
+                model = news_opts.get("llm_model") or None
+                if not base_url:
+                    try:
+                        base_url = st.secrets.get("LLM_BASE_URL") or st.secrets.get("OPENAI_BASE_URL")
+                    except Exception:
+                        base_url = None
+                if not model:
+                    try:
+                        model = st.secrets.get("LLM_MODEL") or st.secrets.get("OPENAI_MODEL")
+                    except Exception:
+                        model = None
+
+                llm_cfg = resolve_llm_config(api_key=key or None, base_url=base_url, model=model)
+                mode = news_opts.get("classify_mode") or "hybrid"
+                if mode in {"llm", "hybrid"} and llm_cfg is None:
+                    st.warning("未配置 LLM API Key，已用关键词规则填证据。可在侧栏粘贴 Key，或设环境变量 OPENAI_API_KEY / LLM_API_KEY。")
+                    mode = "rules"
+
+                auto_evidence, news_meta = build_evidence_from_news(
                     headlines,
                     spec,
+                    mode=mode,  # type: ignore[arg-type]
                     max_items=news_opts["max_news_ev"],
                     unpriced_cap=suggested_up,
+                    llm_cfg=llm_cfg,
+                    fetch_fulltext=bool(news_opts.get("fetch_fulltext", True)),
                 )
+                if news_meta.get("llm") and news_meta["llm"].get("error"):
+                    st.warning(f"大模型调用失败，已回退规则：{news_meta['llm']['error'][:200]}")
+                elif news_meta.get("llm") and not news_meta.get("rules_used"):
+                    st.success(
+                        f"大模型精读完成（{news_meta['llm'].get('model')}），"
+                        f"采用 {len(auto_evidence)} 条证据"
+                    )
+
                 if news_opts["keep_templates"]:
                     weights.evidence = auto_evidence + list(weights.evidence)
                 else:
                     weights.evidence = auto_evidence or list(weights.evidence)
                 if not auto_evidence:
-                    st.info("头条已抓取，但规则未能判定方向；已回退到模板证据。")
+                    st.info("未能生成头条证据；已回退到模板证据。")
             else:
                 suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
                 for e in weights.evidence:
@@ -426,10 +486,12 @@ def main() -> None:
                 for h in headlines
             ]
             diag["auto_evidence_count"] = len(auto_evidence)
+            diag["news_meta"] = news_meta
             st.session_state["last_report"] = report
             st.session_state["last_diag"] = diag
             st.session_state["last_probs"] = probs
             st.session_state["last_headlines"] = diag["headlines"]
+            st.session_state["last_news_meta"] = news_meta
             st.session_state["last_auto_evidence"] = [
                 {
                     "id": e.id,
