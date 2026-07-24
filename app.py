@@ -1,0 +1,401 @@
+"""
+Multi-pair FX peak-bucket forecaster — Streamlit UI.
+
+Sidebar: pair selector + all hidden weights + strength rubric checklist.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+
+import pandas as pd
+import streamlit as st
+
+from fetch_data import fetch_market
+from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
+from pairs import get_pair, list_pairs, make_custom_pair
+from report_text import build_diagnostics, build_report_markdown
+from strength import (
+    SOURCE_TIER_POINTS,
+    SURPRISE_POINTS,
+    SCOPE_POINTS,
+    StrengthInputs,
+    label_strength,
+    rubric_markdown,
+    score_strength,
+)
+from weights import (
+    EvidenceItem,
+    ModelWeights,
+    ScenarioSpec,
+    apply_evidence_to_scenarios,
+    default_weights,
+    evidence_score,
+    resolve_bucket_edges,
+)
+
+
+st.set_page_config(
+    page_title="FX Peak MC 情报报告",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+def _horizon_label(start: date, end: date) -> str:
+    return f"{start.isoformat()} 至 {end.isoformat()}"
+
+
+def pick_pair_spec():
+    st.sidebar.title("货币对")
+    mode = st.sidebar.radio("选择方式", ["目录", "自定义"], horizontal=True)
+    if mode == "目录":
+        pair = st.sidebar.selectbox("货币对", list_pairs(), index=list_pairs().index("USD/AUD"))
+        return get_pair(pair)
+
+    pair = st.sidebar.text_input("BASE/QUOTE", value="EUR/USD")
+    ticker = st.sidebar.text_input("Yahoo ticker", value="EURUSD=X")
+    invert = st.sidebar.checkbox("需要对 Yahoo 收盘取倒数", value=False)
+    return make_custom_pair(pair, ticker, invert)
+
+
+def render_strength_rules_sidebar() -> None:
+    """Always-visible strength rubric in the sidebar."""
+    st.sidebar.header("信息强弱判定")
+    st.sidebar.markdown(
+        """
+**贡献分**  
+`contrib = direction × strength × freshness × unpriced`
+
+**strength（0–3）**  
+`= min(3, 来源分 + 意外分 + 范围分)`
+
+**标签**：≤1 SLIGHT｜≤2 MODERATE｜>2 STRONG
+        """
+    )
+    st.sidebar.caption("来源档 source_tier")
+    st.sidebar.dataframe(
+        pd.DataFrame(
+            {"档位": list(SOURCE_TIER_POINTS.keys()), "分": list(SOURCE_TIER_POINTS.values())}
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.sidebar.caption("意外程度 surprise")
+    st.sidebar.dataframe(
+        pd.DataFrame(
+            {"档位": list(SURPRISE_POINTS.keys()), "分": list(SURPRISE_POINTS.values())}
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.sidebar.caption("影响范围 scope")
+    st.sidebar.dataframe(
+        pd.DataFrame(
+            {"档位": list(SCOPE_POINTS.keys()), "分": list(SCOPE_POINTS.values())}
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.sidebar.markdown(
+        """
+**freshness** = `0.5 ** (年龄日 / 半衰期)`  
+地缘≈5日｜CPI/央行≈7–8日｜仓位≈12日
+
+**unpriced**：0=已定价完，1=几乎未定价；即期已大跳应下调，避免双计。
+
+下方每条证据可选「自动打分」：按来源/意外/范围三项相加，结果会显示 strength 拆解。
+        """
+    )
+    with st.sidebar.expander("完整规则说明（Markdown）", expanded=False):
+        st.markdown(rubric_markdown())
+
+
+def sidebar_weights(base: ModelWeights, pair_name: str) -> ModelWeights:
+    st.sidebar.title("隐藏参数 / 权重")
+    st.sidebar.caption(f"当前分析口径：{pair_name}。+1 方向 = 推高该报价的路径最高值。")
+
+    render_strength_rules_sidebar()
+
+    st.sidebar.header("1. 模拟设置")
+    n_sims = st.sidebar.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)
+    seed = st.sidebar.number_input("随机种子", 0, 10_000_000, base.seed, 1)
+    trading_days = st.sidebar.number_input("交易日窗口", 5, 252, base.trading_days, 1)
+    vol_lookback = st.sidebar.number_input("波动率回看交易日", 20, 252, base.vol_lookback_days, 5)
+
+    st.sidebar.header("2. 分档（相对现价 %）")
+    use_rel = st.sidebar.checkbox("用相对现价分档（推荐，跨货币对通用）", value=True)
+    c0 = st.sidebar.number_input("切点1 %", -5.0, 20.0, float(base.bucket_pct_cuts[0]), 0.5)
+    c1 = st.sidebar.number_input("切点2 %", -5.0, 20.0, float(base.bucket_pct_cuts[1]), 0.5)
+    c2 = st.sidebar.number_input("切点3 %", -5.0, 20.0, float(base.bucket_pct_cuts[2]), 0.5)
+    c3 = st.sidebar.number_input("切点4 %", -5.0, 20.0, float(base.bucket_pct_cuts[3]), 0.5)
+    cuts = tuple(sorted([c0, c1, c2, c3]))
+
+    st.sidebar.header("3. 证据 → 参数映射")
+    a = st.sidebar.slider("a：S→年化漂移", 0.0, 0.05, float(base.score_to_mu_a), 0.001, format="%.3f")
+    b = st.sidebar.slider("b：|S|→波动放大", 0.0, 0.15, float(base.score_to_sigma_b), 0.001, format="%.3f")
+    logit_scale = st.sidebar.slider("证据→情景 logit", 0.0, 0.3, float(base.evidence_logit_scale), 0.01)
+    temperature = st.sidebar.slider("情景温度", 0.3, 2.5, float(base.scenario_temperature), 0.1)
+    max_shift = st.sidebar.slider("单情景最大位移", 0.0, 0.4, float(base.max_scenario_shift), 0.01)
+
+    st.sidebar.header("4. 情景先验")
+    scenarios: list[ScenarioSpec] = []
+    for sc in base.scenarios:
+        st.sidebar.subheader(sc.name)
+        w = st.sidebar.slider(f"{sc.name} 权重", 0.0, 1.0, float(sc.weight), 0.01, key=f"w_{sc.name}")
+        mu = st.sidebar.slider(f"{sc.name} μ", -0.2, 0.2, float(sc.mu_annual), 0.005, key=f"mu_{sc.name}")
+        sm = st.sidebar.slider(f"{sc.name} σ×", 0.5, 2.5, float(sc.sigma_mult), 0.05, key=f"sm_{sc.name}")
+        ej = st.sidebar.slider(f"{sc.name} E[jumps]", 0.0, 3.0, float(sc.expected_jumps), 0.05, key=f"ej_{sc.name}")
+        jm = st.sidebar.slider(f"{sc.name} jump μ", -0.03, 0.03, float(sc.jump_mean), 0.001, key=f"jm_{sc.name}")
+        js = st.sidebar.slider(f"{sc.name} jump σ", 0.001, 0.03, float(sc.jump_std), 0.001, key=f"js_{sc.name}")
+        scenarios.append(
+            ScenarioSpec(sc.name, w, mu, sm, ej, jm, js, sc.narrative)
+        )
+
+    st.sidebar.header("5. 证据计分卡（可自动打分）")
+    evidence: list[EvidenceItem] = []
+    tier_keys = list(SOURCE_TIER_POINTS.keys())
+    sur_keys = list(SURPRISE_POINTS.keys())
+    sco_keys = list(SCOPE_POINTS.keys())
+
+    for e in base.evidence:
+        with st.sidebar.expander(f"{e.id} · {e.title}", expanded=False):
+            enabled = st.checkbox("启用", value=True, key=f"en_{e.id}")
+            direction = st.selectbox(
+                "方向 +1推高峰值 / -1压制",
+                [1, -1],
+                index=0 if e.direction > 0 else 1,
+                key=f"dir_{e.id}",
+            )
+            auto = st.checkbox("用规则自动打 strength", value=True, key=f"auto_{e.id}")
+            src = st.selectbox(
+                "来源档",
+                tier_keys,
+                index=tier_keys.index(e.source_tier) if e.source_tier in tier_keys else 2,
+                key=f"src_{e.id}",
+            )
+            sur = st.selectbox(
+                "意外程度",
+                sur_keys,
+                index=sur_keys.index(e.surprise) if e.surprise in sur_keys else 2,
+                key=f"sur_{e.id}",
+            )
+            sco = st.selectbox(
+                "影响范围",
+                sco_keys,
+                index=sco_keys.index(e.scope) if e.scope in sco_keys else 1,
+                key=f"sco_{e.id}",
+            )
+            age = st.number_input("信息年龄（日）", 0.0, 60.0, 2.0, 0.5, key=f"age_{e.id}")
+            unpriced = st.slider("未定价", 0.0, 1.0, float(e.unpriced), 0.05, key=f"up_{e.id}")
+            manual_s = st.slider(
+                "手动 strength（关闭自动时用）",
+                0.0,
+                3.0,
+                float(e.strength),
+                0.1,
+                key=f"ms_{e.id}",
+            )
+
+            if not enabled:
+                continue
+
+            if auto:
+                scored = score_strength(
+                    StrengthInputs(
+                        source_tier=src,
+                        surprise=sur,
+                        scope=sco,
+                        age_days=age,
+                        category=e.category,
+                        unpriced_hint=unpriced,
+                    )
+                )
+            else:
+                scored = score_strength(
+                    StrengthInputs(
+                        strength_override=manual_s,
+                        age_days=age,
+                        category=e.category,
+                        unpriced_hint=unpriced,
+                    )
+                )
+
+            st.caption(
+                f"→ {label_strength(scored.strength)} strength={scored.strength:.2f} "
+                f"freshness={scored.freshness:.2f} | {scored.breakdown}"
+            )
+            evidence.append(
+                EvidenceItem(
+                    id=e.id,
+                    title=e.title,
+                    direction=int(direction),
+                    strength=scored.strength,
+                    freshness=scored.freshness,
+                    unpriced=scored.unpriced,
+                    category=e.category,
+                    note=e.note,
+                    strength_label=label_strength(scored.strength),
+                    strength_breakdown=scored.breakdown,
+                    source_tier=src,
+                    surprise=sur,
+                    scope=sco,
+                )
+            )
+
+    return ModelWeights(
+        n_sims=int(n_sims),
+        seed=int(seed),
+        trading_days=int(trading_days),
+        vol_lookback_days=int(vol_lookback),
+        use_relative_buckets=use_rel,
+        bucket_pct_cuts=cuts,  # type: ignore[arg-type]
+        bucket_edges=base.bucket_edges,
+        score_to_mu_a=float(a),
+        score_to_sigma_b=float(b),
+        scenario_temperature=float(temperature),
+        max_scenario_shift=float(max_shift),
+        evidence_logit_scale=float(logit_scale),
+        scenarios=scenarios,
+        evidence=evidence,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner="抓取行情…")
+def cached_fetch(pair: str, ticker: str, invert: bool, lookback: int, cuts: tuple):
+    # cuts unused for fetch but keeps cache key stable with pair config
+    from pairs import PairSpec
+
+    spec = PairSpec(
+        pair=pair,
+        yahoo_ticker=ticker,
+        invert=invert,
+        base=pair.split("/")[0],
+        quote=pair.split("/")[1],
+        description=pair,
+        bucket_pct_cuts=cuts,
+    )
+    return fetch_market(spec, lookback_days=lookback)
+
+
+def main() -> None:
+    spec = pick_pair_spec()
+
+    # Reset evidence defaults when pair changes
+    if st.session_state.get("pair_key") != spec.pair:
+        st.session_state["pair_key"] = spec.pair
+        st.session_state.pop("last_report", None)
+
+    base = default_weights(spec)
+    weights = sidebar_weights(base, spec.pair)
+
+    st.title(f"{spec.pair} · 最高日高蒙特卡洛情报报告")
+    st.caption(spec.description + "｜侧栏含全部隐藏权重与强弱判定清单。")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        start = st.date_input("窗口起点", value=date.today())
+    with c2:
+        end = st.date_input("窗口终点", value=date.today() + timedelta(days=92))
+    with c3:
+        run = st.button("抓取并运行蒙特卡洛", type="primary", use_container_width=True)
+
+    if not run and "last_report" not in st.session_state:
+        st.info("选择货币对、确认侧栏权重后点击运行。")
+        st.markdown(rubric_markdown())
+        st.markdown("**已支持目录：** " + ", ".join(list_pairs()))
+        return
+
+    if run:
+        with st.spinner("运行中…"):
+            market = cached_fetch(
+                spec.pair,
+                spec.yahoo_ticker,
+                spec.invert,
+                weights.vol_lookback_days,
+                weights.bucket_pct_cuts,
+            )
+            score = evidence_score(weights.evidence)
+            mu_shift = weights.score_to_mu_a * score
+            sigma_extra = 1.0 + weights.score_to_sigma_b * abs(score)
+            scenarios_adj = apply_evidence_to_scenarios(
+                weights.scenarios,
+                score,
+                logit_scale=weights.evidence_logit_scale,
+                temperature=weights.scenario_temperature,
+                max_shift=weights.max_scenario_shift,
+            )
+            edges = resolve_bucket_edges(weights, market.spot)
+            mc = run_mixture_monte_carlo(
+                spot=market.spot,
+                sigma_daily_base=market.sigma_daily,
+                scenarios=scenarios_adj,
+                trading_days=weights.trading_days,
+                n_sims=weights.n_sims,
+                seed=weights.seed,
+                bucket_edges=edges,
+                mu_annual_shift=mu_shift,
+                sigma_mult_extra=sigma_extra,
+            )
+            probs = enforce_math_floor(mc.raw_probs, market.spot, edges)
+            report = build_report_markdown(
+                market,
+                weights,
+                scenarios_adj,
+                mc,
+                probs,
+                score=score,
+                mu_shift=mu_shift,
+                sigma_extra=sigma_extra,
+                horizon_label=_horizon_label(start, end),
+                bucket_edges=edges,
+            )
+            diag = build_diagnostics(
+                market, weights, scenarios_adj, mc, probs, score, mu_shift, sigma_extra, edges
+            )
+            st.session_state["last_report"] = report
+            st.session_state["last_diag"] = diag
+            st.session_state["last_probs"] = probs
+
+    report = st.session_state["last_report"]
+    diag = st.session_state["last_diag"]
+    probs = st.session_state["last_probs"]
+
+    k1, k2, k3, k4 = st.columns(4)
+    top = max(probs, key=probs.get)
+    k1.metric("货币对", diag["market"]["pair"])
+    k2.metric("最可能档", top)
+    k3.metric("概率", f"{100 * probs[top]:.1f}%")
+    k4.metric("证据分 S", f"{diag['score_S']:+.2f}")
+
+    st.subheader("分档概率")
+    st.bar_chart(pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间"))
+
+    left, right = st.columns([1.35, 1])
+    with left:
+        st.markdown(report)
+        st.download_button(
+            "下载 Markdown",
+            report.encode("utf-8"),
+            file_name=f"{diag['market']['pair'].replace('/', '')}_mc_report.md",
+            mime="text/markdown",
+        )
+    with right:
+        st.subheader("隐藏参数快照")
+        st.json(diag["mapping"])
+        st.markdown("**校准后情景**")
+        st.dataframe(pd.DataFrame(diag["scenarios_adjusted"]), use_container_width=True)
+        st.markdown("**原始 vs 校准**")
+        cmp = pd.DataFrame({"原始MC": diag["raw_probs"], "校准后": diag["calibrated_probs"]})
+        st.dataframe(cmp.map(lambda x: f"{100 * x:.1f}%"), use_container_width=True)
+        st.download_button(
+            "下载诊断 JSON",
+            json.dumps(diag, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name="diagnostics.json",
+            mime="application/json",
+        )
+
+
+if __name__ == "__main__":
+    main()
