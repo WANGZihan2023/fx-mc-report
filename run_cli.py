@@ -8,7 +8,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from fetch_data import fetch_market
+from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
@@ -18,7 +18,6 @@ from weights import (
     evidence_score,
     resolve_bucket_edges,
 )
-
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Multi-pair FX peak-bucket Monte Carlo")
@@ -47,8 +46,15 @@ def main() -> int:
     market = fetch_market(spec, lookback_days=w.vol_lookback_days)
     print(
         f"  spot={market.spot:.5f}  sigma_d={market.sigma_daily:.4%}  "
-        f"sigma_ann={market.sigma_annual:.2%}"
+        f"sigma_ann={market.sigma_annual:.2%}  hist={market.history_ticker} "
+        f"proxy={market.used_proxy}"
     )
+    for n in market.notes:
+        print(f"  note: {n}")
+
+    suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+    for e in w.evidence:
+        e.unpriced = min(e.unpriced, suggested_up)
 
     score = evidence_score(w.evidence)
     mu_shift = w.score_to_mu_a * score

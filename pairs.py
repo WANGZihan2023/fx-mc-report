@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -12,25 +12,25 @@ class PairSpec:
 
     Yahoo often lists the inverted ticker (AUDUSD=X). Set `invert=True` when
     Yahoo close must be inverted to obtain the analysis quote.
+
+    `fallback_tickers`: tried in order if the primary series has too few bars
+    (common for thin Yahoo FX symbols like USDCNH=X).
     """
 
-    pair: str  # e.g. "USD/AUD"
+    pair: str
     yahoo_ticker: str
     invert: bool
     base: str
     quote: str
-    # Positive drift in the analysis quote = base stronger vs quote
-    # (for USD/AUD: higher = more AUD per USD = stronger USD / weaker AUD)
     description: str
-    # Relative bucket edges as % distance above spot for the *peak* question
-    # e.g. (-2, 0, 2, 4, 6) → buckets around spot; first edge can be below spot
-    # We use absolute offsets in percent of spot for the four interior cuts.
     bucket_pct_cuts: tuple[float, float, float, float] = (0.0, 2.0, 4.0, 6.0)
     default_drivers: tuple[str, ...] = ()
     notes: str = ""
+    fallback_tickers: tuple[str, ...] = ()
+    # Optional separate spot ticker when history comes from a proxy
+    spot_ticker: str | None = None
 
 
-# Pre-seeded pairs; UI also allows custom ticker.
 PAIR_CATALOG: dict[str, PairSpec] = {
     "USD/AUD": PairSpec(
         pair="USD/AUD",
@@ -92,7 +92,23 @@ PAIR_CATALOG: dict[str, PairSpec] = {
         description="美元兑离岸人民币",
         bucket_pct_cuts=(0.0, 1.0, 2.0, 3.5),
         default_drivers=("fed", "pboc", "china_growth", "geopolitics", "yields"),
-        notes="Yahoo USDCNH=X。",
+        notes=(
+            "Yahoo USDCNH=X 历史极薄；自动回退 USDCNY=X 估波动，"
+            "现价优先用 CNH 最新点（若有），并标注在岸代理。"
+        ),
+        fallback_tickers=("CNH=X", "USDCNY=X", "CNY=X"),
+        spot_ticker="USDCNH=X",
+    ),
+    "USD/CNY": PairSpec(
+        pair="USD/CNY",
+        yahoo_ticker="USDCNY=X",
+        invert=False,
+        base="USD",
+        quote="CNY",
+        description="美元兑在岸人民币",
+        bucket_pct_cuts=(0.0, 1.0, 2.0, 3.5),
+        default_drivers=("fed", "pboc", "china_growth", "geopolitics", "yields"),
+        fallback_tickers=("CNY=X",),
     ),
     "USD/CAD": PairSpec(
         pair="USD/CAD",
@@ -138,12 +154,6 @@ def get_pair(pair: str) -> PairSpec:
 
 
 def edges_from_spot(spot: float, pct_cuts: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-    """
-    Build absolute bucket edges from spot and percent cuts.
-
-    Cuts are % above spot (0 means the floor edge at spot).
-    Example spot=1.43, cuts=(0,2,4,6) → (1.43, 1.4586, 1.4872, 1.5158)
-    """
     return tuple(spot * (1.0 + p / 100.0) for p in pct_cuts)  # type: ignore[return-value]
 
 
@@ -153,6 +163,7 @@ def make_custom_pair(
     invert: bool,
     *,
     bucket_pct_cuts: tuple[float, float, float, float] = (0.0, 2.0, 4.0, 6.0),
+    fallback_tickers: tuple[str, ...] = (),
 ) -> PairSpec:
     parts = pair.replace(" ", "").split("/")
     if len(parts) != 2:
@@ -168,4 +179,5 @@ def make_custom_pair(
         bucket_pct_cuts=bucket_pct_cuts,
         default_drivers=("fed", "cpi", "geopolitics", "growth"),
         notes="用户自定义货币对",
+        fallback_tickers=fallback_tickers,
     )

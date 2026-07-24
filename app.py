@@ -12,7 +12,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from fetch_data import fetch_market
+from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
@@ -263,18 +263,28 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> ModelWeights:
 
 
 @st.cache_data(ttl=300, show_spinner="抓取行情…")
-def cached_fetch(pair: str, ticker: str, invert: bool, lookback: int, cuts: tuple):
-    # cuts unused for fetch but keeps cache key stable with pair config
+def cached_fetch(
+    pair: str,
+    ticker: str,
+    invert: bool,
+    lookback: int,
+    cuts: tuple,
+    fallbacks: tuple = (),
+    spot_ticker: str | None = None,
+):
     from pairs import PairSpec
 
+    parts = pair.split("/")
     spec = PairSpec(
         pair=pair,
         yahoo_ticker=ticker,
         invert=invert,
-        base=pair.split("/")[0],
-        quote=pair.split("/")[1],
+        base=parts[0],
+        quote=parts[1],
         description=pair,
         bucket_pct_cuts=cuts,
+        fallback_tickers=fallbacks,
+        spot_ticker=spot_ticker,
     )
     return fetch_market(spec, lookback_days=lookback)
 
@@ -308,17 +318,35 @@ def main() -> None:
         return
 
     if run:
-        with st.spinner("运行中…"):
+        with st.spinner("抓取实时行情并运行蒙特卡洛…"):
             market = cached_fetch(
                 spec.pair,
                 spec.yahoo_ticker,
                 spec.invert,
                 weights.vol_lookback_days,
                 weights.bucket_pct_cuts,
+                tuple(getattr(spec, "fallback_tickers", ()) or ()),
+                getattr(spec, "spot_ticker", None),
             )
+            # Live move → lower unpriced on all evidence (avoid double-counting priced moves)
+            suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+            for e in weights.evidence:
+                e.unpriced = min(e.unpriced, suggested_up)
+
+            if market.notes:
+                st.warning(" / ".join(market.notes))
+
             score = evidence_score(weights.evidence)
             mu_shift = weights.score_to_mu_a * score
             sigma_extra = 1.0 + weights.score_to_sigma_b * abs(score)
+            # Realized short-vol vs long-vol: if 20d >> 60d, thicken tails a bit
+            if (
+                market.sigma_20d_ann
+                and market.sigma_60d_ann
+                and market.sigma_60d_ann > 0
+                and market.sigma_20d_ann / market.sigma_60d_ann > 1.25
+            ):
+                sigma_extra *= 1.08
             scenarios_adj = apply_evidence_to_scenarios(
                 weights.scenarios,
                 score,

@@ -97,6 +97,14 @@ def build_report_markdown(
 | 回看 | {market.lookback_days} 日（{market.history_start} → {market.history_end}） |
 | Brent | {f"{market.brent:.2f}" if market.brent else "N/A"} |
 | DXY | {f"{market.dxy_proxy:.2f}" if market.dxy_proxy else "N/A"} |
+| 近1日涨跌 | {f"{100*market.ret_1d:+.2f}%" if market.ret_1d is not None else "N/A"} |
+| 近5日涨跌 | {f"{100*market.ret_5d:+.2f}%" if market.ret_5d is not None else "N/A"} |
+| 近20日涨跌 | {f"{100*market.ret_20d:+.2f}%" if market.ret_20d is not None else "N/A"} |
+| 20D/60D 年化波动 | {f"{(market.sigma_20d_ann or 0)*100:.2f}% / {(market.sigma_60d_ann or 0)*100:.2f}%" if market.sigma_60d_ann else "N/A"} |
+| 历史代码 / 现价代码 | {market.history_ticker} / {market.spot_ticker}{"（代理）" if market.used_proxy else ""} |
+| CNH−CNY 价差 | {f"{market.cnh_cny_basis:+.4f}" if market.cnh_cny_basis is not None else "N/A"} |
+
+**数据说明：** {"；".join(market.notes) if market.notes else "无额外备注"}
 
 ---
 
