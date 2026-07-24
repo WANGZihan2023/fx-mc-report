@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for any FX pair: fetch → strength-weighted MC → report."""
+"""CLI for any FX pair: fetch market + headlines → auto evidence → MC → report."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from pathlib import Path
 
 from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
+from news_classify import headlines_to_evidence
+from news_fetch import fetch_headlines_for_pair
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from weights import (
@@ -18,6 +20,7 @@ from weights import (
     evidence_score,
     resolve_bucket_edges,
 )
+
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Multi-pair FX peak-bucket Monte Carlo")
@@ -29,6 +32,9 @@ def main() -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--lookback", type=int, default=60)
     p.add_argument("--out", type=str, default="output")
+    p.add_argument("--no-news", action="store_true", help="Skip headline fetch; use templates only")
+    p.add_argument("--keep-templates", action="store_true", help="Merge templates with news evidence")
+    p.add_argument("--max-news", type=int, default=10)
     args = p.parse_args()
 
     if args.ticker:
@@ -52,6 +58,23 @@ def main() -> int:
     for n in market.notes:
         print(f"  note: {n}")
 
+    headlines = []
+    if not args.no_news:
+        print("Fetching headlines…")
+        headlines = fetch_headlines_for_pair(spec, max_items=30)
+        print(f"  headlines fetched: {len(headlines)}")
+        suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+        auto = headlines_to_evidence(
+            headlines, spec, max_items=args.max_news, unpriced_cap=suggested_up
+        )
+        print(f"  actionable evidence from news: {len(auto)}")
+        if auto:
+            w.evidence = auto + (list(w.evidence) if args.keep_templates else [])
+        else:
+            print("  fallback to template evidence")
+    else:
+        suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+
     suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
     for e in w.evidence:
         e.unpriced = min(e.unpriced, suggested_up)
@@ -69,8 +92,8 @@ def main() -> int:
     print(f"S={score:+.3f}  mu_shift={mu_shift:+.4f}  sigma_extra={sigma_extra:.3f}")
     for e in w.evidence:
         print(
-            f"  evidence {e.id} [{e.strength_label}] strength={e.strength:.2f} "
-            f"dir={e.direction:+d} breakdown={e.strength_breakdown}"
+            f"  evidence {e.id} [{e.strength_label}] dir={e.direction:+d} "
+            f"cat={e.category} strength={e.strength:.2f} | {e.title[:70]}"
         )
     for s in scenarios:
         print(f"  scenario {s.name}: {s.weight:.1%}")
@@ -110,6 +133,16 @@ def main() -> int:
     diag = build_diagnostics(
         market, w, scenarios, mc, probs, score, mu_shift, sigma_extra, edges
     )
+    diag["headlines"] = [
+        {
+            "title": h.title,
+            "source": h.source,
+            "published": h.published.isoformat() if h.published else None,
+            "url": h.url,
+            "provider": h.provider,
+        }
+        for h in headlines
+    ]
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -117,6 +150,9 @@ def main() -> int:
     (out / f"{safe}_report.md").write_text(report, encoding="utf-8")
     (out / f"{safe}_diagnostics.json").write_text(
         json.dumps(diag, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out / f"{safe}_headlines.json").write_text(
+        json.dumps(diag["headlines"], ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(f"Wrote {out / (safe + '_report.md')}")
     return 0

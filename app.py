@@ -14,6 +14,8 @@ import streamlit as st
 
 from fetch_data import calibrate_unpriced_from_market, fetch_market
 from monte_carlo import enforce_math_floor, run_mixture_monte_carlo
+from news_classify import headlines_to_evidence
+from news_fetch import fetch_headlines_for_pair
 from pairs import get_pair, list_pairs, make_custom_pair
 from report_text import build_diagnostics, build_report_markdown
 from strength import (
@@ -112,11 +114,16 @@ def render_strength_rules_sidebar() -> None:
         st.markdown(rubric_markdown())
 
 
-def sidebar_weights(base: ModelWeights, pair_name: str) -> ModelWeights:
+def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, dict]:
     st.sidebar.title("隐藏参数 / 权重")
     st.sidebar.caption(f"当前分析口径：{pair_name}。+1 方向 = 推高该报价的路径最高值。")
 
     render_strength_rules_sidebar()
+
+    st.sidebar.header("0. 头条自动填证据")
+    use_news = st.sidebar.checkbox("运行时抓取头条并自动填证据", value=True)
+    keep_templates = st.sidebar.checkbox("保留模板证据（与头条合并）", value=False)
+    max_news_ev = st.sidebar.slider("最多采用头条证据条数", 3, 20, 10, 1)
 
     st.sidebar.header("1. 模拟设置")
     n_sims = st.sidebar.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)
@@ -259,7 +266,12 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> ModelWeights:
         evidence_logit_scale=float(logit_scale),
         scenarios=scenarios,
         evidence=evidence,
-    )
+    ), {"use_news": use_news, "keep_templates": keep_templates, "max_news_ev": int(max_news_ev)}
+
+
+@st.cache_data(ttl=300, show_spinner="抓取头条…")
+def cached_headlines(pair: str, max_items: int = 25):
+    return fetch_headlines_for_pair(pair, max_items=max_items)
 
 
 @st.cache_data(ttl=300, show_spinner="抓取行情…")
@@ -298,10 +310,10 @@ def main() -> None:
         st.session_state.pop("last_report", None)
 
     base = default_weights(spec)
-    weights = sidebar_weights(base, spec.pair)
+    weights, news_opts = sidebar_weights(base, spec.pair)
 
     st.title(f"{spec.pair} · 最高日高蒙特卡洛情报报告")
-    st.caption(spec.description + "｜侧栏含全部隐藏权重与强弱判定清单。")
+    st.caption(spec.description + "｜可抓取头条自动填证据；侧栏含强弱判定规则。")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -312,13 +324,13 @@ def main() -> None:
         run = st.button("抓取并运行蒙特卡洛", type="primary", use_container_width=True)
 
     if not run and "last_report" not in st.session_state:
-        st.info("选择货币对、确认侧栏权重后点击运行。")
+        st.info("选择货币对后点击运行：将抓行情 + 头条并自动填证据。")
         st.markdown(rubric_markdown())
         st.markdown("**已支持目录：** " + ", ".join(list_pairs()))
         return
 
     if run:
-        with st.spinner("抓取实时行情并运行蒙特卡洛…"):
+        with st.spinner("抓取行情 / 头条并运行蒙特卡洛…"):
             market = cached_fetch(
                 spec.pair,
                 spec.yahoo_ticker,
@@ -328,18 +340,39 @@ def main() -> None:
                 tuple(getattr(spec, "fallback_tickers", ()) or ()),
                 getattr(spec, "spot_ticker", None),
             )
-            # Live move → lower unpriced on all evidence (avoid double-counting priced moves)
+            if market.notes:
+                st.warning(" / ".join(market.notes))
+
+            headlines = []
+            auto_evidence = []
+            if news_opts["use_news"]:
+                headlines = cached_headlines(spec.pair, max_items=30)
+                suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+                auto_evidence = headlines_to_evidence(
+                    headlines,
+                    spec,
+                    max_items=news_opts["max_news_ev"],
+                    unpriced_cap=suggested_up,
+                )
+                if news_opts["keep_templates"]:
+                    weights.evidence = auto_evidence + list(weights.evidence)
+                else:
+                    weights.evidence = auto_evidence or list(weights.evidence)
+                if not auto_evidence:
+                    st.info("头条已抓取，但规则未能判定方向；已回退到模板证据。")
+            else:
+                suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
+                for e in weights.evidence:
+                    e.unpriced = min(e.unpriced, suggested_up)
+
+            # Apply priced-in cap again
             suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
             for e in weights.evidence:
                 e.unpriced = min(e.unpriced, suggested_up)
 
-            if market.notes:
-                st.warning(" / ".join(market.notes))
-
             score = evidence_score(weights.evidence)
             mu_shift = weights.score_to_mu_a * score
             sigma_extra = 1.0 + weights.score_to_sigma_b * abs(score)
-            # Realized short-vol vs long-vol: if 20d >> 60d, thicken tails a bit
             if (
                 market.sigma_20d_ann
                 and market.sigma_60d_ann
@@ -382,9 +415,35 @@ def main() -> None:
             diag = build_diagnostics(
                 market, weights, scenarios_adj, mc, probs, score, mu_shift, sigma_extra, edges
             )
+            diag["headlines"] = [
+                {
+                    "title": h.title,
+                    "source": h.source,
+                    "published": h.published.isoformat() if h.published else None,
+                    "url": h.url,
+                    "provider": h.provider,
+                }
+                for h in headlines
+            ]
+            diag["auto_evidence_count"] = len(auto_evidence)
             st.session_state["last_report"] = report
             st.session_state["last_diag"] = diag
             st.session_state["last_probs"] = probs
+            st.session_state["last_headlines"] = diag["headlines"]
+            st.session_state["last_auto_evidence"] = [
+                {
+                    "id": e.id,
+                    "title": e.title,
+                    "dir": e.direction,
+                    "label": e.strength_label,
+                    "strength": e.strength,
+                    "category": e.category,
+                    "source_tier": e.source_tier,
+                    "surprise": e.surprise,
+                    "scope": e.scope,
+                }
+                for e in weights.evidence
+            ]
 
     report = st.session_state["last_report"]
     diag = st.session_state["last_diag"]
@@ -399,6 +458,14 @@ def main() -> None:
 
     st.subheader("分档概率")
     st.bar_chart(pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间"))
+
+    if st.session_state.get("last_auto_evidence"):
+        st.subheader("自动填入的证据（来自头条）")
+        st.caption(f"采用 {diag.get('auto_evidence_count', len(st.session_state['last_auto_evidence']))} 条可判定方向的头条")
+        st.dataframe(pd.DataFrame(st.session_state["last_auto_evidence"]), use_container_width=True)
+    if st.session_state.get("last_headlines"):
+        with st.expander(f"原始头条（{len(st.session_state['last_headlines'])}）", expanded=False):
+            st.dataframe(pd.DataFrame(st.session_state["last_headlines"]), use_container_width=True)
 
     left, right = st.columns([1.35, 1])
     with left:
