@@ -1,8 +1,8 @@
 """
 Multi-pair FX peak-bucket forecaster — Streamlit UI（精简折叠版）。
 
-主区：选窗口 → 运行 → 看结果。
-侧栏 / 折叠：API、高级权重、规则说明、诊断明细。
+主区：选看涨 → 立刻看现价 → 自设分档 → 运行 → 看概率。
+侧栏 / 折叠：API、蒙特卡洛次数、高级权重、规则说明、诊断明细。
 """
 
 from __future__ import annotations
@@ -16,9 +16,18 @@ import streamlit as st
 from fx_report.config.api_config import status_text
 from fx_report.ui.api_panel import render_api_settings_panel
 from fx_report.news.fetch import fetch_status_summary
-from fx_report.market.pairs import get_pair, list_pairs, make_custom_pair, resolve_pair_for_bullish
+from fx_report.market.fetch_data import fetch_market
+from fx_report.market.pairs import (
+    PairSpec,
+    edges_from_spot,
+    get_pair,
+    list_pairs,
+    make_custom_pair,
+    resolve_pair_for_bullish,
+)
 from fx_report.pipeline import run_pipeline, step2_assess_info_needs
 from fx_report.report.text import rubric_markdown
+from fx_report.model.monte_carlo import bucket_labels_from_edges
 from fx_report.model.strength import (
     SOURCE_TIER_POINTS,
     SURPRISE_POINTS,
@@ -63,6 +72,214 @@ def _horizon(start: date, end: date) -> str:
     return f"{start.isoformat()} → {end.isoformat()}"
 
 
+def _fmt_px(x: float) -> str:
+    ax = abs(x)
+    if ax >= 100:
+        return f"{x:.3f}"
+    if ax >= 10:
+        return f"{x:.4f}"
+    return f"{x:.5f}"
+
+
+def _spot_cache_key(pair: str) -> str:
+    return f"spot_cache::{pair}"
+
+
+def load_spot_for_pair(
+    spec: PairSpec,
+    *,
+    lookback_days: int = 60,
+    force: bool = False,
+) -> dict:
+    """Fetch analysis-quote spot without running the full MC/news pipeline."""
+    key = _spot_cache_key(spec.pair)
+    cached = st.session_state.get(key)
+    if cached and not force and cached.get("ok") is True:
+        return cached
+    try:
+        snap = fetch_market(spec, lookback_days=lookback_days)
+        row = {
+            "ok": True,
+            "pair": snap.pair,
+            "spot": float(snap.spot),
+            "source": snap.source,
+            "asof": snap.asof,
+            "notes": list(snap.notes[:3]),
+            "error": None,
+        }
+    except Exception as e:
+        row = {
+            "ok": False,
+            "pair": spec.pair,
+            "spot": None,
+            "source": None,
+            "asof": None,
+            "notes": [],
+            "error": str(e),
+        }
+    st.session_state[key] = row
+    return row
+
+
+def render_spot_panel(spec: PairSpec, bullish: str, lookback_days: int) -> dict:
+    """Prominent spot after pair + bullish are chosen."""
+    st.subheader("现价（分析报价）")
+    c_a, c_b = st.columns([4, 1])
+    with c_b:
+        refresh = st.button("刷新现价", use_container_width=True, key="refresh_spot")
+    spot_row = load_spot_for_pair(spec, lookback_days=lookback_days, force=refresh)
+    with c_a:
+        if spot_row["ok"]:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("分析口径", spot_row["pair"])
+            m2.metric("现价", _fmt_px(spot_row["spot"]))
+            m3.metric("来源", spot_row["source"] or "—")
+            m4.metric("asof", spot_row["asof"] or "—")
+            st.caption(
+                f"看涨 {bullish} → 分析报价升高表示 {bullish} 走强。"
+                + (" ｜ " + "｜".join(spot_row["notes"]) if spot_row["notes"] else "")
+            )
+        else:
+            st.error(
+                "无法获取现价，请检查网络或 API Key 后点「刷新现价」。\n\n"
+                f"{spot_row.get('error') or '未知错误'}"
+            )
+    return spot_row
+
+
+def render_bucket_editor(
+    base: ModelWeights,
+    spot: float | None,
+    analysis_pair: str,
+) -> tuple[bool, tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """
+    Main-area bucket edges. 4 cut points → 5 Torchcast-style buckets.
+    Returns (use_relative, pct_cuts, abs_edges).
+    """
+    st.subheader("概率区间（自己设切点）")
+    st.caption(
+        "4 个切点 → 5 个区间（与 Torchcast 一致）："
+        "`< e1` · `e1–e2` · `e2–e3` · `e3–e4` · `≥ e4`。"
+        "运行分析后，蒙特卡洛概率与 PDF 都用这套切点。"
+    )
+
+    mode_key = f"bucket_mode::{analysis_pair}"
+    pct_key = f"bucket_pct::{analysis_pair}"
+    abs_key = f"bucket_abs::{analysis_pair}"
+    seeded_key = f"abs_seeded_from_spot::{analysis_pair}"
+
+    if pct_key not in st.session_state:
+        st.session_state[pct_key] = [float(x) for x in base.bucket_pct_cuts]
+
+    if abs_key not in st.session_state:
+        if spot is not None:
+            st.session_state[abs_key] = [
+                float(x) for x in edges_from_spot(spot, tuple(st.session_state[pct_key]))
+            ]
+            st.session_state[seeded_key] = True
+        else:
+            st.session_state[abs_key] = [float(x) for x in base.bucket_edges]
+    elif spot is not None and not st.session_state.get(seeded_key):
+        # First successful spot after placeholder abs edges
+        st.session_state[abs_key] = [
+            float(x) for x in edges_from_spot(spot, tuple(st.session_state[pct_key]))
+        ]
+        st.session_state[seeded_key] = True
+        for i, e in enumerate(st.session_state[abs_key]):
+            st.session_state[f"abs_cut_{analysis_pair}_{i}"] = float(e)
+
+    for i, v in enumerate(st.session_state[pct_key]):
+        wk = f"pct_cut_{analysis_pair}_{i}"
+        if wk not in st.session_state:
+            st.session_state[wk] = float(v)
+    for i, v in enumerate(st.session_state[abs_key]):
+        wk = f"abs_cut_{analysis_pair}_{i}"
+        if wk not in st.session_state:
+            st.session_state[wk] = float(v)
+
+    mode = st.radio(
+        "切点方式",
+        ["相对现价 %", "绝对水平"],
+        horizontal=True,
+        key=mode_key,
+        help="相对：切点 = 现价 × (1 + %/100)。绝对：直接输入汇率水平。",
+    )
+    use_rel = mode == "相对现价 %"
+
+    cols = st.columns(4)
+    labels = ["切点1", "切点2", "切点3", "切点4"]
+    if use_rel:
+        pcts: list[float] = []
+        for i, col in enumerate(cols):
+            with col:
+                pcts.append(
+                    float(
+                        st.number_input(
+                            f"{labels[i]} %",
+                            min_value=-20.0,
+                            max_value=50.0,
+                            step=0.5,
+                            key=f"pct_cut_{analysis_pair}_{i}",
+                        )
+                    )
+                )
+        pct_cuts = tuple(sorted(pcts))  # type: ignore[assignment]
+        st.session_state[pct_key] = list(pct_cuts)
+        if spot is not None:
+            abs_edges = edges_from_spot(spot, pct_cuts)
+            st.session_state[abs_key] = list(abs_edges)
+            for i, e in enumerate(abs_edges):
+                st.session_state[f"abs_cut_{analysis_pair}_{i}"] = float(e)
+        else:
+            abs_edges = tuple(float(x) for x in st.session_state[abs_key])  # type: ignore[assignment]
+    else:
+        abss: list[float] = []
+        step = 0.0001 if (spot is not None and spot < 10) else 0.01
+        for i, col in enumerate(cols):
+            with col:
+                abss.append(
+                    float(
+                        st.number_input(
+                            labels[i],
+                            min_value=0.0,
+                            max_value=1_000_000.0,
+                            step=step,
+                            format="%.5f",
+                            key=f"abs_cut_{analysis_pair}_{i}",
+                        )
+                    )
+                )
+        abs_edges = tuple(sorted(abss))  # type: ignore[assignment]
+        st.session_state[abs_key] = list(abs_edges)
+        if spot is not None and spot > 0:
+            pct_cuts = tuple(  # type: ignore[assignment]
+                sorted((e / spot - 1.0) * 100.0 for e in abs_edges)
+            )
+            st.session_state[pct_key] = list(pct_cuts)
+            for i, p in enumerate(pct_cuts):
+                st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(p)
+        else:
+            pct_cuts = tuple(float(x) for x in st.session_state[pct_key])  # type: ignore[assignment]
+
+    preview_edges = (
+        edges_from_spot(spot, pct_cuts)
+        if use_rel and spot is not None
+        else abs_edges
+    )
+    labels5 = bucket_labels_from_edges(preview_edges)
+    st.info(f"将形成 5 档：{' · '.join(labels5)}")
+    if use_rel and spot is None:
+        st.caption("相对 % 模式需先成功拉取现价，才能换算绝对切点并跑蒙特卡洛。")
+    elif spot is not None:
+        st.caption(
+            "绝对切点预览："
+            + " / ".join(_fmt_px(e) for e in preview_edges)
+            + f"（现价 {_fmt_px(spot)}）"
+        )
+
+    return use_rel, pct_cuts, abs_edges  # type: ignore[return-value]
+
+
 def pick_pair_in_sidebar():
     """侧栏分区 1：货币对 + 看涨货币（默认可折叠，首次展开）。"""
     with st.sidebar.expander("① 货币对", expanded=True):
@@ -91,12 +308,11 @@ def pick_pair_in_sidebar():
         )
         return spec, bullish
 
-
 def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, dict]:
     st.sidebar.markdown(f"**{pair_name}**")
     st.sidebar.caption(
-        "侧栏目录（点开分区）：①货币对 → ②抓取 → ③模拟分档 → "
-        "④映射 → ⑤情景 → ⑥证据 → ⑦规则 → ⑧数据源"
+        "侧栏目录（点开分区）：①货币对 → ②抓取 → ③蒙特卡洛 → "
+        "④映射 → ⑤情景 → ⑥证据 → ⑦规则 → ⑧数据源｜分档切点在主区"
     )
 
     # ② 抓取
@@ -113,19 +329,15 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         max_news_ev = st.slider("最多头条证据条数", 3, 20, 10, 1)
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
 
-    # ③ 模拟 + 分档（合并，避免两处找）
-    with st.sidebar.expander("③ 蒙特卡洛与分档", expanded=False):
+    # ③ 蒙特卡洛（分档切点在主区设置）
+    with st.sidebar.expander("③ 蒙特卡洛", expanded=False):
         n_sims = st.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)
         trading_days = st.number_input("交易日窗口", 5, 252, base.trading_days, 1)
         seed = st.number_input("随机种子", 0, 10_000_000, base.seed, 1)
         vol_lookback = st.number_input("波动回看日", 20, 252, base.vol_lookback_days, 5)
-        st.markdown("**分档切点（相对现价 %）**")
-        use_rel = st.checkbox("用相对现价分档", value=True)
-        c0 = st.number_input("切点1 %", -5.0, 20.0, float(base.bucket_pct_cuts[0]), 0.5)
-        c1 = st.number_input("切点2 %", -5.0, 20.0, float(base.bucket_pct_cuts[1]), 0.5)
-        c2 = st.number_input("切点3 %", -5.0, 20.0, float(base.bucket_pct_cuts[2]), 0.5)
-        c3 = st.number_input("切点4 %", -5.0, 20.0, float(base.bucket_pct_cuts[3]), 0.5)
-        cuts = tuple(sorted([c0, c1, c2, c3]))
+        st.caption("分档切点请在主区「概率区间」设置（相对 % 或绝对水平）。")
+        use_rel = True
+        cuts = tuple(base.bucket_pct_cuts)
 
     # ④ 映射
     with st.sidebar.expander("④ 证据 → 参数映射", expanded=False):
@@ -344,6 +556,10 @@ def main() -> None:
         resolve_pair_for_bullish(display_spec, bullish) if bullish_ok else display_spec
     )
 
+    if bullish_ok and st.session_state.get("analysis_pair_key") != analysis_spec.pair:
+        st.session_state["analysis_pair_key"] = analysis_spec.pair
+        st.session_state.pop("last_report", None)
+
     base = default_weights(analysis_spec)
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
@@ -351,47 +567,71 @@ def main() -> None:
     if bullish_ok:
         st.caption(
             f"分析口径：{analysis_spec.pair}（看涨 {bullish}）· "
-            "最高日高分档 · 七步情报流水线 · 左侧按 ①–⑧ 分区折叠"
+            "先看现价 → 自设概率区间 → 再运行蒙特卡洛"
         )
     else:
         st.caption("最高日高分档 · 七步情报流水线 · 请先在侧栏选择看涨货币")
 
-    c1, c2, c3 = st.columns([1, 1, 1.2])
-    with c1:
-        start = st.date_input("窗口起点", value=date.today())
-    with c2:
-        end = st.date_input("窗口终点", value=date.today() + timedelta(days=92))
-    with c3:
-        st.write("")
-        run = st.button(
-            "运行分析",
-            type="primary",
-            use_container_width=True,
-            disabled=not bullish_ok,
-        )
-
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
         api_opts = render_api_settings_panel()
 
-    with st.expander(f"本对信息需求 · {analysis_spec.pair}", expanded=False):
-        needs = step2_assess_info_needs(analysis_spec)
-        st.dataframe(
-            pd.DataFrame([n.to_dict() for n in needs]),
-            hide_index=True,
-            use_container_width=True,
+    if not bullish_ok:
+        st.warning("请先在侧栏 ① 选择「看涨货币」（二选一）。选好后立刻显示现价与分档设置。")
+        if "last_report" not in st.session_state:
+            return
+
+    spot_row: dict | None = None
+    if bullish_ok:
+        spot_row = render_spot_panel(
+            analysis_spec, bullish, lookback_days=weights.vol_lookback_days
         )
+        spot_val = float(spot_row["spot"]) if spot_row.get("ok") and spot_row.get("spot") is not None else None
+        use_rel, pct_cuts, abs_edges = render_bucket_editor(
+            base, spot_val, analysis_spec.pair
+        )
+        weights.use_relative_buckets = use_rel
+        weights.bucket_pct_cuts = pct_cuts  # type: ignore[assignment]
+        weights.bucket_edges = abs_edges  # type: ignore[assignment]
 
-    if not bullish_ok and "last_report" not in st.session_state:
-        st.warning("请先在侧栏 ① 选择「看涨货币」（二选一），再运行分析。")
-        return
+        with st.expander(f"本对信息需求 · {analysis_spec.pair}", expanded=False):
+            needs = step2_assess_info_needs(analysis_spec)
+            st.dataframe(
+                pd.DataFrame([n.to_dict() for n in needs]),
+                hide_index=True,
+                use_container_width=True,
+            )
 
-    if not run and "last_report" not in st.session_state:
-        st.info("选好看涨货币与窗口后点「运行分析」。左侧 ①–⑧ 分区折叠查找设置；API 可全空。")
-        return
+        st.markdown("---")
+        c1, c2, c3 = st.columns([1, 1, 1.2])
+        with c1:
+            start = st.date_input("窗口起点", value=date.today())
+        with c2:
+            end = st.date_input("窗口终点", value=date.today() + timedelta(days=92))
+        with c3:
+            st.write("")
+            can_run = bool(spot_row and spot_row.get("ok"))
+            run = st.button(
+                "运行分析",
+                type="primary",
+                use_container_width=True,
+                disabled=not can_run,
+                help=None if can_run else "需先成功获取现价",
+            )
+        if not can_run:
+            st.caption("现价未就绪时不能运行分析（分档与 MC 都依赖分析报价）。")
+        elif "last_report" not in st.session_state and not run:
+            st.info("确认概率区间后点「运行分析」。侧栏 ②–⑧ 可调抓取与模型参数；API 可全空。")
+    else:
+        start = date.today()
+        end = date.today() + timedelta(days=92)
+        run = False
 
     if run:
         if not bullish_ok:
             st.warning("未选择看涨货币，无法运行分析。")
+            return
+        if not spot_row or not spot_row.get("ok"):
+            st.error("现价获取失败，无法运行分析。请先刷新现价。")
             return
         with st.spinner("流水线运行中…"):
             key = (api_opts.get("llm_key") or "").strip()
@@ -420,9 +660,9 @@ def main() -> None:
                 mode_cls = "rules"
 
             result = run_pipeline(
-                analysis_spec.pair,
-                ticker=None if analysis_spec.pair in list_pairs() else analysis_spec.symbol_code,
-                invert=analysis_spec.invert,
+                display_spec.pair,
+                ticker=None if display_spec.pair in list_pairs() else display_spec.symbol_code,
+                invert=display_spec.invert,
                 sims=weights.n_sims,
                 days=weights.trading_days,
                 seed=weights.seed,
@@ -437,17 +677,22 @@ def main() -> None:
                 out_dir="output",
                 verbose=False,
                 bullish_currency=bullish,
+                model_weights=weights,
             )
-            result.weights.use_relative_buckets = weights.use_relative_buckets
-            result.weights.bucket_pct_cuts = weights.bucket_pct_cuts
-            result.weights.score_to_mu_a = weights.score_to_mu_a
-            result.weights.score_to_sigma_b = weights.score_to_sigma_b
-            result.weights.evidence_logit_scale = weights.evidence_logit_scale
-            result.weights.scenario_temperature = weights.scenario_temperature
-            result.weights.max_scenario_shift = weights.max_scenario_shift
 
             if result.market.notes:
                 st.caption("｜".join(result.market.notes[:3]))
+
+            # Keep spot cache in sync with pipeline market print
+            st.session_state[_spot_cache_key(analysis_spec.pair)] = {
+                "ok": True,
+                "pair": result.market.pair,
+                "spot": float(result.market.spot),
+                "source": result.market.source,
+                "asof": result.market.asof,
+                "notes": list(result.market.notes[:3]),
+                "error": None,
+            }
 
             st.session_state["last_report"] = result.report_md
             st.session_state["last_report_html"] = result.report_html
@@ -464,6 +709,7 @@ def main() -> None:
                 st.session_state["last_pdf_error"] = str(e)
             st.session_state["last_diag"] = result.diagnostics
             st.session_state["last_probs"] = result.probs
+            st.session_state["last_edges"] = list(result.edges)
             st.session_state["last_headlines"] = result.diagnostics.get("headlines", [])
             st.session_state["last_news_meta"] = result.news_meta
             st.session_state["last_info_needs"] = [n.to_dict() for n in result.info_needs]
@@ -483,10 +729,15 @@ def main() -> None:
             st.session_state["last_stage_log"] = result.stage_log
             st.session_state["last_source"] = result.market.source
 
+    if "last_report" not in st.session_state:
+        return
+
     report = st.session_state["last_report"]
     diag = st.session_state["last_diag"]
     probs = st.session_state["last_probs"]
 
+    st.markdown("---")
+    st.subheader("分析结果")
     k1, k2, k3, k4 = st.columns(4)
     top = max(probs, key=probs.get)
     k1.metric("货币对", diag["market"]["pair"])
@@ -494,7 +745,9 @@ def main() -> None:
     k3.metric("概率", f"{100 * probs[top]:.1f}%")
     k4.metric("证据分 S", f"{diag['score_S']:+.2f}")
     src = st.session_state.get("last_source") or diag.get("market", {}).get("source", "")
-    st.caption(f"行情源 {src} · 窗口 {_horizon(start, end)}")
+    edges_used = st.session_state.get("last_edges") or diag.get("bucket_edges") or []
+    edge_s = " / ".join(_fmt_px(float(x)) for x in edges_used) if edges_used else "—"
+    st.caption(f"行情源 {src} · 窗口 {_horizon(start, end)} · 切点 {edge_s}")
 
     st.bar_chart(
         pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间")

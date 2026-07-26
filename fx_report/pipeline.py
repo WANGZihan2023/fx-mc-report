@@ -535,8 +535,13 @@ def run_pipeline(
     out_dir: str | Path | None = "output",
     verbose: bool = True,
     bullish_currency: str | None = None,
+    model_weights: ModelWeights | None = None,
 ) -> PipelineResult:
-    """跑完整七步；可选写入 output/。"""
+    """跑完整七步；可选写入 output/。
+
+    `model_weights`：UI 传入时，在默认权重上覆盖分档切点 / 映射 / 情景 / 模板证据等，
+    确保蒙特卡洛与 Torchcast 使用同一套用户分档。
+    """
     log: list[str] = []
 
     def say(msg: str) -> None:
@@ -567,10 +572,32 @@ def run_pipeline(
     say(f"  → {describe_pair_factors(spec.base, spec.quote, spec.default_drivers)}")
 
     base = default_weights(spec)
-    base.n_sims = sims
-    base.trading_days = days
-    base.seed = seed
-    base.vol_lookback_days = lookback
+    if model_weights is not None:
+        base.n_sims = int(model_weights.n_sims)
+        base.trading_days = int(model_weights.trading_days)
+        base.seed = int(model_weights.seed)
+        base.vol_lookback_days = int(model_weights.vol_lookback_days)
+        base.use_relative_buckets = bool(model_weights.use_relative_buckets)
+        base.bucket_pct_cuts = tuple(model_weights.bucket_pct_cuts)  # type: ignore[assignment]
+        base.bucket_edges = tuple(model_weights.bucket_edges)  # type: ignore[assignment]
+        base.score_to_mu_a = float(model_weights.score_to_mu_a)
+        base.score_to_sigma_b = float(model_weights.score_to_sigma_b)
+        base.evidence_logit_scale = float(model_weights.evidence_logit_scale)
+        base.scenario_temperature = float(model_weights.scenario_temperature)
+        base.max_scenario_shift = float(model_weights.max_scenario_shift)
+        if model_weights.scenarios:
+            base.scenarios = list(model_weights.scenarios)
+        if model_weights.evidence:
+            base.evidence = list(model_weights.evidence)
+    else:
+        base.n_sims = sims
+        base.trading_days = days
+        base.seed = seed
+        base.vol_lookback_days = lookback
+    say(
+        f"  → 分档 "
+        f"{'相对% ' + str(base.bucket_pct_cuts) if base.use_relative_buckets else '绝对 ' + str(base.bucket_edges)}"
+    )
 
     # 2
     say("【2/7】评估所需要的信息（因货币对而异）")
