@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fetch_data import MarketSnapshot
-from monte_carlo import MCResult
-from strength import label_strength, rubric_markdown
-from weights import EvidenceItem, ModelWeights, ScenarioSpec, evidence_score
+from fx_report.market.fetch_data import MarketSnapshot
+from fx_report.model.monte_carlo import MCResult
+from fx_report.model.strength import label_strength, rubric_markdown
+from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec, evidence_score
 
 
 def _pct(x: float) -> str:
@@ -91,7 +91,8 @@ def build_report_markdown(
 |------|-----|
 | 货币对 | {pair} |
 | 现价（分析口径） | {market.spot:.5f} |
-| Yahoo 原始收盘 | {market.yahoo_raw:.5f} |
+| 源端原始报价 | {market.provider_raw:.5f} |
+| 行情来源 | {market.source} |
 | 日波动 σ_d | {market.sigma_daily:.4%} |
 | 年化 σ | {market.sigma_annual:.2%} |
 | 回看 | {market.lookback_days} 日（{market.history_start} → {market.history_end}） |

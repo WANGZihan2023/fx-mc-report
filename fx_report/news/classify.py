@@ -12,19 +12,20 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from news_fetch import Headline
-from pairs import PairSpec, get_pair
-from strength import StrengthInputs, label_strength, score_strength
-from weights import EvidenceItem
+from fx_report.news.fetch import Headline
+from fx_report.market.pairs import PairSpec, get_pair
+from fx_report.model.strength import StrengthInputs, label_strength, score_strength
+from fx_report.model.weights import EvidenceItem
 
 
 # Publisher / domain → source_tier
 SOURCE_MAP: list[tuple[str, str]] = [
-    (r"federalreserve|ecb\.europa|boj\.or\.jp|rba\.gov|bankofengland|snb\.ch|pboc|safe\.gov|bls\.gov|abs\.gov", "primary_official"),
+    (r"federalreserve|ecb\.europa|boj\.or\.jp|rba\.gov|bankofengland|snb\.ch|pboc|safe\.gov|bls\.gov|abs\.gov|fred\.stlouisfed", "primary_official"),
     (r"cmegroup|cftc\.gov|reuters|bloomberg|wsj\.com|ft\.com|wall street journal|financial times", "tier1_wire"),
     (r"reuters|bloomberg", "tier1_wire"),
-    (r"goldman|jpmorgan|morgan stanley|ubs|citi|barclays|hsbc|mufg|nomura|deutsche bank", "tier1_bank"),
-    (r"cnbc|bbc|guardian|afr\.com|scmp|nikkei|investing\.com|marketwatch|yahoo", "tier2_media"),
+    (r"goldman|jpmorgan|morgan stanley|ubs|citi|barclays|hsbc|mufg|nomura|deutsche bank|stonex|ing ", "tier1_bank"),
+    (r"inbox:.*\.(pdf|PDF)", "tier1_bank"),  # 投放的付费研报 PDF 按投行档处理
+    (r"cnbc|bbc|guardian|afr\.com|scmp|nikkei|investing\.com|marketwatch|yahoo|newsapi|finnhub", "tier2_media"),
 ]
 
 # Surprise keywords

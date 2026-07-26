@@ -1,0 +1,96 @@
+# 部署：Streamlit + Docker + WeasyPrint（澳洲同事）
+
+目标：云上也能下载 Torchcast 风格 PDF（WeasyPrint），不必挂自己电脑。
+
+推荐平台：**Railway**（简单）或 **Render**（类似）。区域尽量选 **Sydney / Singapore**。
+
+---
+
+## 0. 本地先验证 Docker（可选）
+
+本机已装 Docker Desktop 时：
+
+```bash
+cd /Users/wangzihan/Desktop/工作_汇率/usd_aud_mc_report
+docker build -t fx-mc-report .
+docker run --rm -p 8501:8501 \
+  -e GROQ_API_KEY=你的key \
+  fx-mc-report
+```
+
+浏览器打开 http://127.0.0.1:8501 ，跑一次报告并下载 PDF。
+
+---
+
+## 1. 代码推到 GitHub
+
+仓库若已是 `fx-mc-report`，把含 `Dockerfile` 的改动 push 到 `main`：
+
+```bash
+cd /Users/wangzihan/Desktop/工作_汇率/usd_aud_mc_report
+git add Dockerfile .dockerignore railway.toml docs/deploy-docker.md requirements.txt
+git status
+# 确认无 .env / secrets 后：
+git commit -m "Add Docker image with WeasyPrint for cloud deploy"
+git push
+```
+
+**不要**提交：`.env`、`.streamlit/secrets.toml`、API Key。
+
+---
+
+## 2. Railway 部署（推荐）
+
+1. 打开 https://railway.app ，用 GitHub 登录  
+2. **New Project** → **Deploy from GitHub repo** → 选 `fx-mc-report`  
+3. 若未自动识别 Docker：Settings → Build → Builder = Dockerfile  
+4. **Settings → Networking → Generate Domain**（得到 `https://xxxx.up.railway.app`）  
+5. **Variables** 里按需添加（有就填，没有可空）：
+
+| 变量 | 说明 |
+|------|------|
+| `GROQ_API_KEY` / `LLM_API_KEY` | LLM（hybrid 模式） |
+| `FRED_API_KEY` | 行情增强 |
+| `NEWSAPI_KEY` / `TAVILY_API_KEY` | 新闻 / 检索 |
+| `FX_PDF_ENGINE` | 默认已是 `weasyprint`，一般不用改 |
+
+6. 区域：若控制台可选 Region，优先 **Sydney** 或东南亚  
+7. 等 Deploy 变绿 → 打开公网域名 → 跑报告 → 下载 PDF  
+
+分享给澳洲同事：把这个 `https://….up.railway.app` 发给他们即可（建议设成仅公司内部传播）。
+
+---
+
+## 3. Render 部署（备选）
+
+1. https://render.com → New → **Web Service** → 连 GitHub 仓库  
+2. Runtime: **Docker**  
+3. Instance：Free 可试；正式用 Starter  
+4. Region：尽量靠近澳洲（Singapore 常见）  
+5. Environment 同上填 Key  
+6. 生成 URL 后测试 PDF 下载  
+
+---
+
+## 4. 安全注意
+
+- 链接等于半公开：不要把含 Key 的管理页暴露给外人；需要的话以后再加密码/登录  
+- Key 只放平台 **Environment Variables**，不要写进代码  
+- 不构成投资建议；内部分享即可  
+
+---
+
+## 5. 常见问题
+
+| 现象 | 处理 |
+|------|------|
+| 构建失败找不到包 | 看 Build Log；确认 `requirements.txt` 已含 `weasyprint` |
+| PDF 下载失败 / 回退丑陋版 | 进容器确认有 pango；镜像已含 `libpango`，一般不用改 |
+| 页面能开但行情失败 | 云上填 `FRED_API_KEY` 等；ECB 无 Key 通常仍可用 |
+| 休眠/冷启动慢 | 免费档会睡；付费常开即可 |
+
+仓库内文件：
+
+- `Dockerfile` — 镜像定义  
+- `.dockerignore` — 减小构建体积  
+- `railway.toml` — Railway 使用 Dockerfile  

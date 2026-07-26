@@ -3,10 +3,10 @@ headless = true
 port = 8501
 enableCORS = false
 enableXsrfProtection = true
+# Docker / Railway 会用 CLI 覆盖 address；本地仍可用 localhost
 
 [browser]
 gatherUsageStats = false
-serverAddress = "localhost"
 
 [theme]
 base = "light"

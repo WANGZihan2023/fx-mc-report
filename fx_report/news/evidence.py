@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from news_classify import headlines_to_evidence as rules_headlines_to_evidence
-from news_fetch import Headline
-from news_llm import LLMConfig, classify_headlines_llm, resolve_llm_config
-from pairs import PairSpec
-from weights import EvidenceItem
+from fx_report.news.classify import headlines_to_evidence as rules_headlines_to_evidence
+from fx_report.news.fetch import Headline
+from fx_report.news.llm import LLMConfig, classify_headlines_llm, resolve_llm_config
+from fx_report.market.pairs import PairSpec
+from fx_report.model.weights import EvidenceItem
 
 Mode = Literal["rules", "llm", "hybrid"]
 

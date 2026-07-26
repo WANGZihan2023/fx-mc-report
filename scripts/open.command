@@ -1,8 +1,12 @@
 #!/bin/bash
 # 双击即可：自动建虚拟环境、装依赖、打开浏览器看报告
 set -e
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+# WeasyPrint needs Homebrew pango/gobject on macOS
+export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 echo "=========================================="
 echo "  FX 蒙特卡洛情报报告 — 一键启动"
@@ -43,7 +47,6 @@ python -m pip install -q --upgrade pip
 python -m pip install -q -r requirements.txt
 
 PORT=8501
-# 若端口占用则换一个
 if lsof -ti ":$PORT" >/dev/null 2>&1; then
   PORT=8502
 fi
@@ -54,7 +57,6 @@ echo "正在启动… 浏览器将打开：$URL"
 echo "关闭本窗口即停止服务。"
 echo ""
 
-# 稍等后打开浏览器
 (sleep 2 && open "$URL") &
 
 exec streamlit run app.py --server.port "$PORT" --server.headless true

@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.DS_Store
+output/
+*.png
+.env
+.env.*
+.streamlit/secrets.toml
+docs/
+scripts/
+*.md
+!README.md

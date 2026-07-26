@@ -1,7 +1,8 @@
 #!/bin/bash
 # 临时公网链接：对方只需浏览器（你本机须已在跑或由本脚本启动 Streamlit）
 set -e
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 PORT=8501
 if ! lsof -ti ":$PORT" >/dev/null 2>&1; then
@@ -19,7 +20,6 @@ echo "正在创建临时公网隧道（对方只需浏览器）…"
 echo "关闭本窗口后，链接失效。"
 echo ""
 
-# localtunnel via npx — no global install required if node exists
 if command -v npx >/dev/null 2>&1; then
   npx --yes localtunnel --port "$PORT"
 elif command -v cloudflared >/dev/null 2>&1; then

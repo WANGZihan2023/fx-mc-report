@@ -1,7 +1,8 @@
 #!/bin/bash
 # 推到 GitHub，便于 Streamlit Cloud 部署成长期网址
 set -e
-cd "$(dirname "$0")"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "GitHub 未登录或 token 失效，请先执行："

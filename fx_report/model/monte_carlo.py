@@ -7,7 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
-from weights import ScenarioSpec
+from fx_report.model.weights import ScenarioSpec
 
 
 @dataclass

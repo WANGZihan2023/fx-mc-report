@@ -21,10 +21,10 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from news_fetch import Headline
-from pairs import PairSpec, get_pair
-from strength import StrengthInputs, label_strength, score_strength
-from weights import EvidenceItem
+from fx_report.news.fetch import Headline
+from fx_report.market.pairs import PairSpec, get_pair
+from fx_report.model.strength import StrengthInputs, label_strength, score_strength
+from fx_report.model.weights import EvidenceItem
 
 VALID_SOURCE = {
     "primary_official",

@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from pairs import PairSpec, edges_from_spot, get_pair
-from strength import StrengthInputs, label_strength, score_strength
+from fx_report.market.pairs import PairSpec, edges_from_spot, get_pair
+from fx_report.model.strength import StrengthInputs, label_strength, score_strength
 
 
 @dataclass
@@ -307,7 +307,7 @@ def default_evidence_for_pair(spec: PairSpec) -> list[EvidenceItem]:
                 unpriced_hint=0.50,
             )
         )
-    if "pboc" in drivers and "CNH" in (spec.base, spec.quote):
+    if "pboc" in drivers and ("CNH" in (spec.base, spec.quote) or "CNY" in (spec.base, spec.quote)):
         items.append(
             _item_from_checklist(
                 eid="D-PBOC",
@@ -321,6 +321,62 @@ def default_evidence_for_pair(spec: PairSpec) -> list[EvidenceItem]:
                 unpriced_hint=0.40,
             )
         )
+    if "boc" in drivers and "CAD" in (spec.base, spec.quote):
+        items.append(
+            _item_from_checklist(
+                eid="U-BOC",
+                title="加央行政策相对美联储",
+                direction=-1 if spec.pair.startswith("USD/") else +1,
+                category="boc",
+                source_tier="primary_official",
+                surprise="small",
+                scope="pair_specific",
+                age_days=4.0,
+                unpriced_hint=0.45,
+            )
+        )
+    if "rbnz" in drivers and "NZD" in (spec.base, spec.quote):
+        items.append(
+            _item_from_checklist(
+                eid="U-RBNZ",
+                title="纽储行 OCR 路径",
+                direction=+1 if spec.base == "NZD" else -1,
+                category="rbnz",
+                source_tier="primary_official",
+                surprise="small",
+                scope="pair_specific",
+                age_days=4.0,
+                unpriced_hint=0.45,
+            )
+        )
+    if "dairy" in drivers and "NZD" in (spec.base, spec.quote):
+        items.append(
+            _item_from_checklist(
+                eid="U-DAIRY",
+                title="乳制品价格/贸易条件",
+                direction=+1 if spec.base == "NZD" else -1,
+                category="dairy",
+                source_tier="primary_market",
+                surprise="medium",
+                scope="pair_specific",
+                age_days=5.0,
+                unpriced_hint=0.50,
+            )
+        )
+    if "snb" in drivers and "CHF" in (spec.base, spec.quote):
+        items.append(
+            _item_from_checklist(
+                eid="U-SNB",
+                title="瑞央行政策与避险需求",
+                direction=-1 if spec.base == "USD" else +1,
+                category="snb",
+                source_tier="primary_official",
+                surprise="small",
+                scope="pair_specific",
+                age_days=5.0,
+                unpriced_hint=0.40,
+            )
+        )
 
     items.append(
         _item_from_checklist(
@@ -331,9 +387,9 @@ def default_evidence_for_pair(spec: PairSpec) -> list[EvidenceItem]:
             source_tier="primary_market",
             surprise="small",
             scope="pair_specific",
-            age_days=7.0,
+            age_days=2.0,
             unpriced_hint=0.35,
-            note="默认弱确认；请按 CFTC/零售情绪改方向",
+            note="模板占位；有 CFTC/仓位数据时请覆盖",
         )
     )
     return [it for it in items if it.direction != 0]
