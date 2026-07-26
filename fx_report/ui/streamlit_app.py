@@ -734,7 +734,6 @@ def main() -> None:
             try:
                 from fx_report.report.torchcast import write_pdf
                 import tempfile
-                from pathlib import Path
 
                 with tempfile.TemporaryDirectory() as td:
                     pdf_path = write_pdf(result.torchcast, Path(td) / "report.pdf")
