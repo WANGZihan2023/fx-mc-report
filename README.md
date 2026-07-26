@@ -65,10 +65,18 @@ python run_cli.py build-peaks --pair USD/AUD
 # 同时写 output/calib_oos_summary_USDAUD.json（train vs holdout Brier/logloss）
 python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 
-# 过夜全量校准（build-peaks → calibrate；默认 USD/AUD + AUD/USD）
-# nohup ./scripts/overnight_calibrate.sh &
-# 日志：output/overnight_calib_YYYYMMDD.log  PID：output/overnight_calib.pid
-# 环境变量可调：N_SIMS=8000 N_ITERS=80 MAX_ROWS=250 HISTORY_DAYS=2000
+# 校准档位：
+#   smoke  — CLI 默认小样本（如 --n-iters 40 --max-rows 80）用于联调
+#   overnight — 单/双对过夜：./scripts/overnight_calibrate.sh
+#               默认 USD/AUD + AUD/USD；HISTORY_DAYS=2000 STEP=5 N_SIMS=8000 N_ITERS=80 MAX_ROWS=250
+#               日志 output/overnight_calib_YYYYMMDD.log  PID output/overnight_calib.pid
+#   full   — 多货币对加强数据：./scripts/overnight_calibrate_full.sh
+#               （或 MODE=full ./scripts/overnight_calibrate.sh）
+#               默认 8 对：USD/AUD AUD/USD EUR/USD GBP/USD USD/JPY USD/CNH USD/CAD NZD/USD
+#               HISTORY_DAYS=3500 STEP=3 N_SIMS=7000 N_ITERS=70 MAX_ROWS=350
+#               日志 output/overnight_calib_full_YYYYMMDD.log  PID output/overnight_calib_full.pid
+# 启动示例（防休眠）：
+#   caffeinate -i nohup ./scripts/overnight_calibrate_full.sh >/dev/null 2>&1 &
 
 # 历史回测（argmax hit / Brier / log-loss 表）
 python run_cli.py backtest --pair USD/AUD --max-rows 40

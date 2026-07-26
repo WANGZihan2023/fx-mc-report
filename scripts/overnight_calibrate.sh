@@ -5,6 +5,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# MODE=full → stronger multi-pair job (see overnight_calibrate_full.sh)
+MODE="${MODE:-overnight}"
+if [[ "$MODE" == "full" ]]; then
+  exec "$ROOT/scripts/overnight_calibrate_full.sh" "$@"
+fi
 DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
 LOG="${LOG:-$ROOT/output/overnight_calib_${DATE_TAG}.log}"
 PIDFILE="${PIDFILE:-$ROOT/output/overnight_calib.pid}"
