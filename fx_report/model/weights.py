@@ -61,6 +61,8 @@ class ModelWeights:
     scenario_temperature: float = 1.0
     max_scenario_shift: float = 0.18
     evidence_logit_scale: float = 0.08
+    # "path_max" = current discrete path maximum; "brownian_bridge" stub (falls back)
+    peak_engine: str = "path_max"
 
     scenarios: list[ScenarioSpec] = field(default_factory=list)
     evidence: list[EvidenceItem] = field(default_factory=list)

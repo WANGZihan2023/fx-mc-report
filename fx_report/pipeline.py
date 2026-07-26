@@ -380,6 +380,7 @@ def step6_math_analysis(
         bucket_edges=edges,
         mu_annual_shift=mu_shift,
         sigma_mult_extra=sigma_extra,
+        peak_engine=getattr(weights, "peak_engine", "path_max"),
     )
     probs = enforce_math_floor(mc.raw_probs, market.spot, edges)
     return score, mu_shift, sigma_extra, scenarios, edges, mc, probs
@@ -536,11 +537,14 @@ def run_pipeline(
     verbose: bool = True,
     bullish_currency: str | None = None,
     model_weights: ModelWeights | None = None,
+    calibrated_params_path: str | Path | None = None,
 ) -> PipelineResult:
     """跑完整七步；可选写入 output/。
 
     `model_weights`：UI 传入时，在默认权重上覆盖分档切点 / 映射 / 情景 / 模板证据等，
-    确保蒙特卡洛与 Torchcast 使用同一套用户分档。
+    确保蒙特卡洛与 FX Analyse 使用同一套用户分档。
+
+    `calibrated_params_path`：可选 Stage-1 JSON，覆盖 score_to_* / 情景先验等。
     """
     log: list[str] = []
 
@@ -572,6 +576,15 @@ def run_pipeline(
     say(f"  → {describe_pair_factors(spec.base, spec.quote, spec.default_drivers)}")
 
     base = default_weights(spec)
+    if calibrated_params_path:
+        from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
+
+        cal_path = Path(calibrated_params_path)
+        if cal_path.exists():
+            apply_calibrated_params(base, load_calibrated_params(cal_path))
+            say(f"  → 已加载校准参数 {cal_path}")
+        else:
+            say(f"  → 警告：校准文件不存在，跳过：{cal_path}")
     if model_weights is not None:
         base.n_sims = int(model_weights.n_sims)
         base.trading_days = int(model_weights.trading_days)
@@ -585,6 +598,8 @@ def run_pipeline(
         base.evidence_logit_scale = float(model_weights.evidence_logit_scale)
         base.scenario_temperature = float(model_weights.scenario_temperature)
         base.max_scenario_shift = float(model_weights.max_scenario_shift)
+        if getattr(model_weights, "peak_engine", None):
+            base.peak_engine = str(model_weights.peak_engine)
         if model_weights.scenarios:
             base.scenarios = list(model_weights.scenarios)
         if model_weights.evidence:
@@ -663,7 +678,7 @@ def run_pipeline(
         say(f"  · {k}: {v:.1%}")
 
     # 7
-    say("【7/7】输出 Torchcast 格式报告（PDF / HTML）")
+    say("【7/7】输出 FX Analyse 格式报告（PDF / HTML）")
     report_md, report_html, torchcast, diagnostics, horizon = step7_build_report(
         market=market,
         weights=base,

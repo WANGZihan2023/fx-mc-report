@@ -363,6 +363,93 @@ def _snapshot_from_series(
     )
 
 
+def _fetch_frankfurter_series_range(
+    spec: PairSpec,
+    cfg: dict[str, str],
+    *,
+    history_days: int,
+) -> tuple[pd.Series, list[str]] | None:
+    """ECB reference rates via Frankfurter over a longer calendar window."""
+    notes: list[str] = []
+    base = spec.base
+    quote = FRANKFURTER_ALIAS.get(spec.quote, spec.quote)
+    used_proxy = quote != spec.quote
+    if used_proxy:
+        notes.append(f"ECB/Frankfurter 无 {spec.quote}，暂用 {quote} 代理（请知悉离岸/在岸差异）。")
+
+    start = (date.today() - timedelta(days=max(history_days, 30))).isoformat()
+    url = f"https://api.frankfurter.dev/v1/{start}..?from={base}&to={quote}"
+    invert = False
+    try:
+        data = _http_json(url, timeout_s(cfg))
+    except Exception:
+        url2 = f"https://api.frankfurter.dev/v1/{start}..?from={quote}&to={base}"
+        try:
+            data = _http_json(url2, timeout_s(cfg))
+            invert = True
+        except Exception:
+            return None
+
+    if not isinstance(data, dict) or "rates" not in data:
+        return None
+    rows: list[tuple[pd.Timestamp, float]] = []
+    for day, vals in data["rates"].items():
+        try:
+            key = quote if not invert else base
+            px = float(vals[key])
+            if invert and px != 0:
+                px = 1.0 / px
+            rows.append((pd.Timestamp(day), px))
+        except Exception:
+            continue
+    if len(rows) < 12:
+        return None
+    notes.insert(0, "行情来自 ECB 参考汇率（Frankfurter，无需 Key）")
+    return _series_from_closes(rows), notes
+
+
+def fetch_history_series(
+    pair: PairSpec | str,
+    *,
+    history_days: int = 1500,
+) -> tuple[pd.Series, str, list[str]]:
+    """
+    Longer FX close series for peak-sample construction.
+
+    Priority: Frankfurter (long range) → FRED → Twelve → Alpha.
+    Raises RuntimeError if all sources fail.
+    """
+    spec = get_pair(pair) if isinstance(pair, str) else pair
+    cfg = load_config()
+    notes: list[str] = []
+
+    # Prefer long Frankfurter window first
+    got = _fetch_frankfurter_series_range(spec, cfg, history_days=history_days)
+    if got is not None:
+        s, extra = got
+        if s is not None and len(s) >= 12:
+            return s, "ECB/Frankfurter", list(extra)
+
+    for name, fetcher in (
+        ("FRED", _fetch_fred_fx),
+        ("Twelve Data", _fetch_twelve_series),
+        ("Alpha Vantage", _fetch_alpha_series),
+    ):
+        got2 = fetcher(spec, cfg)
+        if got2 is None:
+            continue
+        s, extra = got2
+        if s is None or len(s) < 12:
+            continue
+        return s, name, list(extra)
+
+    raise RuntimeError(
+        f"无法从权威源抓取 {spec.pair} 历史序列。\n"
+        "已尝试：ECB/Frankfurter、FRED、Twelve Data、Alpha Vantage。\n"
+        "请检查网络，或填写 FRED / Twelve Data Key。"
+    )
+
+
 def fetch_market(
     pair: PairSpec | str,
     lookback_days: int = 60,

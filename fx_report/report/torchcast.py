@@ -90,7 +90,7 @@ class TorchcastReport:
     watches: list[WatchItem]
     spot: float
     disclaimer: str = (
-        "Torchcast forecasts are probabilistic. Use as one input among many — not as investment advice."
+        "FX Analyse forecasts are probabilistic. Use as one input among many — not as investment advice."
     )
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -366,7 +366,7 @@ CSS = f"""
   size: letter;
   margin: 16mm 15mm 18mm 15mm;
   @bottom-center {{
-    content: "Torchcast · Page " counter(page) " of " counter(pages);
+    content: "FX Analyse · Page " counter(page) " of " counter(pages);
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 9pt;
     color: #9A9A9A;
@@ -735,7 +735,7 @@ def render_html(report: TorchcastReport) -> str:
 <style>{CSS}</style>
 </head>
 <body>
-  <p class="kicker">Torchcast · Intelligence Report</p>
+  <p class="kicker">FX ANALYSE · Intelligence Report</p>
   <div class="tags">
     <span class="tag">Ordered</span>
     <span class="tag">{report.n_buckets} Buckets</span>
@@ -933,7 +933,7 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     styles.add(ParagraphStyle(name="TcDownH", fontName="Helvetica-Bold", fontSize=9, textColor=red, spaceAfter=4))
 
     story: list[Any] = []
-    story.append(Paragraph("TORCHCAST · INTELLIGENCE REPORT", styles["Kicker"]))
+    story.append(Paragraph("FX ANALYSE · INTELLIGENCE REPORT", styles["Kicker"]))
     story.append(Paragraph(f"Ordered &nbsp;&nbsp; {report.n_buckets} Buckets", styles["Meta"]))
     story.append(Paragraph(_esc(report.question), styles["Q"]))
     bullish_meta = str(
@@ -1101,7 +1101,7 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         canvas.saveState()
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(muted)
-        canvas.drawCentredString(letter[0] / 2, 0.55 * inch, f"Torchcast · Page {doc.page}")
+        canvas.drawCentredString(letter[0] / 2, 0.55 * inch, f"FX Analyse · Page {doc.page}")
         canvas.restoreState()
 
     doc = SimpleDocTemplate(
@@ -1112,7 +1112,7 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         topMargin=0.65 * inch,
         bottomMargin=0.75 * inch,
         title=report.question[:120],
-        author="Torchcast",
+        author="FX Analyse",
     )
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return path
@@ -1126,6 +1126,6 @@ def export_torchcast(
 ) -> dict[str, Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    html_path = write_html(report, out / f"{stem}_torchcast.html")
-    pdf_path = write_pdf(report, out / f"{stem}_torchcast.pdf")
+    html_path = write_html(report, out / f"{stem}_fx_analyse.html")
+    pdf_path = write_pdf(report, out / f"{stem}_fx_analyse.pdf")
     return {"html": html_path, "pdf": pdf_path}

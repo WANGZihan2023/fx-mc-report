@@ -1,4 +1,4 @@
-"""Build Torchcast-style report markdown — any FX pair."""
+"""Build FX Analyse report markdown — any FX pair."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def build_report_markdown(
     raw_rows = "\n".join(f"| {k} | {_pct(v)} |" for k, v in mc.raw_probs.items())
     edge_s = " / ".join(f"{x:.4f}" for x in bucket_edges)
 
-    md = f"""# TORCHCAST · 情报报告（多货币对引擎）
+    md = f"""# FX ANALYSE · 情报报告（多货币对引擎）
 
 **问题：** {horizon_label} 内，**{pair}** 的**最高日高**将落在哪一档？
 

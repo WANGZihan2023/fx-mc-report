@@ -56,13 +56,23 @@ def run_mixture_monte_carlo(
     bucket_edges: Sequence[float] = (1.40, 1.43, 1.46, 1.49),
     mu_annual_shift: float = 0.0,
     sigma_mult_extra: float = 1.0,
+    peak_engine: str = "path_max",
 ) -> MCResult:
     """
     Simulate discrete GBM + compound Poisson jumps under a scenario mixture.
 
     Each path: S_{t+1} = S_t * exp((μ - 0.5 σ²)Δt + σ√Δt Z + jump)
     Peak proxy = max_t S_t  (including t=0), approximating highest daily level.
+
+    peak_engine:
+      - "path_max" (default): discrete path maximum
+      - "brownian_bridge": stub — currently falls back to path_max
     """
+    if peak_engine not in ("path_max", "brownian_bridge", ""):
+        raise ValueError(f"unknown peak_engine={peak_engine!r}")
+    # Brownian-bridge continuous-peak estimator: not implemented yet (Stage later).
+    _ = peak_engine
+
     if spot <= 0:
         raise ValueError("spot must be positive")
     if n_sims < 1:

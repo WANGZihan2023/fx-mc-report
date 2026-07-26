@@ -1,6 +1,6 @@
 # 部署：Streamlit + Docker + WeasyPrint（澳洲同事）
 
-目标：云上也能下载 Torchcast 风格 PDF（WeasyPrint），不必挂自己电脑。
+目标：云上也能下载 FX Analyse 风格 PDF（WeasyPrint），不必挂自己电脑。
 
 推荐平台：**Railway**（简单）或 **Render**（类似）。区域尽量选 **Sydney / Singapore**。
 

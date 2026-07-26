@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -62,7 +63,7 @@ except Exception:  # pragma: no cover
 
 
 st.set_page_config(
-    page_title="FX Peak MC 情报报告",
+    page_title="FX Analyse",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -158,7 +159,7 @@ def render_bucket_editor(
     """
     st.subheader("概率区间（自己设边界）")
     st.caption(
-        "4 个边界 → 5 个区间（与 Torchcast 一致）："
+        "4 个边界 → 5 个区间（与 FX Analyse 一致）："
         "`< e1` · `e1–e2` · `e2–e3` · `e3–e4` · `≥ e4`。"
         "运行分析后，蒙特卡洛概率与 PDF 都用这套边界。"
     )
@@ -575,9 +576,27 @@ def main() -> None:
         st.session_state.pop("last_report", None)
 
     base = default_weights(analysis_spec)
+    safe_pair = analysis_spec.pair.replace("/", "")
+    default_cal = Path("output") / f"calibrated_params_{safe_pair}.json"
+    use_cal = st.sidebar.checkbox(
+        "使用校准参数（Stage 1）",
+        value=default_cal.exists(),
+        help=f"若存在则加载 {default_cal}",
+    )
+    cal_path = None
+    if use_cal and default_cal.exists():
+        from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
+
+        apply_calibrated_params(base, load_calibrated_params(default_cal))
+        cal_path = str(default_cal)
+        st.sidebar.caption(f"已加载 {default_cal.name}")
+    elif use_cal:
+        st.sidebar.caption(f"未找到 {default_cal.name}，用默认先验")
+    _ = cal_path
+
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
-    st.title(f"{display_spec.pair}")
+    st.title(f"FX Analyse · {display_spec.pair}")
     if bullish_ok:
         st.caption(
             f"分析口径：{analysis_spec.pair}（看涨 {bullish}）· "
@@ -692,6 +711,7 @@ def main() -> None:
                 verbose=False,
                 bullish_currency=bullish,
                 model_weights=weights,
+                calibrated_params_path=None,  # already merged into sidebar weights
             )
 
             if result.market.notes:
@@ -767,16 +787,16 @@ def main() -> None:
         pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间")
     )
 
-    with st.expander("完整报告（Torchcast 格式）", expanded=True):
+    with st.expander("完整报告（FX Analyse 格式）", expanded=True):
         pdf_bytes = st.session_state.get("last_pdf_bytes")
         html_doc = st.session_state.get("last_report_html")
         c1, c2, c3 = st.columns(3)
         pair_safe = diag["market"]["pair"].replace("/", "")
         if pdf_bytes:
             c1.download_button(
-                "下载 PDF（Torchcast）",
+                "下载 PDF（FX Analyse）",
                 pdf_bytes,
-                file_name=f"{pair_safe}_torchcast.pdf",
+                file_name=f"{pair_safe}_fx_analyse.pdf",
                 mime="application/pdf",
             )
         elif st.session_state.get("last_pdf_error"):
@@ -785,7 +805,7 @@ def main() -> None:
             c2.download_button(
                 "下载 HTML",
                 html_doc.encode("utf-8"),
-                file_name=f"{pair_safe}_torchcast.html",
+                file_name=f"{pair_safe}_fx_analyse.html",
                 mime="text/html",
             )
         c3.download_button(

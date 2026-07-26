@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""CLI：按七步流水线运行（见 fx_report/pipeline.py）。"""
+"""CLI：七步流水线 + Stage0/1（峰值样本 / 校准）。"""
 
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from fx_report.config.api_config import status_text
 from fx_report.market.pairs import list_pairs
 from fx_report.pipeline import run_pipeline
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(
-        description="七步 FX 情报流水线：选对→看涨币→信息需求→存语句→影响→赋权→MC→报告"
-    )
+def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pair", default="USD/AUD", help=f"One of: {', '.join(list_pairs())}")
     p.add_argument(
         "--bullish",
@@ -39,14 +37,19 @@ def main() -> int:
         default=True,
         help="步骤3启用 AI 检索员（白名单投行页+搜索API+LLM抽取）；--no-ai-research 关闭",
     )
+    p.add_argument(
+        "--calibrated-params",
+        default=None,
+        help="Stage-1 JSON（如 output/calibrated_params_USDAUD.json）",
+    )
     p.add_argument("--api-status", action="store_true")
     p.add_argument("--quiet", action="store_true")
-    args = p.parse_args()
 
+
+def _cmd_run(args: argparse.Namespace) -> int:
     if args.api_status:
         print(status_text())
         return 0
-
     run_pipeline(
         args.pair,
         ticker=args.ticker,
@@ -64,8 +67,94 @@ def main() -> int:
         out_dir=args.out,
         verbose=not args.quiet,
         bullish_currency=args.bullish,
+        calibrated_params_path=args.calibrated_params,
     )
     return 0
+
+
+def _cmd_build_peaks(args: argparse.Namespace) -> int:
+    from fx_report.model.history_peaks import export_peak_samples
+
+    try:
+        path, df, meta = export_peak_samples(
+            args.pair,
+            out_dir=args.out,
+            horizon_days=args.horizon,
+            vol_lookback=args.lookback,
+            history_days=args.history_days,
+            step=args.step,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print(f"Wrote {path} ({len(df)} rows, source={meta.get('source')})")
+    return 0
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    from fx_report.model.calibrate import calibrate_pair
+
+    try:
+        out, result = calibrate_pair(
+            args.pair,
+            samples_path=args.samples,
+            out_dir=args.out,
+            n_sims=args.n_sims,
+            n_iters=args.n_iters,
+            seed=args.seed,
+            loss=args.loss,
+            max_rows=args.max_rows,
+            verbose=not args.quiet,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print(f"Done → {out} ({result.loss_name} {result.baseline_loss:.4f} → {result.loss:.4f})")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="FX Analyse：七步流水线 / 峰值样本 / MC 校准"
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    # default / run
+    run_p = sub.add_parser("run", help="跑完整七步流水线（默认）")
+    _add_pipeline_args(run_p)
+    run_p.set_defaults(func=_cmd_run)
+
+    peaks_p = sub.add_parser("build-peaks", help="Stage 0：历史峰值样本 CSV")
+    peaks_p.add_argument("--pair", default="USD/AUD")
+    peaks_p.add_argument("--out", default="output")
+    peaks_p.add_argument("--horizon", type=int, default=66)
+    peaks_p.add_argument("--lookback", type=int, default=60)
+    peaks_p.add_argument("--history-days", type=int, default=1500)
+    peaks_p.add_argument("--step", type=int, default=5)
+    peaks_p.set_defaults(func=_cmd_build_peaks)
+
+    cal_p = sub.add_parser("calibrate", help="Stage 1：校准 MC 参数（S=0）")
+    cal_p.add_argument("--pair", default="USD/AUD")
+    cal_p.add_argument("--out", default="output")
+    cal_p.add_argument("--samples", default=None, help="peak_samples CSV；缺省读 output/")
+    cal_p.add_argument("--n-sims", type=int, default=2_000)
+    cal_p.add_argument("--n-iters", type=int, default=40)
+    cal_p.add_argument("--max-rows", type=int, default=80)
+    cal_p.add_argument("--loss", choices=["brier", "logloss"], default="brier")
+    cal_p.add_argument("--seed", type=int, default=42)
+    cal_p.add_argument("--quiet", action="store_true")
+    cal_p.set_defaults(func=_cmd_calibrate)
+
+    # Backward compatible: no subcommand → treat as `run`
+    # Parse known first; if first token isn't a subcommand, inject `run`.
+    import sys
+
+    argv = list(sys.argv[1:])
+    if not argv or argv[0] not in {"run", "build-peaks", "calibrate", "-h", "--help"}:
+        # allow legacy flags like --api-status without subcommand
+        argv = ["run", *argv]
+    args = parser.parse_args(argv)
+    return int(args.func(args))
 
 
 if __name__ == "__main__":

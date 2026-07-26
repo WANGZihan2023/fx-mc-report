@@ -50,12 +50,22 @@ AI 检索员：`fx_report/news/ai_research.py`（`--no-ai-research` 可关）
 ## 运行
 
 ```bash
-# CLI
+# CLI（七步流水线）
 python run_cli.py --pair USD/AUD --sims 50000 --mode rules
 python run_cli.py --pair EUR/USD --sims 50000 --mode hybrid
 python run_cli.py --pair EUR/JPY --sims 50000 --mode rules --no-ai-research
 
-# UI
+# Stage 0：历史峰值样本 → output/peak_samples_USDAUD.csv
+python run_cli.py build-peaks --pair USD/AUD
+# 或：python scripts/build_peak_dataset.py --pair USD/AUD
+
+# Stage 1：校准 MC 参数（S=0）→ output/calibrated_params_USDAUD.json
+python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
+
+# 流水线使用校准参数
+python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_params_USDAUD.json
+
+# UI（产品名 FX Analyse）
 streamlit run app.py
 # 或双击 scripts/open.command（macOS）/ scripts/open.bat（Windows）
 ```
@@ -78,7 +88,7 @@ Key 默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env`（可
 
 ## 输出
 
-主交付物为 **Torchcast 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、证据库、What to Watch），落在 `output/{PAIR}_torchcast.pdf`。  
+主交付物为 **FX Analyse 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、证据库、What to Watch），落在 `output/{PAIR}_fx_analyse.pdf`。  
 Markdown 仍写入 `output/{PAIR}_report.md` 作调试副本。
 
 macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `DYLD_FALLBACK_LIBRARY_PATH`。若 WeasyPrint 不可用，自动回退 ReportLab。
