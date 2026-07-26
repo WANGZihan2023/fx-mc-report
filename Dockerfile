@@ -29,9 +29,13 @@ COPY . .
 ENV PORT=8501
 EXPOSE 8501
 
-# Bind 0.0.0.0 so the platform proxy can reach Streamlit
+# Bind 0.0.0.0 so the platform proxy can reach Streamlit.
+# Disable XSRF/CORS checks — required behind Railway HTTPS reverse proxy
+# (otherwise the UI shell loads but stays blank).
 CMD streamlit run app.py \
     --server.port=${PORT} \
     --server.address=0.0.0.0 \
     --server.headless=true \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=false \
     --browser.gatherUsageStats=false

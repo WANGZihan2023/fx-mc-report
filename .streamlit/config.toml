@@ -1,9 +1,9 @@
 [server]
 headless = true
 port = 8501
+# Behind Railway/Render reverse proxy, XSRF+CORS defaults cause a blank page.
 enableCORS = false
-enableXsrfProtection = true
-# Docker / Railway 会用 CLI 覆盖 address；本地仍可用 localhost
+enableXsrfProtection = false
 
 [browser]
 gatherUsageStats = false
