@@ -127,9 +127,35 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backtest(args: argparse.Namespace) -> int:
+    from fx_report.model.backtest import run_backtest
+
+    try:
+        result = run_backtest(
+            args.pair,
+            samples_path=args.samples,
+            calibrated_params_path=args.calibrated_params,
+            out_dir=args.out,
+            n_sims=args.n_sims,
+            max_rows=args.max_rows,
+            seed=args.seed,
+            peak_engine=args.peak_engine,
+            verbose=not args.quiet,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print(
+        f"Done → hit_rate={result.hit_rate_argmax:.1%}  "
+        f"brier={result.mean_brier:.4f}  logloss={result.mean_logloss:.4f}  "
+        f"n={result.n_rows}"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="FX Analyse：七步流水线 / 峰值样本 / MC 校准"
+        description="FX Analyse：七步流水线 / 峰值样本 / MC 校准 / 历史回测"
     )
     sub = parser.add_subparsers(dest="cmd")
 
@@ -159,12 +185,40 @@ def main() -> int:
     cal_p.add_argument("--quiet", action="store_true")
     cal_p.set_defaults(func=_cmd_calibrate)
 
+    bt_p = sub.add_parser("backtest", help="历史回测：argmax hit / Brier / log-loss 表")
+    bt_p.add_argument("--pair", default="USD/AUD")
+    bt_p.add_argument("--out", default="output")
+    bt_p.add_argument("--samples", default=None, help="peak_samples CSV；缺省读 output/")
+    bt_p.add_argument(
+        "--calibrated-params",
+        default=None,
+        help="校准 JSON；缺省若存在则自动用 output/calibrated_params_{PAIR}.json",
+    )
+    bt_p.add_argument("--n-sims", type=int, default=2_000)
+    bt_p.add_argument("--max-rows", type=int, default=None, help="子采样行数（默认全量）")
+    bt_p.add_argument(
+        "--peak-engine",
+        choices=["path_max", "brownian_bridge"],
+        default=None,
+        help="缺省跟校准参数 / 默认 path_max",
+    )
+    bt_p.add_argument("--seed", type=int, default=42)
+    bt_p.add_argument("--quiet", action="store_true")
+    bt_p.set_defaults(func=_cmd_backtest)
+
     # Backward compatible: no subcommand → treat as `run`
     # Parse known first; if first token isn't a subcommand, inject `run`.
     import sys
 
     argv = list(sys.argv[1:])
-    if not argv or argv[0] not in {"run", "build-peaks", "calibrate", "-h", "--help"}:
+    if not argv or argv[0] not in {
+        "run",
+        "build-peaks",
+        "calibrate",
+        "backtest",
+        "-h",
+        "--help",
+    }:
         # allow legacy flags like --api-status without subcommand
         argv = ["run", *argv]
     args = parser.parse_args(argv)

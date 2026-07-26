@@ -664,7 +664,7 @@ def main() -> None:
             )
 
         st.markdown("---")
-        c1, c2, c3 = st.columns([1, 1, 1.2])
+        c1, c2, c3, c4 = st.columns([1, 1, 1.0, 1.0])
         with c1:
             start = st.date_input("窗口起点", value=date.today())
         with c2:
@@ -679,10 +679,158 @@ def main() -> None:
                 disabled=not can_run,
                 help=None if can_run else "需先成功获取现价",
             )
+        with c4:
+            st.write("")
+            compare = st.button(
+                "双引擎对比",
+                use_container_width=True,
+                disabled=not can_run,
+                help="path_max vs brownian_bridge（降采样次数，仅 MC）",
+            )
         if not can_run:
             st.caption("现价未就绪时不能运行分析（分档与 MC 都依赖分析报价）。")
         elif "last_report" not in st.session_state and not run:
             st.info("确认概率区间后点「运行分析」。侧栏 ②–⑧ 可调抓取与模型参数；API 可全空。")
+
+        # —— 双引擎对比（MC-only，降采样）——
+        if compare and can_run and spot_val is not None:
+            with st.spinner("双引擎对比中（降采样 MC，不含新闻重跑）…"):
+                try:
+                    from fx_report.model.backtest import compare_peak_engines
+                    from fx_report.model.weights import resolve_bucket_edges
+
+                    snap = fetch_market(analysis_spec, lookback_days=weights.vol_lookback_days)
+                    edges_cmp = resolve_bucket_edges(weights, float(snap.spot))
+                    cmp_n = min(int(weights.n_sims), 8_000)
+                    cmp = compare_peak_engines(
+                        float(snap.spot),
+                        float(snap.sigma_daily),
+                        weights,
+                        edges_cmp,
+                        n_sims=cmp_n,
+                        seed=int(weights.seed),
+                    )
+                    st.session_state["last_engine_compare"] = {
+                        "n_sims": cmp["n_sims"],
+                        "score_S": cmp["score_S"],
+                        "table": cmp["table"].to_dict(orient="list"),
+                        "note": cmp["note"],
+                        "pair": analysis_spec.pair,
+                    }
+                except Exception as exc:
+                    st.session_state["last_engine_compare"] = None
+                    st.warning(f"双引擎对比失败：{exc}")
+
+        if st.session_state.get("last_engine_compare"):
+            ec = st.session_state["last_engine_compare"]
+            st.subheader("双引擎对比")
+            st.caption(
+                f"同一现价/分档/情景 · n_sims={ec.get('n_sims'):,}（对比模式降采样）· "
+                f"S={ec.get('score_S', 0):+.2f} · {ec.get('note', '')}"
+            )
+            df_ec = pd.DataFrame(ec["table"])
+            show = df_ec.copy()
+            for col in ("path_max", "brownian_bridge", "delta_bb_minus_pm"):
+                if col in show.columns:
+                    show[col] = show[col].map(lambda x: f"{100 * float(x):.1f}%")
+            st.dataframe(show, hide_index=True, use_container_width=True)
+            chart_df = pd.DataFrame(
+                {
+                    "path_max": df_ec["path_max"].values,
+                    "brownian_bridge": df_ec["brownian_bridge"].values,
+                },
+                index=df_ec["bucket"].values,
+            )
+            st.bar_chart(chart_df)
+
+        # —— 历史回测（小样本 UI）——
+        with st.expander("历史回测（argmax hit / Brier）", expanded=False):
+            st.caption(
+                "对 peak_samples 跑降采样 MC，核对预测档 vs 实现档。"
+                "UI 最多 30 行；完整回测用 CLI：`python run_cli.py backtest --pair …`"
+            )
+            bt_cols = st.columns([1, 1, 2])
+            with bt_cols[0]:
+                bt_rows = st.number_input("回测行数", min_value=5, max_value=30, value=20, step=5)
+            with bt_cols[1]:
+                bt_sims = st.number_input("每次模拟", min_value=500, max_value=5000, value=1500, step=500)
+            with bt_cols[2]:
+                st.write("")
+                run_bt = st.button("运行小回测", use_container_width=True)
+            if run_bt:
+                samples = Path("output") / f"peak_samples_{analysis_spec.pair.replace('/', '')}.csv"
+                try:
+                    from fx_report.model.backtest import run_backtest
+
+                    if not samples.exists():
+                        st.info("本地无 peak_samples，尝试 build-peaks（需网络）…")
+                        from fx_report.model.history_peaks import export_peak_samples
+
+                        export_peak_samples(
+                            analysis_spec.pair,
+                            out_dir="output",
+                            horizon_days=weights.trading_days,
+                            vol_lookback=weights.vol_lookback_days,
+                        )
+                    with st.spinner("历史回测中…"):
+                        bt = run_backtest(
+                            analysis_spec.pair,
+                            out_dir="output",
+                            n_sims=int(bt_sims),
+                            max_rows=int(bt_rows),
+                            seed=int(weights.seed),
+                            peak_engine=getattr(weights, "peak_engine", None),
+                            verbose=False,
+                        )
+                    st.session_state["last_backtest"] = {
+                        "hit_rate": bt.hit_rate_argmax,
+                        "brier": bt.mean_brier,
+                        "logloss": bt.mean_logloss,
+                        "n": bt.n_rows,
+                        "params": bt.params_source,
+                        "engine": bt.peak_engine,
+                        "table": bt.table[
+                            [
+                                c
+                                for c in (
+                                    "asof",
+                                    "spot",
+                                    "realized_max",
+                                    "pred_bucket",
+                                    "true_bucket",
+                                    "hit",
+                                    "brier",
+                                    "logloss",
+                                )
+                                if c in bt.table.columns
+                            ]
+                        ].to_dict(orient="list"),
+                        "summary": bt.summary,
+                    }
+                except Exception as exc:
+                    st.session_state["last_backtest"] = None
+                    st.warning(
+                        f"回测失败（无样本/无网络/参数问题均可忽略）：{exc}"
+                    )
+            if st.session_state.get("last_backtest"):
+                bt = st.session_state["last_backtest"]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("argmax hit", f"{100 * bt['hit_rate']:.1f}%")
+                m2.metric("mean Brier", f"{bt['brier']:.4f}")
+                m3.metric("mean log-loss", f"{bt['logloss']:.4f}")
+                m4.metric("n", bt["n"])
+                st.caption(
+                    f"engine=`{bt.get('engine')}` · params=`{bt.get('params')}`"
+                )
+                st.dataframe(pd.DataFrame(bt["table"]), hide_index=True, use_container_width=True)
+                hold = (bt.get("summary") or {}).get("holdout_oos") or {}
+                if hold.get("n"):
+                    st.caption(
+                        f"OOS holdout：n={int(hold['n'])}  "
+                        f"brier={hold.get('brier', float('nan')):.4f}  "
+                        f"logloss={hold.get('logloss', float('nan')):.4f}  "
+                        f"hit={100 * hold.get('hit_rate', 0):.1f}%"
+                    )
     else:
         start = date.today()
         end = date.today() + timedelta(days=92)
@@ -781,6 +929,7 @@ def main() -> None:
             st.session_state["last_auto_evidence"] = [
                 {
                     "id": w.evidence.id,
+                    "statement_id": w.evidence.statement_id or w.evidence.id,
                     "title": w.evidence.title,
                     "dir": w.evidence.direction,
                     "label": w.evidence.strength_label,
@@ -790,6 +939,14 @@ def main() -> None:
                 }
                 for w in result.weighted
             ]
+            # label_audit template (human columns empty)
+            try:
+                from fx_report.model.backtest import evidence_to_label_audit
+
+                audit_df = evidence_to_label_audit(st.session_state["last_auto_evidence"])
+                st.session_state["last_label_audit_csv"] = audit_df.to_csv(index=False)
+            except Exception:
+                st.session_state["last_label_audit_csv"] = None
             st.session_state["last_stage_log"] = result.stage_log
             st.session_state["last_source"] = result.market.source
 
@@ -885,6 +1042,15 @@ def main() -> None:
             file_name=f"{pair_safe}_mc_report.md",
             mime="text/markdown",
         )
+        audit_csv = st.session_state.get("last_label_audit_csv")
+        if audit_csv:
+            st.download_button(
+                "下载证据标注模板（label_audit）",
+                audit_csv.encode("utf-8"),
+                file_name=f"{pair_safe}_label_audit.csv",
+                mime="text/csv",
+                help="列含 statement_id/title/model_*；human_* 与 agree 留空待人工标注",
+            )
         if html_doc:
             st.components.v1.html(html_doc, height=900, scrolling=True)
         else:

@@ -433,6 +433,7 @@ def calibrate_pair(
     seed: int = 42,
     loss: str = "brier",
     max_rows: int = 80,
+    holdout_frac: float = 0.25,
     verbose: bool = True,
 ) -> tuple[Path, CalibResult]:
     safe = pair.replace("/", "")
@@ -444,8 +445,24 @@ def calibrate_pair(
     df = load_peak_samples(path)
     if verbose:
         print(f"Loaded {len(df)} samples from {path}")
+
+    # Chronological train / holdout for light OOS snippet
+    if "asof" in df.columns:
+        df_sorted = df.sort_values("asof").reset_index(drop=True)
+    else:
+        df_sorted = df.reset_index(drop=True)
+    n = len(df_sorted)
+    if n >= 8 and holdout_frac > 0:
+        cut = max(int(n * (1.0 - holdout_frac)), 1)
+        if cut >= n:
+            cut = n - 1
+        train_df = df_sorted.iloc[:cut].reset_index(drop=True)
+        hold_df = df_sorted.iloc[cut:].reset_index(drop=True)
+    else:
+        train_df, hold_df = df_sorted, df_sorted.iloc[0:0]
+
     result = calibrate_from_samples(
-        df,
+        train_df if len(train_df) else df,
         pair,
         n_sims=n_sims,
         n_iters=n_iters,
@@ -455,6 +472,55 @@ def calibrate_pair(
         verbose=verbose,
     )
     out = save_calibrated_params(result, out_dir=out_dir)
+
+    # Write calib_oos_summary_{PAIR}.json (train vs holdout Brier/logloss)
+    try:
+        from fx_report.model.backtest import (
+            eval_split_metrics,
+            write_calib_oos_summary,
+        )
+
+        cal_w = default_weights(get_pair(pair))
+        apply_calibrated_params(cal_w, result.params)
+        oos_cap = min(max_rows, 40)
+        train_m = eval_split_metrics(
+            train_df if len(train_df) else df,
+            cal_w,
+            n_sims=n_sims,
+            seed=seed,
+            max_rows=oos_cap,
+        )
+        hold_m = eval_split_metrics(
+            hold_df,
+            cal_w,
+            n_sims=n_sims,
+            seed=seed + 10_000,
+            max_rows=oos_cap,
+        )
+        oos_path = write_calib_oos_summary(
+            pair,
+            train_metrics=train_m,
+            holdout_metrics=hold_m,
+            out_dir=out_dir,
+            extra={
+                "source": "calibrate",
+                "loss_name": result.loss_name,
+                "calibrated_loss": result.loss,
+                "baseline_loss": result.baseline_loss,
+                "n_sims": n_sims,
+                "params_path": str(out),
+            },
+        )
+        if verbose:
+            print(
+                f"OOS summary → {oos_path}  "
+                f"train_brier={train_m.get('brier', float('nan')):.4f}  "
+                f"holdout_brier={hold_m.get('brier', float('nan')):.4f}"
+            )
+    except Exception as exc:
+        if verbose:
+            print(f"WARN: could not write calib_oos_summary: {exc}")
+
     if verbose:
         print(f"Saved {out}  ({result.loss_name} {result.baseline_loss:.4f} → {result.loss:.4f})")
     return out, result

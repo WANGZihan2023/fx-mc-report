@@ -62,7 +62,12 @@ python run_cli.py build-peaks --pair USD/AUD
 # 或：python scripts/build_peak_dataset.py --pair USD/AUD
 
 # Stage 1：校准 MC 参数（S=0）→ output/calibrated_params_USDAUD.json
+# 同时写 output/calib_oos_summary_USDAUD.json（train vs holdout Brier/logloss）
 python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
+
+# 历史回测（argmax hit / Brier / log-loss 表）
+python run_cli.py backtest --pair USD/AUD --max-rows 40
+# → output/backtest_USDAUD.csv + backtest_USDAUD_summary.json + calib_oos_summary_USDAUD.json
 
 # 流水线使用校准参数
 python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_params_USDAUD.json
@@ -79,6 +84,11 @@ streamlit run app.py
 ```
 
 新闻证据为空时默认 `template_policy=off`（不静默填模板）；`prior_only` / `fallback_warn` 可显式启用。UI 结果页有「本次分析审计」。
+
+**UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
+- **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
+- **历史回测**折叠区：最多 30 行小回测，展示 hit rate / Brier / 明细表
+- 运行后可下载 **label_audit** CSV 模板（人工方向列留空）
 
 ## 数据源
 
