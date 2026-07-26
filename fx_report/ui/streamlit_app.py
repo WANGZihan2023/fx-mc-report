@@ -156,11 +156,11 @@ def render_bucket_editor(
     Main-area bucket edges. 4 cut points → 5 Torchcast-style buckets.
     Returns (use_relative, pct_cuts, abs_edges).
     """
-    st.subheader("概率区间（自己设切点）")
+    st.subheader("概率区间（自己设边界）")
     st.caption(
-        "4 个切点 → 5 个区间（与 Torchcast 一致）："
+        "4 个边界 → 5 个区间（与 Torchcast 一致）："
         "`< e1` · `e1–e2` · `e2–e3` · `e3–e4` · `≥ e4`。"
-        "运行分析后，蒙特卡洛概率与 PDF 都用这套切点。"
+        "运行分析后，蒙特卡洛概率与 PDF 都用这套边界。"
     )
 
     mode_key = f"bucket_mode::{analysis_pair}"
@@ -197,17 +197,23 @@ def render_bucket_editor(
         if wk not in st.session_state:
             st.session_state[wk] = float(v)
 
+    # Migrate renamed radio options so old sessions don't crash
+    _old_mode = st.session_state.get(mode_key)
+    if _old_mode == "相对现价 %":
+        st.session_state[mode_key] = "相对现价"
+    elif _old_mode == "绝对水平":
+        st.session_state[mode_key] = "绝对价位"
+
     mode = st.radio(
-        "切点方式",
-        ["相对现价 %", "绝对水平"],
+        "边界方式",
+        ["相对现价", "绝对价位"],
         horizontal=True,
         key=mode_key,
-        help="相对：切点 = 现价 × (1 + %/100)。绝对：直接输入汇率水平。",
+        help="相对：边界 = 现价 × (1 + 涨幅%/100)。绝对：直接填汇率价位。",
     )
-    use_rel = mode == "相对现价 %"
+    use_rel = mode == "相对现价"
 
     cols = st.columns(4)
-    labels = ["切点1", "切点2", "切点3", "切点4"]
     if use_rel:
         pcts: list[float] = []
         for i, col in enumerate(cols):
@@ -215,14 +221,18 @@ def render_bucket_editor(
                 pcts.append(
                     float(
                         st.number_input(
-                            f"{labels[i]} %",
+                            f"相对涨幅 {i + 1}（相对现价 +%）",
                             min_value=-20.0,
                             max_value=50.0,
                             step=0.5,
                             key=f"pct_cut_{analysis_pair}_{i}",
+                            help="填上涨百分比，不是汇率本身。例：现价 1.43、填 2 → 边界 ≈ 1.4586。",
                         )
                     )
                 )
+        st.caption(
+            "填的是相对现价的上涨百分比；例如现价 1.43、填 2 → 边界≈1.4586；不是直接填汇率。"
+        )
         pct_cuts = tuple(sorted(pcts))  # type: ignore[assignment]
         st.session_state[pct_key] = list(pct_cuts)
         if spot is not None:
@@ -240,15 +250,17 @@ def render_bucket_editor(
                 abss.append(
                     float(
                         st.number_input(
-                            labels[i],
+                            f"汇率边界 {i + 1}",
                             min_value=0.0,
                             max_value=1_000_000.0,
                             step=step,
                             format="%.5f",
                             key=f"abs_cut_{analysis_pair}_{i}",
+                            help="直接填分析报价的绝对价位（汇率水平）。",
                         )
                     )
                 )
+        st.caption("填的是分析报价的绝对汇率价位（不是百分比）。")
         abs_edges = tuple(sorted(abss))  # type: ignore[assignment]
         st.session_state[abs_key] = list(abs_edges)
         if spot is not None and spot > 0:
@@ -266,16 +278,18 @@ def render_bucket_editor(
         if use_rel and spot is not None
         else abs_edges
     )
-    labels5 = bucket_labels_from_edges(preview_edges)
-    st.info(f"将形成 5 档：{' · '.join(labels5)}")
     if use_rel and spot is None:
-        st.caption("相对 % 模式需先成功拉取现价，才能换算绝对切点并跑蒙特卡洛。")
-    elif spot is not None:
-        st.caption(
-            "绝对切点预览："
-            + " / ".join(_fmt_px(e) for e in preview_edges)
-            + f"（现价 {_fmt_px(spot)}）"
+        st.info("将形成 5 档（需现价后换算绝对价位）：" + " · ".join(bucket_labels_from_edges(preview_edges)))
+        st.caption("相对现价模式需先成功拉取现价，才能换算绝对边界并跑蒙特卡洛。")
+    else:
+        e = list(preview_edges)
+        live = (
+            f"< {_fmt_px(e[0])} | "
+            + " | ".join(f"{_fmt_px(e[i])}–{_fmt_px(e[i + 1])}" for i in range(len(e) - 1))
+            + f" | ≥ {_fmt_px(e[-1])}"
         )
+        spot_note = f"（现价 {_fmt_px(spot)}）" if spot is not None else ""
+        st.info(f"5 档预览：{live}{spot_note}")
 
     return use_rel, pct_cuts, abs_edges  # type: ignore[return-value]
 
@@ -335,7 +349,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         trading_days = st.number_input("交易日窗口", 5, 252, base.trading_days, 1)
         seed = st.number_input("随机种子", 0, 10_000_000, base.seed, 1)
         vol_lookback = st.number_input("波动回看日", 20, 252, base.vol_lookback_days, 5)
-        st.caption("分档切点请在主区「概率区间」设置（相对 % 或绝对水平）。")
+        st.caption("分档边界请在主区「概率区间」设置（相对现价涨幅% 或绝对汇率价位）。")
         use_rel = True
         cuts = tuple(base.bucket_pct_cuts)
 
