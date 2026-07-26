@@ -88,7 +88,8 @@ streamlit run app.py
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
 - **历史回测**折叠区：最多 30 行小回测，展示 hit rate / Brier / 明细表
-- 运行后可下载 **label_audit** CSV 模板（人工方向列留空）
+- 运行后可在 **「证据人工标注」** 网页填写方向/类别（不必手改 CSV）；说明见 `docs/label_audit.md`
+- 标注保存为 `output/label_audit_{PAIR}_{日期}.csv`，亦可下载
 
 ## 数据源
 
@@ -115,6 +116,7 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 
 ## 相关文档
 
+- 证据人工标注（label_audit）：`docs/label_audit.md`
 - 长期分享 / Streamlit 公开设置：`docs/sharing.md`
 - **Docker 云部署（WeasyPrint / 澳洲）**：`docs/deploy-docker.md`
 - 云端 redeploy 标记：`docs/CLOUD_REDEPLOY.txt`

@@ -584,6 +584,277 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
     }
 
 
+def _init_label_edits_from_df(df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    edits: dict[str, dict[str, str]] = {}
+    for _, row in df.iterrows():
+        sid = str(row.get("statement_id") or "")
+        if not sid:
+            continue
+        edits[sid] = {
+            "human_direction": str(row.get("human_direction") or ""),
+            "human_category": str(row.get("human_category") or ""),
+            "agree": str(row.get("agree") or ""),
+        }
+    return edits
+
+
+def _clear_label_widget_keys(sids: list[str] | None = None) -> None:
+    """Drop Streamlit selectbox state so prefill/clear actually shows new values."""
+    prefixes = ("hd_", "hc_", "ag_")
+    if sids:
+        for sid in sids:
+            for p in prefixes:
+                st.session_state.pop(f"{p}{sid}", None)
+        return
+    for k in list(st.session_state.keys()):
+        if isinstance(k, str) and k.startswith(prefixes):
+            st.session_state.pop(k, None)
+
+
+def render_label_audit_section(
+    *,
+    pair: str,
+    bullish: str,
+    evidence_rows: list[dict] | None,
+    news_meta: dict | None = None,
+    diag: dict | None = None,
+) -> None:
+    """In-app 证据人工标注：选方向/类别、自动 agree、落盘 CSV。"""
+    from fx_report.config.api_config import has_news_api, load_config
+    from fx_report.model.label_audit import (
+        AGREE_VALUES,
+        AGREE_ZH,
+        HUMAN_DIRECTIONS,
+        LABEL_CATEGORIES,
+        category_label,
+        compute_agree,
+        demo_evidence_rows,
+        direction_label,
+        empty_reason_message,
+        evidence_rows_to_audit_df,
+        help_markdown,
+        label_audit_path,
+        load_label_audit,
+        merge_human_labels,
+        normalize_direction,
+        prefill_from_model,
+        save_label_audit,
+    )
+
+    st.markdown("---")
+    st.subheader("证据人工标注")
+
+    news_meta = news_meta or {}
+    diag = diag or {}
+    counts = diag.get("evidence_counts") or {
+        "fetched": news_meta.get("fetched", 0),
+        "kept": news_meta.get("kept", 0),
+        "classified": news_meta.get("classified", 0),
+        "evidence_n": news_meta.get("evidence_n", 0),
+    }
+    quality = str(
+        diag.get("evidence_quality") or news_meta.get("evidence_quality") or ""
+    )
+
+    with st.expander("怎么填？", expanded=True):
+        st.markdown(help_markdown(pair=pair, bullish=bullish))
+        st.caption(
+            "允许值 — 方向："
+            + " / ".join(HUMAN_DIRECTIONS)
+            + "｜agree："
+            + " / ".join(AGREE_VALUES)
+            + "｜类别见下拉框（与模型词表一致）"
+        )
+
+    # Source of statements: run evidence, or demo practice set
+    use_demo = bool(st.session_state.get("label_audit_use_demo"))
+    rows = list(evidence_rows or [])
+    if use_demo:
+        rows = demo_evidence_rows(pair=pair, bullish=bullish)
+
+    if not rows:
+        cfg = load_config()
+        st.warning(
+            empty_reason_message(
+                evidence_n=int(counts.get("evidence_n") or 0),
+                fetched=int(counts.get("fetched") or 0),
+                quality=quality,
+                news_keys_present=has_news_api(cfg),
+            )
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("加载练习样例（演示标注）", key="btn_load_demo_labels"):
+                st.session_state["label_audit_use_demo"] = True
+                st.session_state.pop("label_edits", None)
+                st.session_state.pop("label_edit_fp", None)
+                _clear_label_widget_keys()
+                st.rerun()
+        with c2:
+            st.info(
+                "要看**真实**新闻证据：侧栏「API 配置」填写 `NEWSAPI_KEY` 或 "
+                "`FINNHUB_API_KEY`（RSS 也会尽量抓取），保存后重新运行分析。"
+            )
+        return
+
+    if use_demo:
+        st.info("当前为**练习样例**（非本次运行证据）。标完可点下方「退出练习」回到真实列表。")
+        if st.button("退出练习样例", key="btn_exit_demo_labels"):
+            st.session_state["label_audit_use_demo"] = False
+            st.session_state.pop("label_edits", None)
+            st.session_state.pop("label_edit_fp", None)
+            _clear_label_widget_keys()
+            st.rerun()
+
+    base_df = evidence_rows_to_audit_df(rows)
+    fp = "|".join(str(x) for x in base_df["statement_id"].tolist()) + f"|{pair}|demo={use_demo}"
+    if st.session_state.get("label_edit_fp") != fp:
+        # Try merge existing on-disk labels for same pair+date
+        path_try = label_audit_path(pair)
+        disk = load_label_audit(path_try) if path_try.exists() else None
+        edits = _init_label_edits_from_df(base_df)
+        if disk is not None and not disk.empty:
+            by_id = {str(r["statement_id"]): r for _, r in disk.iterrows()}
+            for sid, lab in edits.items():
+                if sid in by_id:
+                    lab["human_direction"] = str(by_id[sid].get("human_direction") or "")
+                    lab["human_category"] = str(by_id[sid].get("human_category") or "")
+                    lab["agree"] = str(by_id[sid].get("agree") or "")
+        st.session_state["label_edits"] = edits
+        st.session_state["label_edit_fp"] = fp
+        _clear_label_widget_keys([str(x) for x in base_df["statement_id"].tolist()])
+        # Sync widget keys from edits so selectboxes show disk/prefill values
+        for sid, lab in edits.items():
+            if lab.get("human_direction"):
+                st.session_state[f"hd_{sid}"] = lab["human_direction"]
+            if lab.get("human_category"):
+                st.session_state[f"hc_{sid}"] = lab["human_category"]
+            if lab.get("agree"):
+                st.session_state[f"ag_{sid}"] = lab["agree"]
+
+    edits: dict[str, dict[str, str]] = st.session_state.setdefault("label_edits", {})
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("一键按模型预填再改", key="btn_prefill_labels", help="把 model_* 复制到 human_*，再只改不同意的"):
+            pref = prefill_from_model(base_df)
+            edits_new = _init_label_edits_from_df(pref)
+            st.session_state["label_edits"] = edits_new
+            _clear_label_widget_keys([str(x) for x in base_df["statement_id"].tolist()])
+            for sid, lab in edits_new.items():
+                st.session_state[f"hd_{sid}"] = lab["human_direction"]
+                st.session_state[f"hc_{sid}"] = lab["human_category"]
+                st.session_state[f"ag_{sid}"] = lab["agree"]
+            st.rerun()
+    with b2:
+        save_clicked = st.button("保存标注到 output/", key="btn_save_labels")
+    with b3:
+        clear_clicked = st.button("清空人工列", key="btn_clear_labels")
+
+    if clear_clicked:
+        st.session_state["label_edits"] = _init_label_edits_from_df(base_df)
+        _clear_label_widget_keys([str(x) for x in base_df["statement_id"].tolist()])
+        st.rerun()
+
+    dir_opts = [""] + list(HUMAN_DIRECTIONS)
+    cat_opts = [""] + list(LABEL_CATEGORIES)
+    agree_opts = [""] + list(AGREE_VALUES)
+
+    for _, row in base_df.iterrows():
+        sid = str(row["statement_id"])
+        lab = edits.setdefault(
+            sid,
+            {"human_direction": "", "human_category": "", "agree": ""},
+        )
+        title = str(row.get("title") or "")
+        url = str(row.get("url") or "")
+        md = normalize_direction(row.get("model_direction", ""))
+        mc = str(row.get("model_category") or "")
+
+        with st.container(border=True):
+            head = f"**{sid}** · {title}"
+            if url:
+                st.markdown(f"{head}  \n[打开链接]({url})")
+            else:
+                st.markdown(head)
+            c_zh = category_label(mc) if mc else "—"
+            md_zh = direction_label(md) if md else "未判定"
+            st.caption(f"模型只读 — 方向：`{md or '—'}`（{md_zh}）｜类别：{c_zh}")
+
+            prev_d = lab.get("human_direction", "")
+            prev_a = lab.get("agree", "")
+            c_d, c_c, c_a = st.columns(3)
+            with c_d:
+                di = dir_opts.index(prev_d) if prev_d in dir_opts else 0
+                new_d = st.selectbox(
+                    "human_direction（你的方向）",
+                    dir_opts,
+                    index=di,
+                    format_func=lambda x: "（未选）" if x == "" else direction_label(x),
+                    key=f"hd_{sid}",
+                )
+            with c_c:
+                prev_c = lab.get("human_category", "")
+                ci = cat_opts.index(prev_c) if prev_c in cat_opts else 0
+                new_c = st.selectbox(
+                    "human_category（你的类别）",
+                    cat_opts,
+                    index=ci,
+                    format_func=lambda x: "（未选）" if x == "" else category_label(x),
+                    key=f"hc_{sid}",
+                )
+            with c_a:
+                # Auto-suggest agree from model vs human direction
+                suggested = compute_agree(md, new_d) if new_d else ""
+                if new_d and (not prev_a or prev_d != new_d):
+                    cur_ag = suggested
+                else:
+                    cur_ag = prev_a or suggested
+                ai = agree_opts.index(cur_ag) if cur_ag in agree_opts else 0
+                new_a = st.selectbox(
+                    "agree（可自动）",
+                    agree_opts,
+                    index=ai,
+                    format_func=lambda x: (
+                        "（未选）"
+                        if x == ""
+                        else f"{x} — {AGREE_ZH.get(x, x)}"
+                    ),
+                    key=f"ag_{sid}",
+                )
+            lab["human_direction"] = new_d
+            lab["human_category"] = new_c
+            lab["agree"] = new_a if new_a else (suggested if new_d else "")
+
+    filled = merge_human_labels(base_df, edits)
+    # Recompute agree column for consistency in CSV
+    for i, r in filled.iterrows():
+        hd = str(r.get("human_direction") or "")
+        if hd:
+            filled.at[i, "agree"] = compute_agree(r.get("model_direction", ""), hd)
+
+    csv_bytes = filled.to_csv(index=False).encode("utf-8")
+    st.session_state["last_label_audit_csv"] = filled.to_csv(index=False)
+
+    out_path = label_audit_path(pair)
+    n_done = int((filled["human_direction"].astype(str).str.len() > 0).sum())
+    st.caption(f"已填方向 {n_done}/{len(filled)} · 保存路径：`{out_path}`")
+
+    if save_clicked:
+        saved = save_label_audit(filled, out_path)
+        st.success(f"已保存：{saved}")
+
+    pair_safe = pair.replace("/", "")
+    st.download_button(
+        "下载当前标注 CSV（label_audit）",
+        csv_bytes,
+        file_name=out_path.name,
+        mime="text/csv",
+        key="dl_label_audit_filled",
+        help="含已填/部分填写的 human_* 与 agree",
+    )
+
+
 def main() -> None:
     display_spec, bullish = pick_pair_in_sidebar()
 
@@ -935,10 +1206,14 @@ def main() -> None:
                     "label": w.evidence.strength_label,
                     "strength": w.evidence.strength,
                     "category": w.evidence.category,
+                    "url": getattr(w.evidence, "url", "") or "",
                     "contrib": w.weight_contrib,
                 }
                 for w in result.weighted
             ]
+            st.session_state["label_audit_use_demo"] = False
+            st.session_state.pop("label_edits", None)
+            st.session_state.pop("label_edit_fp", None)
             # label_audit template (human columns empty)
             try:
                 from fx_report.model.backtest import evidence_to_label_audit
@@ -1044,12 +1319,13 @@ def main() -> None:
         )
         audit_csv = st.session_state.get("last_label_audit_csv")
         if audit_csv:
+            st.caption("证据标注请到下方「证据人工标注」填写；此处可下载当前 CSV。")
             st.download_button(
-                "下载证据标注模板（label_audit）",
+                "下载证据标注 CSV（label_audit）",
                 audit_csv.encode("utf-8"),
                 file_name=f"{pair_safe}_label_audit.csv",
                 mime="text/csv",
-                help="列含 statement_id/title/model_*；human_* 与 agree 留空待人工标注",
+                help="列含 statement_id/title/url/model_*；在「证据人工标注」填写 human_* 与 agree",
             )
         if html_doc:
             st.components.v1.html(html_doc, height=900, scrolling=True)
@@ -1092,6 +1368,14 @@ def main() -> None:
             file_name="diagnostics.json",
             mime="application/json",
         )
+
+    render_label_audit_section(
+        pair=diag["market"]["pair"],
+        bullish=bullish,
+        evidence_rows=st.session_state.get("last_auto_evidence") or [],
+        news_meta=news_meta,
+        diag=diag,
+    )
 
 
 if __name__ == "__main__":

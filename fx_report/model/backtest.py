@@ -390,55 +390,14 @@ def evidence_to_label_audit(
     """
     Build label_audit CSV template from current-run evidence.
 
-    Columns: statement_id, title, model_category, model_direction,
+    Columns: statement_id, title, url, model_category, model_direction,
              human_direction, human_category, agree
     Human columns left empty for later labeling.
+    Direction vocab: up / down / neutral (see fx_report.model.label_audit).
     """
-    rows: list[dict[str, Any]] = []
-    for item in evidence_rows:
-        if hasattr(item, "id"):
-            # EvidenceItem-like
-            sid = getattr(item, "statement_id", "") or getattr(item, "id", "")
-            title = getattr(item, "title", "") or ""
-            cat = getattr(item, "category", "") or ""
-            direction = getattr(item, "direction", "")
-        elif isinstance(item, dict):
-            sid = item.get("statement_id") or item.get("id") or ""
-            title = item.get("title") or item.get("statement") or ""
-            cat = item.get("category") or item.get("model_category") or ""
-            direction = item.get("dir", item.get("direction", item.get("model_direction", "")))
-        else:
-            continue
-        # Map numeric direction to readable label
-        if direction in (-1, "-1", -1.0):
-            model_dir = "down"
-        elif direction in (1, "1", 1.0, "+1"):
-            model_dir = "up"
-        elif direction in (0, "0", 0.0):
-            model_dir = "neutral"
-        else:
-            model_dir = str(direction) if direction != "" else ""
-        rows.append(
-            {
-                "statement_id": sid,
-                "title": title,
-                "model_category": cat,
-                "model_direction": model_dir,
-                "human_direction": "",
-                "human_category": "",
-                "agree": "",
-            }
-        )
-    cols = [
-        "statement_id",
-        "title",
-        "model_category",
-        "model_direction",
-        "human_direction",
-        "human_category",
-        "agree",
-    ]
-    return pd.DataFrame(rows, columns=cols)
+    from fx_report.model.label_audit import evidence_rows_to_audit_df
+
+    return evidence_rows_to_audit_df(evidence_rows)
 
 
 def compare_peak_engines(
