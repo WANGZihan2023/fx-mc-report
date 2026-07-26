@@ -25,6 +25,12 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--days", type=int, default=66)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--lookback", type=int, default=60)
+    p.add_argument(
+        "--peak-engine",
+        choices=["path_max", "brownian_bridge"],
+        default="path_max",
+        help="Peak estimator: path_max (GBM+jumps) or brownian_bridge (continuous GBM, no jumps)",
+    )
     p.add_argument("--out", type=str, default="output")
     p.add_argument("--no-news", action="store_true")
     p.add_argument("--keep-templates", action="store_true")
@@ -58,6 +64,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         days=args.days,
         seed=args.seed,
         lookback=args.lookback,
+        peak_engine=args.peak_engine,
         mode=args.mode,  # type: ignore[arg-type]
         max_news=args.max_news,
         keep_templates=args.keep_templates,

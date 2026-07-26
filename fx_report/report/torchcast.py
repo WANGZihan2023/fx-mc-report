@@ -186,17 +186,28 @@ def _build_narratives(
     labels = list(probs.keys())
     top = max(probs, key=probs.get)
     mid = labels[len(labels) // 2] if labels else top
+    engine = getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max"))
+    if engine == "brownian_bridge":
+        engine_phrase = (
+            f"A {mc.n_sims:,}-run Monte Carlo mixture using a Brownian-bridge continuous "
+            f"peak engine (GBM in log space; compound-Poisson jumps excluded) provides "
+            f"the quantitative anchor for the distribution across higher intervals"
+        )
+    else:
+        engine_phrase = (
+            f"A {mc.n_sims:,}-run Monte Carlo mixture (GBM with jumps; discrete path max) "
+            f"provides the quantitative anchor for the distribution across higher intervals"
+        )
 
     floor_body = (
         f"With a starting {market.pair} spot rate of approximately {market.spot:.4f} "
         f"on the forecast date, the daily high exchange rate cannot mathematically resolve "
         f"below {floor:.4g} during the forecast horizon [[C-1]]. Consequently, probabilities "
-        f"for buckets entirely below the spot floor are set at 0.0%. A {mc.n_sims:,}-run "
-        f"Monte Carlo mixture (GBM with jumps) provides the quantitative anchor for the "
-        f"distribution across higher intervals. This modeling uses daily exchange-rate history "
+        f"for buckets entirely below the spot floor are set at 0.0%. {engine_phrase}. "
+        f"This modeling uses daily exchange-rate history "
         f"from {market.history_start} to {market.history_end}, applying an estimated daily "
         f"volatility of {market.sigma_daily:.3%} ({market.sigma_annual:.2%} annualized) "
-        f"against the starting spot."
+        f"against the starting spot. Peak engine: <strong>{_esc(engine)}</strong>."
     )
 
     up_ids = " ".join(f"[[{e.id}]]" for e in up[:4]) or "[[U-GEO]]"
@@ -352,6 +363,7 @@ def build_torchcast_report(
             "scenarios": [s.__dict__ for s in scenarios_adj],
             "source": market.source,
             "n_sims": mc.n_sims,
+            "peak_engine": getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max")),
             "bullish_currency": (bullish_currency or market.pair.split("/")[0]).upper(),
         },
     )
@@ -746,6 +758,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>{report.n_evidence} evidence items</span>
     <span>Bullish currency {_esc(str(report.extra.get("bullish_currency") or report.pair.split("/")[0]))}</span>
     <span>Analysis quote {_esc(report.pair)}</span>
+    <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
   </div>
 
   <div class="panel">
@@ -939,12 +952,14 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     bullish_meta = str(
         report.extra.get("bullish_currency") or report.pair.split("/")[0]
     )
+    peak_meta = str(report.extra.get("peak_engine") or "path_max")
     story.append(
         Paragraph(
             f"Forecast date {report.forecast_date} &nbsp;·&nbsp; "
             f"{report.n_evidence} evidence items &nbsp;·&nbsp; "
             f"Bullish currency {bullish_meta} &nbsp;·&nbsp; "
-            f"Analysis quote {report.pair}",
+            f"Analysis quote {report.pair} &nbsp;·&nbsp; "
+            f"Peak engine {peak_meta}",
             styles["Meta"],
         )
     )

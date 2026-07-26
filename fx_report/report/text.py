@@ -69,7 +69,7 @@ def build_report_markdown(
 **问题：** {horizon_label} 内，**{pair}** 的**最高日高**将落在哪一档？
 
 **预测生成：** {market.asof}  
-**模拟次数：** {mc.n_sims:,}｜**交易日：** {mc.trading_days}｜**种子：** {weights.seed}  
+**模拟次数：** {mc.n_sims:,}｜**交易日：** {mc.trading_days}｜**种子：** {weights.seed}｜**峰值引擎：** {getattr(mc, "peak_engine", weights.peak_engine)}  
 **行情来源：** {market.source}  
 **分档边界：** {edge_s}
 
@@ -121,7 +121,7 @@ def build_report_markdown(
 
 ## 执行摘要
 
-起点 **{pair} ≈ {market.spot:.5f}**。{mc.trading_days} 个交易日、**{mc.n_sims:,}** 次情景混合蒙特卡洛（GBM+跳跃），证据分 **S={score:+.2f}** 校准权重与参数（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）。
+起点 **{pair} ≈ {market.spot:.5f}**。{mc.trading_days} 个交易日、**{mc.n_sims:,}** 次情景混合蒙特卡洛（峰值引擎 `{getattr(mc, "peak_engine", weights.peak_engine)}`），证据分 **S={score:+.2f}** 校准权重与参数（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）。
 
 最可能：**`{top}`（{_pct(top_p)}）**。峰值分位 P50={mc.percentiles['p50']:.5f}，P90={mc.percentiles['p90']:.5f}，P95={mc.percentiles['p95']:.5f}。
 
@@ -198,5 +198,6 @@ def build_diagnostics(
         "bucket_pct_cuts": list(weights.bucket_pct_cuts),
         "n_sims": mc.n_sims,
         "seed": weights.seed,
+        "peak_engine": getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max")),
         "evidence_score_check": evidence_score(weights.evidence),
     }

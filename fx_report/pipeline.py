@@ -526,6 +526,7 @@ def run_pipeline(
     days: int = 66,
     seed: int = 42,
     lookback: int = 60,
+    peak_engine: str = "path_max",
     mode: ClassifyMode = "hybrid",
     max_news: int = 10,
     keep_templates: bool = False,
@@ -609,10 +610,12 @@ def run_pipeline(
         base.trading_days = days
         base.seed = seed
         base.vol_lookback_days = lookback
+        base.peak_engine = str(peak_engine or "path_max")
     say(
         f"  → 分档 "
         f"{'相对% ' + str(base.bucket_pct_cuts) if base.use_relative_buckets else '绝对 ' + str(base.bucket_edges)}"
     )
+    say(f"  → peak_engine={base.peak_engine}")
 
     # 2
     say("【2/7】评估所需要的信息（因货币对而异）")

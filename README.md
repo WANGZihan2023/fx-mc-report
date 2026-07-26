@@ -54,6 +54,8 @@ AI 检索员：`fx_report/news/ai_research.py`（`--no-ai-research` 可关）
 python run_cli.py --pair USD/AUD --sims 50000 --mode rules
 python run_cli.py --pair EUR/USD --sims 50000 --mode hybrid
 python run_cli.py --pair EUR/JPY --sims 50000 --mode rules --no-ai-research
+# 峰值引擎：path_max（默认，GBM+跳跃路径最大）或 brownian_bridge（连续布朗桥峰值，不含跳跃）
+python run_cli.py --pair USD/AUD --sims 50000 --peak-engine brownian_bridge --mode rules
 
 # Stage 0：历史峰值样本 → output/peak_samples_USDAUD.csv
 python run_cli.py build-peaks --pair USD/AUD
@@ -64,6 +66,9 @@ python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 
 # 流水线使用校准参数
 python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_params_USDAUD.json
+
+# 峰值引擎冒烟对比
+python scripts/smoke_peak_engines.py
 
 # UI（产品名 FX Analyse）
 streamlit run app.py

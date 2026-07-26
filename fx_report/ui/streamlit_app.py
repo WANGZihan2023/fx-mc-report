@@ -350,6 +350,15 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         trading_days = st.number_input("交易日窗口", 5, 252, base.trading_days, 1)
         seed = st.number_input("随机种子", 0, 10_000_000, base.seed, 1)
         vol_lookback = st.number_input("波动回看日", 20, 252, base.vol_lookback_days, 5)
+        _engine_opts = ["path_max", "brownian_bridge"]
+        _engine_default = getattr(base, "peak_engine", "path_max")
+        _engine_idx = _engine_opts.index(_engine_default) if _engine_default in _engine_opts else 0
+        peak_engine = st.selectbox(
+            "峰值引擎 peak_engine",
+            _engine_opts,
+            index=_engine_idx,
+            help="path_max=离散GBM+跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
+        )
         st.caption("分档边界请在主区「概率区间」设置（相对现价涨幅% 或绝对汇率价位）。")
         use_rel = True
         cuts = tuple(base.bucket_pct_cuts)
@@ -542,6 +551,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         scenario_temperature=float(temperature),
         max_scenario_shift=float(max_shift),
         evidence_logit_scale=float(logit_scale),
+        peak_engine=str(peak_engine),
         scenarios=scenarios,
         evidence=evidence,
     ), {

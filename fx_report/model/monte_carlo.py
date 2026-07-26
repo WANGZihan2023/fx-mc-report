@@ -1,4 +1,4 @@
-"""Mixture Monte Carlo for USD/AUD path maxima (peak daily level proxy)."""
+"""Mixture Monte Carlo for FX path maxima (peak daily / continuous level proxy)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from typing import Sequence
 import numpy as np
 
 from fx_report.model.weights import ScenarioSpec
+
+VALID_PEAK_ENGINES = ("path_max", "brownian_bridge")
 
 
 @dataclass
@@ -21,6 +23,7 @@ class MCResult:
     sigma_daily_base: float
     trading_days: int
     percentiles: dict[str, float]
+    peak_engine: str = "path_max"
 
 
 def bucket_labels_from_edges(edges: Sequence[float]) -> list[str]:
@@ -45,6 +48,54 @@ def assign_buckets(maxima: np.ndarray, edges: Sequence[float]) -> dict[str, floa
     return {lab: float(c / n) for lab, c in zip(labels, counts)}
 
 
+def _simulate_path_max_mixture(
+    spot: float,
+    sigma_daily_base: float,
+    scenarios: list[ScenarioSpec],
+    *,
+    trading_days: int,
+    n_sims: int,
+    seed: int,
+    mu_annual_shift: float,
+    sigma_mult_extra: float,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Discrete GBM + compound Poisson jumps; peak = max along daily path."""
+    rng = np.random.default_rng(seed)
+    weights = np.array([s.weight for s in scenarios], dtype=np.float64)
+    weights = weights / weights.sum()
+    scenario_idx = rng.choice(len(scenarios), size=n_sims, p=weights)
+
+    dt = 1.0 / 252.0
+    maxima = np.empty(n_sims, dtype=np.float64)
+    scenario_counts = {s.name: int(np.sum(scenario_idx == i)) for i, s in enumerate(scenarios)}
+
+    for i, sc in enumerate(scenarios):
+        mask = scenario_idx == i
+        m = int(np.sum(mask))
+        if m == 0:
+            continue
+
+        mu = sc.mu_annual + mu_annual_shift
+        sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
+        lam_daily = sc.expected_jumps / max(trading_days, 1)
+
+        z = rng.standard_normal((m, trading_days))
+        jump_occur = rng.random((m, trading_days)) < lam_daily
+        jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
+        jumps = np.where(jump_occur, jump_size, 0.0)
+
+        sigma_ann = sigma * np.sqrt(252.0)
+        drift = (mu - 0.5 * sigma_ann**2) * dt
+        log_rets = drift + sigma * z + jumps
+
+        log_path = np.cumsum(log_rets, axis=1)
+        path = spot * np.exp(log_path)
+        path_max = np.maximum(np.max(path, axis=1), spot)
+        maxima[mask] = path_max
+
+    return maxima, scenario_counts
+
+
 def run_mixture_monte_carlo(
     spot: float,
     sigma_daily_base: float,
@@ -59,62 +110,51 @@ def run_mixture_monte_carlo(
     peak_engine: str = "path_max",
 ) -> MCResult:
     """
-    Simulate discrete GBM + compound Poisson jumps under a scenario mixture.
-
-    Each path: S_{t+1} = S_t * exp((μ - 0.5 σ²)Δt + σ√Δt Z + jump)
-    Peak proxy = max_t S_t  (including t=0), approximating highest daily level.
+    Simulate scenario-mixture peaks and bucket them.
 
     peak_engine:
-      - "path_max" (default): discrete path maximum
-      - "brownian_bridge": stub — currently falls back to path_max
+      - "path_max" (default): discrete GBM + compound Poisson jumps; max along path
+      - "brownian_bridge": continuous GBM peak via Brownian-bridge maxima between
+        daily endpoints (jumps excluded — see brownian_bridge_max.py). Never falls
+        back silently to path_max.
     """
-    if peak_engine not in ("path_max", "brownian_bridge", ""):
-        raise ValueError(f"unknown peak_engine={peak_engine!r}")
-    # Brownian-bridge continuous-peak estimator: not implemented yet (Stage later).
-    _ = peak_engine
+    engine = (peak_engine or "path_max").strip().lower()
+    if engine not in VALID_PEAK_ENGINES:
+        raise ValueError(
+            f"unknown peak_engine={peak_engine!r}; expected one of {VALID_PEAK_ENGINES}"
+        )
 
     if spot <= 0:
         raise ValueError("spot must be positive")
     if n_sims < 1:
         raise ValueError("n_sims must be positive")
+    if not scenarios:
+        raise ValueError("scenarios must be non-empty")
 
-    rng = np.random.default_rng(seed)
-    weights = np.array([s.weight for s in scenarios], dtype=np.float64)
-    weights = weights / weights.sum()
-    scenario_idx = rng.choice(len(scenarios), size=n_sims, p=weights)
+    if engine == "brownian_bridge":
+        from fx_report.model.brownian_bridge_max import run_brownian_bridge_mixture
 
-    dt = 1.0 / 252.0
-    maxima = np.empty(n_sims, dtype=np.float64)
-    scenario_counts = {s.name: int(np.sum(scenario_idx == i)) for i, s in enumerate(scenarios)}
-
-    # Simulate per scenario block for speed
-    for i, sc in enumerate(scenarios):
-        mask = scenario_idx == i
-        m = int(np.sum(mask))
-        if m == 0:
-            continue
-
-        mu = sc.mu_annual + mu_annual_shift
-        sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
-        # expected_jumps is over full horizon → daily Poisson intensity
-        lam_daily = sc.expected_jumps / max(trading_days, 1)
-
-        z = rng.standard_normal((m, trading_days))
-        jump_occur = rng.random((m, trading_days)) < lam_daily
-        jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
-        jumps = np.where(jump_occur, jump_size, 0.0)
-
-        # sigma is daily stdev; annual = sigma * sqrt(252)
-        sigma_ann = sigma * np.sqrt(252.0)
-        drift = (mu - 0.5 * sigma_ann**2) * dt
-        log_rets = drift + sigma * z + jumps
-
-        # cumulative path
-        log_path = np.cumsum(log_rets, axis=1)
-        path = spot * np.exp(log_path)
-        # include starting spot in the maximum
-        path_max = np.maximum(np.max(path, axis=1), spot)
-        maxima[mask] = path_max
+        maxima, scenario_counts = run_brownian_bridge_mixture(
+            spot,
+            sigma_daily_base,
+            scenarios,
+            trading_days=trading_days,
+            n_sims=n_sims,
+            seed=seed,
+            mu_annual_shift=mu_annual_shift,
+            sigma_mult_extra=sigma_mult_extra,
+        )
+    else:
+        maxima, scenario_counts = _simulate_path_max_mixture(
+            spot,
+            sigma_daily_base,
+            scenarios,
+            trading_days=trading_days,
+            n_sims=n_sims,
+            seed=seed,
+            mu_annual_shift=mu_annual_shift,
+            sigma_mult_extra=sigma_mult_extra,
+        )
 
     raw = assign_buckets(maxima, bucket_edges)
     pct = {
@@ -135,6 +175,7 @@ def run_mixture_monte_carlo(
         sigma_daily_base=sigma_daily_base,
         trading_days=trading_days,
         percentiles=pct,
+        peak_engine=engine,
     )
 
 
@@ -158,13 +199,8 @@ def enforce_math_floor(probs: dict[str, float], spot: float, edges: Sequence[flo
 
     mass = sum(out.values())
     if mass <= 0:
-        # fallback: put all in first feasible bucket
         for lab in labels:
             out[lab] = 0.0
-        # find first label where upper bound > spot or last
-        for i, lab in enumerate(labels[:-1]):
-            upper = e[i] if i == 0 else e[i]  # rough
-            pass
         out[labels[-1]] = 1.0
         return out
 
