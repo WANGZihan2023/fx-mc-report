@@ -196,3 +196,34 @@ def make_custom_pair(
         notes=f"自动影响因子：{', '.join(drvs)}",
         fallback_tickers=fallback_tickers,
     )
+
+
+def resolve_pair_for_bullish(spec: PairSpec, bullish_ccy: str) -> PairSpec:
+    """
+    看涨币走强 = 分析报价升高（direction=+1、MC 路径最高价）。
+
+    - 看涨 = base → 保持原报价
+    - 看涨 = quote → 翻成 quote/base（优先目录反向对，否则自定义 invert）
+    """
+    ccy = (bullish_ccy or "").strip().upper()
+    if not ccy:
+        raise ValueError("bullish_ccy is required")
+    if ccy not in (spec.base, spec.quote):
+        raise ValueError(
+            f"bullish_ccy {bullish_ccy!r} must be one of "
+            f"{spec.base!r} or {spec.quote!r} for pair {spec.pair}"
+        )
+    if ccy == spec.base:
+        return spec
+
+    flipped = f"{spec.quote}/{spec.base}"
+    if flipped in PAIR_CATALOG:
+        return PAIR_CATALOG[flipped]
+    return make_custom_pair(
+        flipped,
+        spec.symbol_code,
+        invert=not spec.invert,
+        bucket_pct_cuts=spec.bucket_pct_cuts,
+        fallback_tickers=spec.fallback_tickers,
+        drivers=spec.default_drivers,
+    )

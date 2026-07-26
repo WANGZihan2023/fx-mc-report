@@ -12,9 +12,15 @@ from fx_report.pipeline import run_pipeline
 
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="七步 FX 情报流水线：选对→信息需求→存语句→影响→赋权→MC→报告"
+        description="七步 FX 情报流水线：选对→看涨币→信息需求→存语句→影响→赋权→MC→报告"
     )
     p.add_argument("--pair", default="USD/AUD", help=f"One of: {', '.join(list_pairs())}")
+    p.add_argument(
+        "--bullish",
+        default=None,
+        metavar="CCY",
+        help="看涨货币（须为 pair 的 base 或 quote）。缺省=base，并在 stage_log 写明",
+    )
     p.add_argument("--ticker", default=None, help="自定义货币对时的兼容字段")
     p.add_argument("--invert", action="store_true")
     p.add_argument("--sims", type=int, default=100_000)
@@ -57,6 +63,7 @@ def main() -> int:
         ai_research=args.ai_research,
         out_dir=args.out,
         verbose=not args.quiet,
+        bullish_currency=args.bullish,
     )
     return 0
 

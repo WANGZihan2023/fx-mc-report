@@ -24,7 +24,7 @@ from fx_report.news.evidence import build_evidence_from_news
 from fx_report.news.fetch import Headline, fetch_headlines_for_pair
 from fx_report.news.llm import LLMConfig, resolve_llm_config
 from fx_report.market.pair_drivers import DRIVER_CATALOG, describe_pair_factors, info_needs_for_drivers
-from fx_report.market.pairs import PairSpec, get_pair, make_custom_pair
+from fx_report.market.pairs import PairSpec, get_pair, make_custom_pair, resolve_pair_for_bullish
 from fx_report.report.text import build_diagnostics, build_report_markdown
 from fx_report.report.torchcast import (
     TorchcastReport,
@@ -402,6 +402,7 @@ def step7_build_report(
     stage_log: list[str],
     headlines: list[Headline],
     news_meta: dict[str, Any],
+    bullish_currency: str | None = None,
 ) -> tuple[str, str, TorchcastReport, dict[str, Any], str]:
     """7. Torchcast 风格报告（HTML/PDF）+ Markdown 副本 + diagnostics"""
     start = date.today()
@@ -420,6 +421,7 @@ def step7_build_report(
         horizon_start=start,
         horizon_end=end,
         bucket_edges=edges,
+        bullish_currency=bullish_currency,
     )
     report_html = render_html(tc)
 
@@ -449,9 +451,14 @@ def step7_build_report(
         f"| {w.evidence.id} | {w.evidence.strength_label} | {w.weight_contrib:+.3f} | {w.impact_note} |"
         for w in weighted
     )
+    bullish_line = (
+        f"Bullish: **{bullish_currency}**｜Analysis quote: **{market.pair}**\n\n"
+        if bullish_currency
+        else ""
+    )
     preface = f"""## 分析流程（固定七步）
 
-1. 选择货币对 → **{market.pair}**
+{bullish_line}1. 选择货币对 → **{market.pair}**
 2. 评估所需信息 → {len(info_needs)} 项
 3. 存储有影响语句 → {len(statements)} 条
 4. 评估影响 → 证据 {len(weights.evidence)} 条
@@ -504,6 +511,8 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
     ]
     diag["news_meta"] = news_meta
     diag["torchcast_question"] = tc.question
+    if bullish_currency:
+        diag["bullish_currency"] = bullish_currency
     return full_report, report_html, tc, diag, horizon
 
 
@@ -525,6 +534,7 @@ def run_pipeline(
     llm_cfg: LLMConfig | None = None,
     out_dir: str | Path | None = "output",
     verbose: bool = True,
+    bullish_currency: str | None = None,
 ) -> PipelineResult:
     """跑完整七步；可选写入 output/。"""
     log: list[str] = []
@@ -536,7 +546,23 @@ def run_pipeline(
 
     # 1
     say("【1/7】选择货币对")
-    spec = step1_select_pair(pair, ticker=ticker, invert=invert)
+    display_spec = step1_select_pair(pair, ticker=ticker, invert=invert)
+    say(f"  → 展示对 {display_spec.pair}｜{display_spec.description}")
+
+    bullish = (bullish_currency or display_spec.base).strip().upper()
+    if bullish_currency is None:
+        say(
+            f"  → 未指定看涨货币，默认看涨 base={bullish} "
+            f"（分析报价升高 = {bullish} 走强）"
+        )
+    else:
+        say(f"  → 看涨货币 {bullish}")
+
+    spec = resolve_pair_for_bullish(display_spec, bullish)
+    if spec.pair != display_spec.pair:
+        say(f"  → 分析口径翻转 {display_spec.pair} → {spec.pair}")
+    else:
+        say(f"  → 分析口径 {spec.pair}（不变）")
     say(f"  → {spec.pair}｜{spec.description}")
     say(f"  → {describe_pair_factors(spec.base, spec.quote, spec.default_drivers)}")
 
@@ -627,6 +653,7 @@ def run_pipeline(
         stage_log=log,
         headlines=headlines,
         news_meta=news_meta,
+        bullish_currency=bullish,
     )
 
     result = PipelineResult(

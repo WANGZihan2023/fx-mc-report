@@ -16,7 +16,7 @@ import streamlit as st
 from fx_report.config.api_config import status_text
 from fx_report.ui.api_panel import render_api_settings_panel
 from fx_report.news.fetch import fetch_status_summary
-from fx_report.market.pairs import get_pair, list_pairs, make_custom_pair
+from fx_report.market.pairs import get_pair, list_pairs, make_custom_pair, resolve_pair_for_bullish
 from fx_report.pipeline import run_pipeline, step2_assess_info_needs
 from fx_report.report.text import rubric_markdown
 from fx_report.model.strength import (
@@ -64,16 +64,32 @@ def _horizon(start: date, end: date) -> str:
 
 
 def pick_pair_in_sidebar():
-    """侧栏分区 1：货币对（默认可折叠，首次展开）。"""
+    """侧栏分区 1：货币对 + 看涨货币（默认可折叠，首次展开）。"""
     with st.sidebar.expander("① 货币对", expanded=True):
-        mode = st.radio("方式", ["目录", "自定义"], horizontal=True)
+        mode = st.radio("方式", ["目录", "自定义"], horizontal=True, key="pair_mode")
         if mode == "目录":
             pair = st.selectbox("选择", list_pairs(), index=list_pairs().index("USD/AUD"))
-            return get_pair(pair)
-        pair = st.text_input("BASE/QUOTE", value="EUR/USD")
-        ticker = st.text_input("内部符号", value="EURUSD")
-        invert = st.checkbox("invert", value=False)
-        return make_custom_pair(pair, ticker, invert)
+            spec = get_pair(pair)
+        else:
+            pair = st.text_input("BASE/QUOTE", value="EUR/USD")
+            ticker = st.text_input("内部符号", value="EURUSD")
+            invert = st.checkbox("invert", value=False)
+            spec = make_custom_pair(pair, ticker, invert)
+
+        # 看涨货币必选：未选时 index=None，禁止静默开跑
+        if st.session_state.get("bullish_pair_key") != spec.pair:
+            st.session_state["bullish_pair_key"] = spec.pair
+            st.session_state.pop("bullish_ccy", None)
+
+        bullish = st.radio(
+            "看涨货币（必选）",
+            [spec.base, spec.quote],
+            index=None,
+            horizontal=True,
+            key="bullish_ccy",
+            help="看涨币走强 = 分析报价升高。选 quote 时自动翻转分析口径。",
+        )
+        return spec, bullish
 
 
 def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, dict]:
@@ -315,19 +331,30 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
 
 
 def main() -> None:
-    spec = pick_pair_in_sidebar()
+    display_spec, bullish = pick_pair_in_sidebar()
 
-    if st.session_state.get("pair_key") != spec.pair:
-        st.session_state["pair_key"] = spec.pair
+    if st.session_state.get("pair_key") != display_spec.pair:
+        st.session_state["pair_key"] = display_spec.pair
         st.session_state.pop("last_report", None)
         st.session_state.pop("scenario_edits", None)
         st.session_state.pop("evidence_edits", None)
 
-    base = default_weights(spec)
-    weights, news_opts = sidebar_weights(base, spec.pair)
+    bullish_ok = bullish in (display_spec.base, display_spec.quote)
+    analysis_spec = (
+        resolve_pair_for_bullish(display_spec, bullish) if bullish_ok else display_spec
+    )
 
-    st.title(f"{spec.pair}")
-    st.caption("最高日高分档 · 七步情报流水线 · 左侧按 ①–⑧ 分区折叠")
+    base = default_weights(analysis_spec)
+    weights, news_opts = sidebar_weights(base, analysis_spec.pair)
+
+    st.title(f"{display_spec.pair}")
+    if bullish_ok:
+        st.caption(
+            f"分析口径：{analysis_spec.pair}（看涨 {bullish}）· "
+            "最高日高分档 · 七步情报流水线 · 左侧按 ①–⑧ 分区折叠"
+        )
+    else:
+        st.caption("最高日高分档 · 七步情报流水线 · 请先在侧栏选择看涨货币")
 
     c1, c2, c3 = st.columns([1, 1, 1.2])
     with c1:
@@ -336,24 +363,36 @@ def main() -> None:
         end = st.date_input("窗口终点", value=date.today() + timedelta(days=92))
     with c3:
         st.write("")
-        run = st.button("运行分析", type="primary", use_container_width=True)
+        run = st.button(
+            "运行分析",
+            type="primary",
+            use_container_width=True,
+            disabled=not bullish_ok,
+        )
 
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
         api_opts = render_api_settings_panel()
 
-    with st.expander(f"本对信息需求 · {spec.pair}", expanded=False):
-        needs = step2_assess_info_needs(spec)
+    with st.expander(f"本对信息需求 · {analysis_spec.pair}", expanded=False):
+        needs = step2_assess_info_needs(analysis_spec)
         st.dataframe(
             pd.DataFrame([n.to_dict() for n in needs]),
             hide_index=True,
             use_container_width=True,
         )
 
+    if not bullish_ok and "last_report" not in st.session_state:
+        st.warning("请先在侧栏 ① 选择「看涨货币」（二选一），再运行分析。")
+        return
+
     if not run and "last_report" not in st.session_state:
-        st.info("选好货币对与窗口后点「运行分析」。左侧 ①–⑧ 分区折叠查找设置；API 可全空。")
+        st.info("选好看涨货币与窗口后点「运行分析」。左侧 ①–⑧ 分区折叠查找设置；API 可全空。")
         return
 
     if run:
+        if not bullish_ok:
+            st.warning("未选择看涨货币，无法运行分析。")
+            return
         with st.spinner("流水线运行中…"):
             key = (api_opts.get("llm_key") or "").strip()
             if not key:
@@ -381,9 +420,9 @@ def main() -> None:
                 mode_cls = "rules"
 
             result = run_pipeline(
-                spec.pair,
-                ticker=None if spec.pair in list_pairs() else spec.symbol_code,
-                invert=spec.invert,
+                analysis_spec.pair,
+                ticker=None if analysis_spec.pair in list_pairs() else analysis_spec.symbol_code,
+                invert=analysis_spec.invert,
                 sims=weights.n_sims,
                 days=weights.trading_days,
                 seed=weights.seed,
@@ -397,6 +436,7 @@ def main() -> None:
                 llm_cfg=llm_cfg,
                 out_dir="output",
                 verbose=False,
+                bullish_currency=bullish,
             )
             result.weights.use_relative_buckets = weights.use_relative_buckets
             result.weights.bucket_pct_cuts = weights.bucket_pct_cuts

@@ -304,6 +304,7 @@ def build_torchcast_report(
     horizon_start: date | None = None,
     horizon_end: date | None = None,
     bucket_edges: Sequence[float] | None = None,
+    bullish_currency: str | None = None,
 ) -> TorchcastReport:
     start = horizon_start or date.today()
     end = horizon_end or (start + timedelta(days=max(int(weights.trading_days * 1.4), 1)))
@@ -351,6 +352,7 @@ def build_torchcast_report(
             "scenarios": [s.__dict__ for s in scenarios_adj],
             "source": market.source,
             "n_sims": mc.n_sims,
+            "bullish_currency": (bullish_currency or market.pair.split("/")[0]).upper(),
         },
     )
 
@@ -742,6 +744,8 @@ def render_html(report: TorchcastReport) -> str:
   <div class="meta">
     <span>Forecast date {_esc(report.forecast_date)}</span>
     <span>{report.n_evidence} evidence items</span>
+    <span>Bullish currency {_esc(str(report.extra.get("bullish_currency") or report.pair.split("/")[0]))}</span>
+    <span>Analysis quote {_esc(report.pair)}</span>
   </div>
 
   <div class="panel">
@@ -932,9 +936,15 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     story.append(Paragraph("TORCHCAST · INTELLIGENCE REPORT", styles["Kicker"]))
     story.append(Paragraph(f"Ordered &nbsp;&nbsp; {report.n_buckets} Buckets", styles["Meta"]))
     story.append(Paragraph(_esc(report.question), styles["Q"]))
+    bullish_meta = str(
+        report.extra.get("bullish_currency") or report.pair.split("/")[0]
+    )
     story.append(
         Paragraph(
-            f"Forecast date {report.forecast_date} &nbsp;·&nbsp; {report.n_evidence} evidence items",
+            f"Forecast date {report.forecast_date} &nbsp;·&nbsp; "
+            f"{report.n_evidence} evidence items &nbsp;·&nbsp; "
+            f"Bullish currency {bullish_meta} &nbsp;·&nbsp; "
+            f"Analysis quote {report.pair}",
             styles["Meta"],
         )
     )
