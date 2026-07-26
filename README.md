@@ -65,6 +65,11 @@ python run_cli.py build-peaks --pair USD/AUD
 # 同时写 output/calib_oos_summary_USDAUD.json（train vs holdout Brier/logloss）
 python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 
+# 过夜全量校准（build-peaks → calibrate；默认 USD/AUD + AUD/USD）
+# nohup ./scripts/overnight_calibrate.sh &
+# 日志：output/overnight_calib_YYYYMMDD.log  PID：output/overnight_calib.pid
+# 环境变量可调：N_SIMS=8000 N_ITERS=80 MAX_ROWS=250 HISTORY_DAYS=2000
+
 # 历史回测（argmax hit / Brier / log-loss 表）
 python run_cli.py backtest --pair USD/AUD --max-rows 40
 # → output/backtest_USDAUD.csv + backtest_USDAUD_summary.json + calib_oos_summary_USDAUD.json
