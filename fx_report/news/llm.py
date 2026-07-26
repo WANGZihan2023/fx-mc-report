@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from fx_report.news.fetch import Headline
+from fx_report.news.classify import MIN_PAIR_RELEVANCE, pair_relevance
 from fx_report.market.pairs import PairSpec, get_pair
 from fx_report.model.strength import StrengthInputs, label_strength, score_strength
 from fx_report.model.weights import EvidenceItem
@@ -309,8 +310,21 @@ def classify_headlines_llm(
     if not headlines:
         return [], {"error": None, "model": cfg.model, "n_input": 0}
 
-    # Cap payload size
-    selected = headlines[: max(max_items * 2, max_items)]
+    # Prefer pair-relevant headlines; drop low-relevance noise
+    ranked = sorted(
+        headlines,
+        key=lambda h: (
+            pair_relevance(f"{h.title} {h.summary}", spec.pair),
+            h.published.timestamp() if h.published else 0.0,
+        ),
+        reverse=True,
+    )
+    filtered = [
+        h
+        for h in ranked
+        if pair_relevance(f"{h.title} {h.summary}", spec.pair) >= MIN_PAIR_RELEVANCE
+    ]
+    selected = (filtered or ranked)[: max(max_items * 2, max_items)]
     payload_news = []
     for i, h in enumerate(selected, start=1):
         body = h.summary or ""
@@ -418,6 +432,7 @@ def classify_headlines_llm(
                 source_tier=source_tier,
                 surprise=surprise,
                 scope=scope,
+                url=(h.url if h else "") or "",
             )
         )
         if len(items) >= max_items:

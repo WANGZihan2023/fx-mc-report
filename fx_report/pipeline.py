@@ -22,6 +22,7 @@ from fx_report.market.fetch_data import MarketSnapshot, calibrate_unpriced_from_
 from fx_report.model.monte_carlo import MCResult, enforce_math_floor, run_mixture_monte_carlo
 from fx_report.news.evidence import build_evidence_from_news
 from fx_report.news.fetch import Headline, fetch_headlines_for_pair
+from fx_report.news.classify import MIN_PAIR_RELEVANCE, match_drivers_from_text, pair_relevance
 from fx_report.news.llm import LLMConfig, resolve_llm_config
 from fx_report.market.pair_drivers import DRIVER_CATALOG, describe_pair_factors, info_needs_for_drivers
 from fx_report.market.pairs import PairSpec, get_pair, make_custom_pair, resolve_pair_for_bullish
@@ -43,6 +44,11 @@ from fx_report.model.weights import (
 )
 
 ClassifyMode = Literal["hybrid", "llm", "rules"]
+TemplatePolicy = Literal["off", "prior_only", "fallback_warn"]
+
+# Prior templates: mark + downweight so they cannot pass as news-driven.
+_PRIOR_STRENGTH_MULT = 0.5
+_PRIOR_UNPRICED_MULT = 0.5
 
 # 驱动词表与信息需求见 pair_drivers.py（任意货币对共用）
 
@@ -269,27 +275,97 @@ def step3_collect_and_store_statements(
             except Exception as e:
                 meta["ai_research"] = {"enabled": True, "errors": [f"ai_research_failed:{e}"]}
 
-        drivers = list(spec.default_drivers)
-        for i, h in enumerate(headlines):
-            # 粗匹配：语句关联到信息需求驱动
-            blob = f"{h.title} {h.summary}".lower()
-            related = [d for d in drivers if d.replace("_", " ") in blob or d in blob]
-            if not related:
-                # 保底挂上政策类需求
-                related = ["fed", "rba"] if any(x in blob for x in ("fed", "rba", "fomc")) else []
+        allowed = list({n.driver for n in info_needs if n.driver} | set(spec.default_drivers))
+        stmt_i = 0
+        low_rel_skipped = 0
+        for h in headlines:
+            blob = f"{h.title} {h.summary}"
+            rel = pair_relevance(blob, spec.pair)
+            # Keep low-relevance out of the main statement pool used for scoring lineage
+            if rel < MIN_PAIR_RELEVANCE:
+                low_rel_skipped += 1
+                continue
+            related = match_drivers_from_text(blob, allowed=allowed or None)
+            # If only unclassified, still store but do not invent first-2 drivers
+            stmt_i += 1
             statements.append(
                 StoredStatement(
-                    id=f"STMT-{i+1:02d}",
+                    id=f"STMT-{stmt_i:02d}",
                     statement=(h.title + ((" — " + h.summary[:240]) if h.summary else "")).strip(),
                     source=h.source,
                     url=h.url,
                     provider=h.provider,
                     published=h.published.isoformat() if h.published else None,
-                    related_drivers=related or [n.driver for n in info_needs if n.driver][:2],
-                    raw=h.to_dict(),
+                    related_drivers=related,
+                    raw={**(h.to_dict()), "pair_relevance": rel},
                 )
             )
+        meta["low_rel_skipped"] = low_rel_skipped
+        meta["statements_news_n"] = stmt_i
     return market, statements, headlines, meta
+
+
+def _mark_prior_templates(
+    templates: list[EvidenceItem],
+    *,
+    downweight: bool,
+) -> list[EvidenceItem]:
+    """Copy template evidence, mark is_prior; optionally shrink strength/unpriced."""
+    out: list[EvidenceItem] = []
+    for e in templates:
+        strength = e.strength * _PRIOR_STRENGTH_MULT if downweight else e.strength
+        unpriced = e.unpriced * _PRIOR_UNPRICED_MULT if downweight else e.unpriced
+        note = (e.note or "").strip()
+        tag = "prior_template｜downweighted" if downweight else "prior_template"
+        note = f"{tag}｜{note}" if note else tag
+        out.append(
+            EvidenceItem(
+                id=e.id if e.id.startswith("P-") else f"P-{e.id}",
+                title=e.title,
+                direction=e.direction,
+                strength=strength,
+                freshness=e.freshness,
+                unpriced=unpriced,
+                category=e.category,
+                note=note,
+                strength_label=e.strength_label,
+                strength_breakdown={**e.strength_breakdown, "prior": 1.0},
+                source_tier=e.source_tier,
+                surprise=e.surprise,
+                scope=e.scope,
+                statement_id=e.statement_id,
+                url=e.url,
+                is_prior=True,
+            )
+        )
+    return out
+
+
+def _link_evidence_to_statements(
+    evidence: list[EvidenceItem],
+    statements: list[StoredStatement],
+) -> None:
+    """Attach statement_id (and url if missing) by URL / title match. Mutates in place."""
+    by_url: dict[str, StoredStatement] = {}
+    by_title: dict[str, StoredStatement] = {}
+    for s in statements:
+        if s.url:
+            by_url[s.url.strip().lower()] = s
+        title = (s.statement or "").split(" — ")[0].strip().lower()
+        if title:
+            by_title[title] = s
+    for e in evidence:
+        if e.statement_id:
+            continue
+        hit: StoredStatement | None = None
+        if e.url:
+            hit = by_url.get(e.url.strip().lower())
+        if hit is None:
+            hit = by_title.get((e.title or "").strip().lower())
+        if hit is not None:
+            e.statement_id = hit.id
+            if not e.url and hit.url:
+                e.url = hit.url
 
 
 def step4_evaluate_impact(
@@ -301,10 +377,20 @@ def step4_evaluate_impact(
     mode: ClassifyMode = "hybrid",
     max_items: int = 10,
     keep_templates: bool = False,
+    template_policy: TemplatePolicy = "off",
     llm_cfg: LLMConfig | None = None,
     fetch_fulltext: bool = True,
+    statements: list[StoredStatement] | None = None,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
-    """4. 评估每条信息对货币对的影响（方向 / 类别 / 强弱输入）"""
+    """
+    4. 评估每条信息对货币对的影响（方向 / 类别 / 强弱输入）
+
+    template_policy (empty news→evidence):
+      off           — do NOT silently use default_evidence (prefer; S→0)
+      prior_only    — templates allowed, marked is_prior + downweighted
+      fallback_warn — debug: use templates as-is, flag fallback_templates
+    keep_templates: when news evidence non-empty, also append marked prior templates.
+    """
     suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
     cfg = llm_cfg
     use_mode = mode
@@ -313,10 +399,21 @@ def step4_evaluate_impact(
     if use_mode in {"llm", "hybrid"} and cfg is None:
         use_mode = "rules"
 
+    policy: TemplatePolicy = template_policy or "off"
+    meta: dict[str, Any] = {
+        "mode": use_mode,
+        "template_policy": policy,
+        "fallback_templates": False,
+        "evidence_quality": "pending",
+        "fetched": len(headlines),
+        "kept": 0,
+        "classified": 0,
+        "evidence_n": 0,
+    }
+
     auto: list[EvidenceItem] = []
-    meta: dict[str, Any] = {"mode": use_mode}
     if headlines:
-        auto, meta = build_evidence_from_news(
+        auto, news_meta = build_evidence_from_news(
             headlines,
             spec,
             mode=use_mode,
@@ -325,29 +422,75 @@ def step4_evaluate_impact(
             llm_cfg=cfg,
             fetch_fulltext=fetch_fulltext,
         )
+        meta.update({k: v for k, v in news_meta.items() if k != "mode" or True})
+        meta["mode"] = news_meta.get("mode", use_mode)
+
     if auto:
-        evidence = auto + (list(base_weights.evidence) if keep_templates else [])
+        evidence = list(auto)
+        if keep_templates:
+            evidence = evidence + _mark_prior_templates(
+                list(base_weights.evidence), downweight=True
+            )
+        meta["fallback_templates"] = False
+        meta["evidence_quality"] = "news_driven"
     else:
-        evidence = list(base_weights.evidence)
-        meta["fallback_templates"] = True
+        # Honest empty path — no silent fake news evidence
+        if policy == "off":
+            evidence = []
+            meta["fallback_templates"] = False
+            meta["evidence_quality"] = "news_empty_no_prior"
+        elif policy == "prior_only":
+            evidence = _mark_prior_templates(list(base_weights.evidence), downweight=True)
+            meta["fallback_templates"] = True
+            meta["evidence_quality"] = "prior_only"
+        else:  # fallback_warn
+            evidence = list(base_weights.evidence)
+            for e in evidence:
+                e.is_prior = True
+                if e.note and "fallback_warn" not in e.note:
+                    e.note = f"fallback_warn｜{e.note}"
+                elif not e.note:
+                    e.note = "fallback_warn｜template"
+            meta["fallback_templates"] = True
+            meta["evidence_quality"] = "fallback_warn"
+
+    if statements:
+        _link_evidence_to_statements(evidence, statements)
 
     for e in evidence:
         e.unpriced = min(e.unpriced, suggested_up)
+        # Cap unclassified so they cannot dominate even if somehow scored
+        if (e.category or "").lower() == "unclassified":
+            e.strength = min(e.strength, 0.25)
+            e.direction = 0
+
+    meta["evidence_n"] = len(evidence)
+    meta["prior_n"] = sum(1 for e in evidence if e.is_prior)
+    meta["news_n"] = sum(1 for e in evidence if not e.is_prior)
     return evidence, meta
 
 
 def step5_assign_weights(evidence: list[EvidenceItem]) -> list[WeightedEvidence]:
-    """5. 对每条信息赋予权重（贡献分）"""
+    """5. 对每条信息赋予权重（贡献分）；unclassified / prior 已在 score 层处理"""
     out: list[WeightedEvidence] = []
     for e in evidence:
-        contrib = e.direction * e.strength * e.freshness * e.unpriced
-        if e.direction > 0:
-            impact = f"推高 {e.category} 路径上尾"
-        elif e.direction < 0:
-            impact = f"压制 {e.category} 路径峰值"
+        if (e.category or "").lower() == "unclassified":
+            contrib = 0.0
+            impact = "未分类｜不计入主分"
         else:
-            impact = "中性"
+            mult = 0.35 if e.is_prior else 1.0
+            contrib = mult * e.direction * e.strength * e.freshness * e.unpriced
+            if e.direction > 0:
+                impact = f"推高 {e.category} 路径上尾"
+            elif e.direction < 0:
+                impact = f"压制 {e.category} 路径峰值"
+            else:
+                impact = "中性"
+            if e.is_prior:
+                impact = f"[先验] {impact}"
         note = f"{impact}｜label={e.strength_label or 'n/a'}｜contrib={contrib:+.3f}"
+        if e.statement_id:
+            note += f"｜{e.statement_id}"
         out.append(WeightedEvidence(evidence=e, impact_note=note, weight_contrib=contrib))
     return out
 
@@ -512,8 +655,23 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
     ]
     diag["news_meta"] = news_meta
     diag["torchcast_question"] = tc.question
+    diag["evidence_quality"] = news_meta.get("evidence_quality")
+    diag["fallback_templates"] = bool(news_meta.get("fallback_templates"))
+    diag["template_policy"] = news_meta.get("template_policy", "off")
+    diag["evidence_counts"] = {
+        "fetched": news_meta.get("fetched", 0),
+        "kept": news_meta.get("kept", 0),
+        "classified": news_meta.get("classified", 0),
+        "evidence_n": news_meta.get("evidence_n", len(weights.evidence)),
+        "prior_n": news_meta.get("prior_n", 0),
+        "news_n": news_meta.get("news_n", 0),
+    }
     if bullish_currency:
         diag["bullish_currency"] = bullish_currency
+    # Push audit fields into torchcast HTML/PDF meta
+    tc.extra["evidence_quality"] = diag["evidence_quality"]
+    tc.extra["fallback_templates"] = diag["fallback_templates"]
+    tc.extra["template_policy"] = diag["template_policy"]
     return full_report, report_html, tc, diag, horizon
 
 
@@ -530,6 +688,7 @@ def run_pipeline(
     mode: ClassifyMode = "hybrid",
     max_news: int = 10,
     keep_templates: bool = False,
+    template_policy: TemplatePolicy = "off",
     no_news: bool = False,
     no_fulltext: bool = False,
     ai_research: bool = True,
@@ -539,6 +698,7 @@ def run_pipeline(
     bullish_currency: str | None = None,
     model_weights: ModelWeights | None = None,
     calibrated_params_path: str | Path | None = None,
+    calibrated_params_label: str | None = None,
 ) -> PipelineResult:
     """跑完整七步；可选写入 output/。
 
@@ -546,6 +706,7 @@ def run_pipeline(
     确保蒙特卡洛与 FX Analyse 使用同一套用户分档。
 
     `calibrated_params_path`：可选 Stage-1 JSON，覆盖 score_to_* / 情景先验等。
+    `template_policy`：off（默认，无静默模板）/ prior_only / fallback_warn。
     """
     log: list[str] = []
 
@@ -577,12 +738,16 @@ def run_pipeline(
     say(f"  → {describe_pair_factors(spec.base, spec.quote, spec.default_drivers)}")
 
     base = default_weights(spec)
+    cal_source = "default"
+    if calibrated_params_label:
+        cal_source = str(calibrated_params_label)
     if calibrated_params_path:
         from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
 
         cal_path = Path(calibrated_params_path)
         if cal_path.exists():
             apply_calibrated_params(base, load_calibrated_params(cal_path))
+            cal_source = str(cal_path)
             say(f"  → 已加载校准参数 {cal_path}")
         else:
             say(f"  → 警告：校准文件不存在，跳过：{cal_path}")
@@ -616,6 +781,8 @@ def run_pipeline(
         f"{'相对% ' + str(base.bucket_pct_cuts) if base.use_relative_buckets else '绝对 ' + str(base.bucket_edges)}"
     )
     say(f"  → peak_engine={base.peak_engine}")
+    say(f"  → calibrated_params={cal_source}")
+    say(f"  → template_policy={template_policy}")
 
     # 2
     say("【2/7】评估所需要的信息（因货币对而异）")
@@ -637,6 +804,8 @@ def run_pipeline(
     )
     say(f"  → 行情 {market.source} spot={market.spot:.5f}")
     say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条")
+    if step3_meta.get("low_rel_skipped"):
+        say(f"  → 低相关头条跳过 {step3_meta['low_rel_skipped']} 条")
     ai_meta = step3_meta.get("ai_research") or {}
     if ai_meta:
         say(
@@ -656,11 +825,23 @@ def run_pipeline(
         mode=mode,
         max_items=max_news,
         keep_templates=keep_templates,
+        template_policy=template_policy,
         llm_cfg=llm_cfg,
         fetch_fulltext=not no_fulltext,
+        statements=statements,
     )
     news_meta["ai_research"] = ai_meta
-    say(f"  → 证据 {len(evidence)} 条｜mode={news_meta.get('mode')}")
+    news_meta["step3"] = {
+        k: step3_meta[k]
+        for k in ("low_rel_skipped", "statements_news_n")
+        if k in step3_meta
+    }
+    news_meta["calibrated_params"] = cal_source
+    say(
+        f"  → 证据 {len(evidence)} 条｜mode={news_meta.get('mode')}｜"
+        f"quality={news_meta.get('evidence_quality')}｜"
+        f"fallback_templates={news_meta.get('fallback_templates')}"
+    )
 
     # 5
     say("【5/7】对每条信息赋予权重")
@@ -700,6 +881,8 @@ def run_pipeline(
         news_meta=news_meta,
         bullish_currency=bullish,
     )
+    diagnostics["calibrated_params"] = cal_source
+    torchcast.extra["calibrated_params"] = cal_source
 
     result = PipelineResult(
         pair=spec.pair,

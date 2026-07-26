@@ -43,6 +43,10 @@ class EvidenceItem:
     source_tier: str = ""
     surprise: str = ""
     scope: str = ""
+    # Audit / lineage
+    statement_id: str = ""  # e.g. STMT-03 linking to step3 storage
+    url: str = ""
+    is_prior: bool = False  # template / prior — not news-driven
 
 
 @dataclass
@@ -412,8 +416,19 @@ def resolve_bucket_edges(weights: ModelWeights, spot: float) -> tuple[float, flo
     return weights.bucket_edges
 
 
+# Prior / template evidence is downweighted so it cannot silently dominate S.
+_PRIOR_SCORE_MULT = 0.35
+
+
 def evidence_score(items: list[EvidenceItem]) -> float:
-    return sum(e.direction * e.strength * e.freshness * e.unpriced for e in items)
+    """Sum signed contributions; skip unclassified; downweight prior templates."""
+    total = 0.0
+    for e in items:
+        if (e.category or "").strip().lower() == "unclassified":
+            continue
+        mult = _PRIOR_SCORE_MULT if e.is_prior else 1.0
+        total += mult * e.direction * e.strength * e.freshness * e.unpriced
+    return total
 
 
 def apply_evidence_to_scenarios(

@@ -340,7 +340,20 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             index=0,
             help="hybrid=LLM优先；rules=仅关键词",
         )
-        keep_templates = st.checkbox("保留模板证据", value=False)
+        template_policy = st.selectbox(
+            "模板证据策略 template_policy",
+            ["off", "prior_only", "fallback_warn"],
+            index=0,
+            help=(
+                "新闻证据为空时：off=不用模板（默认，诚实）；"
+                "prior_only=用模板但标记先验并降权；"
+                "fallback_warn=调试用，用模板并告警"
+            ),
+        )
+        keep_templates = st.checkbox(
+            "新闻有证据时也合并模板（标记为先验）",
+            value=False,
+        )
         max_news_ev = st.slider("最多头条证据条数", 3, 20, 10, 1)
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
 
@@ -358,6 +371,9 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             _engine_opts,
             index=_engine_idx,
             help="path_max=离散GBM+跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
+        )
+        st.caption(
+            "切换引擎后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine。"
         )
         st.caption("分档边界请在主区「概率区间」设置（相对现价涨幅% 或绝对汇率价位）。")
         use_rel = True
@@ -558,6 +574,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "use_news": use_news,
         "ai_research": ai_research,
         "keep_templates": keep_templates,
+        "template_policy": template_policy,
         "max_news_ev": int(max_news_ev),
         "classify_mode": classify_mode,
         "fetch_fulltext": fetch_fulltext,
@@ -594,11 +611,13 @@ def main() -> None:
         help=f"若存在则加载 {default_cal}",
     )
     cal_path = None
+    cal_label = "default"
     if use_cal and default_cal.exists():
         from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
 
         apply_calibrated_params(base, load_calibrated_params(default_cal))
         cal_path = str(default_cal)
+        cal_label = str(default_cal)
         st.sidebar.caption(f"已加载 {default_cal.name}")
     elif use_cal:
         st.sidebar.caption(f"未找到 {default_cal.name}，用默认先验")
@@ -713,6 +732,7 @@ def main() -> None:
                 mode=mode_cls,  # type: ignore[arg-type]
                 max_news=news_opts["max_news_ev"],
                 keep_templates=news_opts["keep_templates"],
+                template_policy=news_opts.get("template_policy") or "off",  # type: ignore[arg-type]
                 no_news=not news_opts["use_news"],
                 no_fulltext=not bool(news_opts.get("fetch_fulltext", True)),
                 ai_research=bool(news_opts.get("ai_research", True)),
@@ -722,6 +742,7 @@ def main() -> None:
                 bullish_currency=bullish,
                 model_weights=weights,
                 calibrated_params_path=None,  # already merged into sidebar weights
+                calibrated_params_label=cal_label,
             )
 
             if result.market.notes:
@@ -791,6 +812,47 @@ def main() -> None:
     edges_used = st.session_state.get("last_edges") or diag.get("bucket_edges") or []
     edge_s = " / ".join(_fmt_px(float(x)) for x in edges_used) if edges_used else "—"
     st.caption(f"行情源 {src} · 窗口 {_horizon(start, end)} · 切点 {edge_s}")
+
+    # —— 本次分析审计（prominent）——
+    news_meta = st.session_state.get("last_news_meta") or diag.get("news_meta") or {}
+    peak_eng = diag.get("peak_engine") or news_meta.get("peak_engine") or "path_max"
+    cal_used = diag.get("calibrated_params") or news_meta.get("calibrated_params") or "default"
+    eq = diag.get("evidence_quality") or news_meta.get("evidence_quality") or "n/a"
+    fb = bool(diag.get("fallback_templates") or news_meta.get("fallback_templates"))
+    mode_used = news_meta.get("mode") or "n/a"
+    counts = diag.get("evidence_counts") or {
+        "fetched": news_meta.get("fetched", 0),
+        "kept": news_meta.get("kept", 0),
+        "classified": news_meta.get("classified", 0),
+        "evidence_n": news_meta.get("evidence_n", 0),
+    }
+    sc_adj = diag.get("scenarios_adjusted") or []
+    weight_bits = ", ".join(
+        f"{s.get('name', '?')}={float(s.get('weight', 0)):.1%}" for s in sc_adj
+    ) or "—"
+    note_bits: list[str] = []
+    if fb or eq in {"prior_only", "fallback_warn"}:
+        note_bits.append("本次使用了模板/先验证据（非纯新闻驱动），已标记并降权或告警。")
+    if eq == "news_empty_no_prior":
+        note_bits.append("新闻未产出证据且 template_policy=off → S≈0，未静默填模板。")
+    if peak_eng == "brownian_bridge":
+        note_bits.append("brownian_bridge 不含跳跃项，与 path_max 峰值分布可能不同。")
+    note = " ".join(note_bits) if note_bits else "证据链按新闻驱动（或空证据诚实路径）。"
+
+    st.info(
+        f"**本次分析审计**  \n"
+        f"· peak_engine：`{peak_eng}`  \n"
+        f"· 校准参数：`{cal_used}`  \n"
+        f"· 证据分 S={diag.get('score_S', 0):+.3f}　"
+        f"μ_shift={diag.get('mu_annual_shift', 0):+.4f}　"
+        f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"
+        f"· 情景权重（调整后）：{weight_bits}  \n"
+        f"· evidence_n={counts.get('evidence_n', 0)}　"
+        f"fetched/kept/classified="
+        f"{counts.get('fetched', 0)}/{counts.get('kept', 0)}/{counts.get('classified', 0)}　"
+        f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"
+        f"· {note}"
+    )
 
     st.bar_chart(
         pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间")

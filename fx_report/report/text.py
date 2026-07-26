@@ -200,4 +200,6 @@ def build_diagnostics(
         "seed": weights.seed,
         "peak_engine": getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max")),
         "evidence_score_check": evidence_score(weights.evidence),
+        "evidence_quality": None,
+        "fallback_templates": False,
     }

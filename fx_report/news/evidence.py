@@ -29,7 +29,15 @@ def build_evidence_from_news(
       llm    — LLM only (fallback to rules if LLM fails/empty)
       hybrid — LLM first; if empty/error, rules
     """
-    meta: dict[str, Any] = {"mode": mode, "llm": None, "rules_used": False}
+    meta: dict[str, Any] = {
+        "mode": mode,
+        "llm": None,
+        "rules_used": False,
+        "fetched": len(headlines),
+        "kept": 0,
+        "classified": 0,
+        "evidence_n": 0,
+    }
 
     use_llm = mode in {"llm", "hybrid"}
     cfg = llm_cfg or (resolve_llm_config() if use_llm else None)
@@ -45,21 +53,22 @@ def build_evidence_from_news(
         )
         meta["llm"] = llm_meta
         if items:
+            meta["kept"] = int(llm_meta.get("n_input") or len(headlines))
+            meta["classified"] = int(llm_meta.get("raw_count") or len(items))
+            meta["evidence_n"] = len(items)
             return items, meta
         if mode == "llm" and llm_meta.get("error"):
             # hard fail path still falls back so the report can run
             meta["rules_used"] = True
-            return (
-                rules_headlines_to_evidence(
-                    headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
-                ),
-                meta,
+            items, counts = rules_headlines_to_evidence(
+                headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
             )
+            meta.update(counts)
+            return items, meta
 
     meta["rules_used"] = True
-    return (
-        rules_headlines_to_evidence(
-            headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
-        ),
-        meta,
+    items, counts = rules_headlines_to_evidence(
+        headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
     )
+    meta.update(counts)
+    return items, meta

@@ -34,6 +34,12 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out", type=str, default="output")
     p.add_argument("--no-news", action="store_true")
     p.add_argument("--keep-templates", action="store_true")
+    p.add_argument(
+        "--template-policy",
+        choices=["off", "prior_only", "fallback_warn"],
+        default="off",
+        help="新闻证据为空时：off=不用模板；prior_only=标记降权模板；fallback_warn=调试告警回退",
+    )
     p.add_argument("--max-news", type=int, default=10)
     p.add_argument("--mode", choices=["hybrid", "llm", "rules"], default="hybrid")
     p.add_argument("--no-fulltext", action="store_true")
@@ -68,6 +74,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         mode=args.mode,  # type: ignore[arg-type]
         max_news=args.max_news,
         keep_templates=args.keep_templates,
+        template_policy=args.template_policy,
         no_news=args.no_news,
         no_fulltext=args.no_fulltext,
         ai_research=args.ai_research,

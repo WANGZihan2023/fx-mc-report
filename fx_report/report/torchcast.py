@@ -365,6 +365,8 @@ def build_torchcast_report(
             "n_sims": mc.n_sims,
             "peak_engine": getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max")),
             "bullish_currency": (bullish_currency or market.pair.split("/")[0]).upper(),
+            "evidence_quality": None,  # filled by pipeline step7 when available
+            "fallback_templates": False,
         },
     )
 
@@ -759,6 +761,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>Bullish currency {_esc(str(report.extra.get("bullish_currency") or report.pair.split("/")[0]))}</span>
     <span>Analysis quote {_esc(report.pair)}</span>
     <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
+    <span>Evidence {_esc(str(report.extra.get("evidence_quality") or "n/a"))}</span>
   </div>
 
   <div class="panel">
@@ -953,13 +956,15 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         report.extra.get("bullish_currency") or report.pair.split("/")[0]
     )
     peak_meta = str(report.extra.get("peak_engine") or "path_max")
+    eq_meta = str(report.extra.get("evidence_quality") or "n/a")
     story.append(
         Paragraph(
             f"Forecast date {report.forecast_date} &nbsp;·&nbsp; "
             f"{report.n_evidence} evidence items &nbsp;·&nbsp; "
             f"Bullish currency {bullish_meta} &nbsp;·&nbsp; "
             f"Analysis quote {report.pair} &nbsp;·&nbsp; "
-            f"Peak engine {peak_meta}",
+            f"Peak engine {peak_meta} &nbsp;·&nbsp; "
+            f"Evidence {eq_meta}",
             styles["Meta"],
         )
     )

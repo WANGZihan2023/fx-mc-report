@@ -278,11 +278,12 @@ def classify_headline(
         source_tier=source_tier,
         surprise=surprise,
         scope=scope,
+        url=headline.url or "",
     )
 
 
-def _pair_relevance(text: str, pair: str) -> float:
-    """Higher = more relevant to this pair; used to rank before classification."""
+def pair_relevance(text: str, pair: str) -> float:
+    """Higher = more relevant to this pair; used to rank / filter before classification."""
     t = text.lower()
     score = 0.0
     base, quote = pair.split("/")
@@ -309,33 +310,80 @@ def _pair_relevance(text: str, pair: str) -> float:
     return score
 
 
+# Backward-compatible alias
+_pair_relevance = pair_relevance
+
+# Headlines below this relevance are excluded from main evidence (no silent junk).
+MIN_PAIR_RELEVANCE = 0.5
+
+
+def match_drivers_from_text(
+    text: str,
+    *,
+    allowed: list[str] | None = None,
+) -> list[str]:
+    """
+    Map text → driver categories via CATEGORY_RULES.
+    If nothing matches, return ['unclassified'] (never invent first-N drivers).
+    """
+    blob = text or ""
+    hits: list[str] = []
+    for cat, pat in CATEGORY_RULES:
+        if pat.search(blob):
+            if allowed is None or cat in allowed:
+                hits.append(cat)
+    if not hits:
+        # title-only dollar macro → yields/fed already handled in _category; mirror lightly
+        cat = _category(blob)
+        if cat != "other" and (allowed is None or cat in allowed):
+            hits.append(cat)
+    return hits if hits else ["unclassified"]
+
+
 def headlines_to_evidence(
     headlines: list[Headline],
     pair: PairSpec | str,
     *,
     max_items: int = 12,
     unpriced_cap: float = 0.75,
-) -> list[EvidenceItem]:
-    """Convert newest actionable headlines into evidence cards."""
+    min_relevance: float = MIN_PAIR_RELEVANCE,
+) -> tuple[list[EvidenceItem], dict[str, int]]:
+    """
+    Convert newest actionable headlines into evidence cards.
+    Returns (items, counts) with fetched / kept / classified / evidence_n.
+    """
     spec = get_pair(pair) if isinstance(pair, str) else pair
+    fetched = len(headlines)
     ranked = sorted(
         headlines,
         key=lambda h: (
-            _pair_relevance(f"{h.title} {h.summary}", spec.pair),
+            pair_relevance(f"{h.title} {h.summary}", spec.pair),
             h.published.timestamp() if h.published else 0.0,
         ),
         reverse=True,
     )
-    items: list[EvidenceItem] = []
-    for i, h in enumerate(ranked, start=1):
-        # Prefer pair-relevant items; still allow strong USD macro for USD crosses
-        rel = _pair_relevance(f"{h.title} {h.summary}", spec.pair)
-        if rel < 0.5 and len(items) >= max(3, max_items // 2):
+    kept_pool: list[Headline] = []
+    for h in ranked:
+        rel = pair_relevance(f"{h.title} {h.summary}", spec.pair)
+        if rel < min_relevance:
             continue
+        kept_pool.append(h)
+
+    items: list[EvidenceItem] = []
+    classified = 0
+    for i, h in enumerate(kept_pool, start=1):
         ev = classify_headline(h, pair, eid=f"N-{i:02d}", unpriced_cap=unpriced_cap)
         if ev is None:
             continue
+        classified += 1
+        ev.url = h.url or ""
         items.append(ev)
         if len(items) >= max_items:
             break
-    return items
+    counts = {
+        "fetched": fetched,
+        "kept": len(kept_pool),
+        "classified": classified,
+        "evidence_n": len(items),
+    }
+    return items, counts

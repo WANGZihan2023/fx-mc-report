@@ -70,10 +70,15 @@ python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_param
 # 峰值引擎冒烟对比
 python scripts/smoke_peak_engines.py
 
+# 证据链诚实性（无静默模板回退）
+python scripts/smoke_evidence_honesty.py
+
 # UI（产品名 FX Analyse）
 streamlit run app.py
 # 或双击 scripts/open.command（macOS）/ scripts/open.bat（Windows）
 ```
+
+新闻证据为空时默认 `template_policy=off`（不静默填模板）；`prior_only` / `fallback_warn` 可显式启用。UI 结果页有「本次分析审计」。
 
 ## 数据源
 
