@@ -143,7 +143,7 @@ def bb_jumps_caveat_message(
     if not scenario_has_jumps(scenarios, jump_model=jump_model):
         return None
     return (
-        "brownian_bridge 峰值引擎不含跳跃（连续 GBM 桥最大值）；"
-        "当前情景 E[jumps]>0 且 jump_model=merton 时跳跃被忽略。"
+        "brownian_bridge：日端点之间用反射原理抽取连续路径最大值（Shreve）；"
+        "不含跳跃（复合泊松）——当前情景 E[jumps]>0 且 jump_model=merton 时跳跃被忽略。"
         "若需跳跃加厚峰值尾部，请改用 peak_engine=path_max。"
     )

@@ -600,7 +600,10 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "峰值引擎 peak_engine",
             _engine_opts,
             index=_engine_idx,
-            help="path_max=离散GBM+Merton跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
+            help=(
+                "path_max=离散GBM+Merton跳跃路径最大值；"
+                "brownian_bridge=日端点间反射原理连续最大值（Shreve；不含跳跃）"
+            ),
         )
         _jm_opts = ["merton", "none"]
         _jm_default = getattr(base, "jump_model", "merton")
@@ -623,11 +626,16 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             index=0,
             help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
         )
-        if peak_engine == "brownian_bridge" and jump_model == "merton":
-            st.warning(
-                "brownian_bridge 不含跳跃。若情景 E[jumps]>0，跳跃会被忽略；"
-                "需要跳跃加厚峰值尾部时请改用 path_max。"
+        if peak_engine == "brownian_bridge":
+            st.info(
+                "连续峰值：日端点之间用反射原理 / 布朗桥（Shreve II）抽取路径内最大值；"
+                "复合泊松跳跃不计。"
             )
+            if jump_model == "merton":
+                st.warning(
+                    "若情景 E[jumps]>0，跳跃会被忽略；"
+                    "需要跳跃加厚峰值尾部时请改用 path_max。"
+                )
         st.caption(
             "切换引擎/跳跃后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine / jump_model。"
         )
@@ -1900,7 +1908,9 @@ def main() -> None:
     if bb_caveat:
         note_bits.append(str(bb_caveat))
     elif peak_eng == "brownian_bridge":
-        note_bits.append("brownian_bridge 不含跳跃项，与 path_max 峰值分布可能不同。")
+        from fx_report.model.brownian_bridge_max import BB_CONTINUOUS_MAX_NOTE_ZH
+
+        note_bits.append(BB_CONTINUOUS_MAX_NOTE_ZH)
     note = " ".join(note_bits) if note_bits else "证据链按新闻驱动（或空证据诚实路径）。"
 
     oos = load_calib_oos_summary(diag["market"]["pair"])

@@ -39,4 +39,5 @@
 - 实时利率曲线拉 carry  
 - GARCH(1,1) 全估计（仅 EWMA 轻量选项）
 
-> Goal B（Cont–Tankov / Merton 跳跃）见 `docs/math_goal_B_cont_tankov.md`。
+> Goal B（Cont–Tankov / Merton 跳跃）见 `docs/math_goal_B_cont_tankov.md`。  
+> Goal D（Shreve II 布朗桥连续峰）见 `docs/math_goal_D_shreve.md`。

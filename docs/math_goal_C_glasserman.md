@@ -28,6 +28,7 @@
   - `fx_report/model/brownian_bridge_max.py`：
     - `sample_bridge_log_maxima(...)`：使用反射原理/条件极值的逆-CDF 采样桥段连续最大值。
     - `simulate_bb_path_maxima(...)`：把逐日桥段最大值拼成整段 path 最大值。
+  - 更完整的 Shreve II 章节映射见 `docs/math_goal_D_shreve.md`。
 
 ## 4) 当前实现的验证方式（可编码、可测试）
 

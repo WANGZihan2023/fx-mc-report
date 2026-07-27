@@ -190,7 +190,8 @@ def _build_narratives(
     if engine == "brownian_bridge":
         engine_phrase = (
             f"A {mc.n_sims:,}-run Monte Carlo mixture using a Brownian-bridge continuous "
-            f"peak engine (GBM in log space; compound-Poisson jumps excluded) provides "
+            f"peak engine (reflection principle between daily log-GBM endpoints; "
+            f"compound-Poisson jumps excluded) provides "
             f"the quantitative anchor for the distribution across higher intervals"
         )
     else:
