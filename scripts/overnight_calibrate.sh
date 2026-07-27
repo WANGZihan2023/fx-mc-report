@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Overnight full MC calibration: build-peaks → calibrate → optional AUD/USD.
+# Overnight full MC calibration: build-peaks -> calibrate -> optional AUD/USD.
 # Usage: ./scripts/overnight_calibrate.sh [PAIR...]
 # Defaults: USD/AUD then AUD/USD (bullish inverse form).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# MODE=full → stronger multi-pair job (see overnight_calibrate_full.sh)
+# MODE=full -> stronger multi-pair job (see overnight_calibrate_full.sh)
 MODE="${MODE:-overnight}"
 if [[ "$MODE" == "full" ]]; then
   exec "$ROOT/scripts/overnight_calibrate_full.sh" "$@"
@@ -19,7 +19,7 @@ if [[ ! -x "$PYTHON" ]]; then
   PYTHON="$(command -v python3)"
 fi
 
-# Full (non-smoke) knobs — higher than CLI defaults (2k/40/80)
+# Full (non-smoke) knobs - higher than CLI defaults (2k/40/80)
 N_SIMS="${N_SIMS:-8000}"
 N_ITERS="${N_ITERS:-80}"
 MAX_ROWS="${MAX_ROWS:-250}"
@@ -60,7 +60,7 @@ for PAIR in "${PAIRS[@]}"; do
     --loss brier \
     --seed 42
 
-  echo "---- [$(date -Iseconds)] done $PAIR → output/calibrated_params_${SAFE}.json ----"
+  echo "---- [$(date -Iseconds)] done $PAIR -> output/calibrated_params_${SAFE}.json ----"
   ls -la "output/calibrated_params_${SAFE}.json" "output/calib_oos_summary_${SAFE}.json" 2>/dev/null || true
 done
 
