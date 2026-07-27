@@ -22,6 +22,7 @@ import pandas as pd
 
 from fx_report.config.api_config import is_set, load_config, timeout_s
 from fx_report.market.pairs import PairSpec, get_pair
+from fx_report.model.gbm_vol import estimate_vol
 
 # FRED: series_id, invert_to_analysis_quote
 FRED_SERIES: dict[str, tuple[str, bool]] = {
@@ -139,10 +140,13 @@ def _series_from_closes(closes: list[tuple[pd.Timestamp, float]]) -> pd.Series:
 def _ann_vol(closes: np.ndarray) -> float | None:
     if len(closes) < 3:
         return None
-    rets = np.log(closes[1:] / closes[:-1])
-    if len(rets) < 2:
+    try:
+        _d, ann = estimate_vol(closes, estimator="window")
+    except ValueError:
         return None
-    return float(np.std(rets, ddof=1) * math.sqrt(252.0))
+    if not math.isfinite(ann):
+        return None
+    return float(ann)
 
 
 def _pct_change(series: pd.Series, n: int) -> float | None:
@@ -324,15 +328,24 @@ def _snapshot_from_series(
     used_proxy: bool = False,
     brent: float | None = None,
     dxy: float | None = None,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
 ) -> MarketSnapshot:
     effective_lb = min(lookback_days, len(series) - 1)
     if effective_lb < lookback_days:
         notes.append(f"可用历史仅 {len(series)} 根，波动回看降至 {effective_lb} 日。")
     window = series.iloc[-(effective_lb + 1) :]
-    rets = np.log(window.values[1:] / window.values[:-1])
-    sigma_daily = float(np.std(rets, ddof=1))
-    sigma_annual = sigma_daily * math.sqrt(252.0)
-    mean_daily = float(np.mean(rets))
+    closes_w = window.values.astype(float)
+    rets = np.log(closes_w[1:] / closes_w[:-1]) if len(closes_w) >= 2 else np.empty(0)
+    try:
+        sigma_daily, sigma_annual = estimate_vol(
+            closes_w, estimator=vol_estimator, ewma_lambda=ewma_lambda
+        )
+    except ValueError:
+        sigma_daily, sigma_annual = float("nan"), float("nan")
+    if vol_estimator == "ewma":
+        notes.append(f"波动估计：Hull EWMA（λ={ewma_lambda:g}）。")
+    mean_daily = float(np.mean(rets)) if len(rets) else float("nan")
     spot = float(series.iloc[-1])
     closes = series.values.astype(float)
     return MarketSnapshot(
@@ -453,9 +466,14 @@ def fetch_history_series(
 def fetch_market(
     pair: PairSpec | str,
     lookback_days: int = 60,
+    *,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
 ) -> MarketSnapshot:
     """
     Authoritative FX only (ECB/Frankfurter → FRED → Twelve → Alpha).
+
+    vol_estimator: Hull "window" (default) or "ewma" on the lookback closes.
     """
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
@@ -513,6 +531,8 @@ def fetch_market(
         used_proxy=used_proxy,
         brent=brent,
         dxy=dxy,
+        vol_estimator=vol_estimator,
+        ewma_lambda=ewma_lambda,
     )
 
 

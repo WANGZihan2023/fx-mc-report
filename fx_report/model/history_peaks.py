@@ -17,17 +17,24 @@ import pandas as pd
 
 from fx_report.market.fetch_data import fetch_history_series
 from fx_report.market.pairs import PairSpec, edges_from_spot, get_pair
+from fx_report.model.gbm_vol import estimate_vol
 from fx_report.model.monte_carlo import assign_buckets, bucket_labels_from_edges
 from fx_report.model.weights import default_weights
 
 
-def _sigma_daily(closes: np.ndarray) -> float:
+def _sigma_daily(
+    closes: np.ndarray,
+    *,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
+) -> float:
     if len(closes) < 3:
         return float("nan")
-    rets = np.log(closes[1:] / closes[:-1])
-    if len(rets) < 2:
+    try:
+        sigma_d, _ = estimate_vol(closes, estimator=vol_estimator, ewma_lambda=ewma_lambda)
+    except ValueError:
         return float("nan")
-    return float(np.std(rets, ddof=1))
+    return float(sigma_d)
 
 
 def _bucket_index(realized_max: float, edges: Sequence[float]) -> int:
@@ -49,6 +56,8 @@ def build_peak_samples(
     step: int = 5,
     bucket_pct_cuts: tuple[float, float, float, float] | None = None,
     series: pd.Series | None = None,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Build rolling-window peak samples.
@@ -89,7 +98,9 @@ def build_peak_samples(
         if not math.isfinite(spot) or spot <= 0:
             continue
         window_vol = values[i - vol_lookback : i + 1]
-        sigma = _sigma_daily(window_vol)
+        sigma = _sigma_daily(
+            window_vol, vol_estimator=vol_estimator, ewma_lambda=ewma_lambda
+        )
         if not math.isfinite(sigma) or sigma <= 0:
             continue
         future = values[i : i + horizon_days + 1]
@@ -139,6 +150,8 @@ def build_peak_samples(
         "bucket_labels_template": labels,
         "history_start": str(dates[0].date()) if n else None,
         "history_end": str(dates[-1].date()) if n else None,
+        "vol_estimator": vol_estimator,
+        "ewma_lambda": ewma_lambda,
     }
     return df, meta
 
@@ -152,6 +165,8 @@ def export_peak_samples(
     history_days: int = 1500,
     step: int = 5,
     bucket_pct_cuts: tuple[float, float, float, float] | None = None,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
 ) -> tuple[Path, pd.DataFrame, dict]:
     """Build samples and write `output/peak_samples_{PAIR}.csv`."""
     spec = get_pair(pair) if isinstance(pair, str) else pair
@@ -162,6 +177,8 @@ def export_peak_samples(
         history_days=history_days,
         step=step,
         bucket_pct_cuts=bucket_pct_cuts,
+        vol_estimator=vol_estimator,
+        ewma_lambda=ewma_lambda,
     )
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

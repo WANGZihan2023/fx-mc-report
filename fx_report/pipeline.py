@@ -213,13 +213,20 @@ def step3_collect_and_store_statements(
     skip_news: bool = False,
     ai_research: bool = True,
     llm_cfg: LLMConfig | None = None,
+    vol_estimator: str = "window",
+    ewma_lambda: float = 0.94,
 ) -> tuple[MarketSnapshot, list[StoredStatement], list[Headline], dict[str, Any]]:
     """
     3. 按信息需求抓取，并存储有影响的语句
     （行情 + 官方/RSS 头条 + 可选 AI 检索员；供赋权 / References / 数学分析）
     """
     meta: dict[str, Any] = {"ai_research": None}
-    market = fetch_market(spec, lookback_days=lookback_days)
+    market = fetch_market(
+        spec,
+        lookback_days=lookback_days,
+        vol_estimator=vol_estimator,
+        ewma_lambda=ewma_lambda,
+    )
     statements: list[StoredStatement] = [
         StoredStatement(
             id="MKT-SPOT",
@@ -524,6 +531,8 @@ def step6_math_analysis(
         mu_annual_shift=mu_shift,
         sigma_mult_extra=sigma_extra,
         peak_engine=getattr(weights, "peak_engine", "path_max"),
+        drift_mode=getattr(weights, "drift_mode", "scenario"),
+        carry_mu_annual=float(getattr(weights, "carry_mu_annual", 0.0)),
     )
     probs = enforce_math_floor(mc.raw_probs, market.spot, edges)
     return score, mu_shift, sigma_extra, scenarios, edges, mc, probs
@@ -799,6 +808,10 @@ def run_pipeline(
             base.scenarios = list(model_weights.scenarios)
         if model_weights.evidence:
             base.evidence = list(model_weights.evidence)
+        base.vol_estimator = str(getattr(model_weights, "vol_estimator", "window"))
+        base.ewma_lambda = float(getattr(model_weights, "ewma_lambda", 0.94))
+        base.drift_mode = str(getattr(model_weights, "drift_mode", "scenario"))
+        base.carry_mu_annual = float(getattr(model_weights, "carry_mu_annual", 0.0))
     else:
         base.n_sims = sims
         base.trading_days = days
@@ -810,6 +823,7 @@ def run_pipeline(
         f"{'相对% ' + str(base.bucket_pct_cuts) if base.use_relative_buckets else '绝对 ' + str(base.bucket_edges)}"
     )
     say(f"  → peak_engine={base.peak_engine}")
+    say(f"  → vol_estimator={base.vol_estimator}  drift_mode={base.drift_mode}")
     say(f"  → calibrated_params={cal_source}")
     say(f"  → template_policy={template_policy}")
 
@@ -830,6 +844,8 @@ def run_pipeline(
         skip_news=no_news,
         ai_research=ai_research,
         llm_cfg=llm_cfg,
+        vol_estimator=getattr(base, "vol_estimator", "window"),
+        ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),
     )
     say(f"  → 行情 {market.source} spot={market.spot:.5f}")
     say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条")

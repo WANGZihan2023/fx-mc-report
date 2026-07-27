@@ -137,6 +137,10 @@ def pack_params(w: ModelWeights) -> dict[str, Any]:
         "vol_lookback_days": w.vol_lookback_days,
         "scenarios": [asdict(s) for s in w.scenarios],
         "peak_engine": getattr(w, "peak_engine", "path_max"),
+        "vol_estimator": getattr(w, "vol_estimator", "window"),
+        "ewma_lambda": float(getattr(w, "ewma_lambda", 0.94)),
+        "drift_mode": getattr(w, "drift_mode", "scenario"),
+        "carry_mu_annual": float(getattr(w, "carry_mu_annual", 0.0)),
         "calibration": {"baseline": "S=0", "version": 1},
     }
 
@@ -177,6 +181,14 @@ def apply_calibrated_params(base: ModelWeights, params: dict[str, Any]) -> Model
             setattr(base, "peak_engine", params["peak_engine"])
         except Exception:
             pass
+    if "vol_estimator" in params:
+        base.vol_estimator = str(params["vol_estimator"] or "window")
+    if "ewma_lambda" in params:
+        base.ewma_lambda = float(params["ewma_lambda"])
+    if "drift_mode" in params:
+        base.drift_mode = str(params["drift_mode"] or "scenario")
+    if "carry_mu_annual" in params:
+        base.carry_mu_annual = float(params["carry_mu_annual"])
     return base
 
 
@@ -544,6 +556,11 @@ def calibrate_from_samples(
         scenario_temperature=base.scenario_temperature,
         max_scenario_shift=base.max_scenario_shift,
         evidence_logit_scale=base.evidence_logit_scale,
+        peak_engine=getattr(base, "peak_engine", "path_max"),
+        vol_estimator=getattr(base, "vol_estimator", "window"),
+        ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),
+        drift_mode=getattr(base, "drift_mode", "scenario"),
+        carry_mu_annual=float(getattr(base, "carry_mu_annual", 0.0)),
         scenarios=sc_best,
         evidence=[],
     )

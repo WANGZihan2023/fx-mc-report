@@ -7,3 +7,8 @@ output/
 .streamlit/secrets.toml
 .env
 .env.*
+
+# Copyrighted textbook (local reference only — do not push)
+docs/refs/*.pdf
+docs/refs/_hull_*
+docs/refs/_ocr/

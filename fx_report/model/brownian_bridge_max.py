@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from fx_report.model.gbm_vol import gbm_log_step_params, resolve_mu_annual
 from fx_report.model.weights import ScenarioSpec
 
 
@@ -74,14 +75,11 @@ def simulate_bb_path_maxima(
     if trading_days < 1:
         raise ValueError("trading_days must be >= 1")
 
-    dt = 1.0 / 252.0
-    sigma_ann = float(sigma_daily) * np.sqrt(252.0)
-    sigma2_dt = float(sigma_daily) ** 2  # = σ_ann² · dt
-    nu = mu_annual - 0.5 * sigma_ann**2
-    drift = nu * dt
+    _dt, _sigma_ann, drift, diffusion = gbm_log_step_params(mu_annual, sigma_daily)
+    sigma2_dt = float(diffusion) ** 2  # = σ_ann² · Δt for one trading day
 
     z = rng.standard_normal((n_paths, trading_days))
-    log_rets = drift + sigma_daily * z
+    log_rets = drift + diffusion * z
     # log-spot path endpoints: shape (n, T+1) with column 0 = log(spot)
     log_x = np.empty((n_paths, trading_days + 1), dtype=np.float64)
     log_x[:, 0] = np.log(spot)
@@ -108,6 +106,8 @@ def run_brownian_bridge_mixture(
     seed: int = 42,
     mu_annual_shift: float = 0.0,
     sigma_mult_extra: float = 1.0,
+    drift_mode: str = "scenario",
+    carry_mu_annual: float = 0.0,
 ) -> tuple[np.ndarray, dict[str, int]]:
     """
     Mixture over scenarios: BB continuous peaks (jumps ignored).
@@ -136,7 +136,12 @@ def run_brownian_bridge_mixture(
         m = int(np.sum(mask))
         if m == 0:
             continue
-        mu = sc.mu_annual + mu_annual_shift
+        mu = resolve_mu_annual(
+            sc.mu_annual,
+            drift_mode=drift_mode,
+            carry_mu_annual=carry_mu_annual,
+            mu_annual_shift=mu_annual_shift,
+        )
         sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
         # Note: sc.expected_jumps / jump_* intentionally unused (BB = diffusion only).
         maxima[mask] = simulate_bb_path_maxima(

@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from fx_report.model.gbm_vol import gbm_log_step_params, resolve_mu_annual
 from fx_report.model.weights import ScenarioSpec
 
 VALID_PEAK_ENGINES = ("path_max", "brownian_bridge")
@@ -58,14 +59,18 @@ def _simulate_path_max_mixture(
     seed: int,
     mu_annual_shift: float,
     sigma_mult_extra: float,
+    drift_mode: str = "scenario",
+    carry_mu_annual: float = 0.0,
 ) -> tuple[np.ndarray, dict[str, int]]:
-    """Discrete GBM + compound Poisson jumps; peak = max along daily path."""
+    """
+    Exact log-Euler GBM (Hull Ch13) + compound Poisson jumps; peak = max along
+    daily path. Δt = 1/252 yr; diffusion = σ_daily = σ_ann √Δt.
+    """
     rng = np.random.default_rng(seed)
     weights = np.array([s.weight for s in scenarios], dtype=np.float64)
     weights = weights / weights.sum()
     scenario_idx = rng.choice(len(scenarios), size=n_sims, p=weights)
 
-    dt = 1.0 / 252.0
     maxima = np.empty(n_sims, dtype=np.float64)
     scenario_counts = {s.name: int(np.sum(scenario_idx == i)) for i, s in enumerate(scenarios)}
 
@@ -75,7 +80,12 @@ def _simulate_path_max_mixture(
         if m == 0:
             continue
 
-        mu = sc.mu_annual + mu_annual_shift
+        mu = resolve_mu_annual(
+            sc.mu_annual,
+            drift_mode=drift_mode,
+            carry_mu_annual=carry_mu_annual,
+            mu_annual_shift=mu_annual_shift,
+        )
         sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
         lam_daily = sc.expected_jumps / max(trading_days, 1)
 
@@ -84,9 +94,8 @@ def _simulate_path_max_mixture(
         jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
         jumps = np.where(jump_occur, jump_size, 0.0)
 
-        sigma_ann = sigma * np.sqrt(252.0)
-        drift = (mu - 0.5 * sigma_ann**2) * dt
-        log_rets = drift + sigma * z + jumps
+        _dt, _sig_ann, drift, diffusion = gbm_log_step_params(mu, sigma)
+        log_rets = drift + diffusion * z + jumps
 
         log_path = np.cumsum(log_rets, axis=1)
         path = spot * np.exp(log_path)
@@ -108,6 +117,8 @@ def run_mixture_monte_carlo(
     mu_annual_shift: float = 0.0,
     sigma_mult_extra: float = 1.0,
     peak_engine: str = "path_max",
+    drift_mode: str = "scenario",
+    carry_mu_annual: float = 0.0,
 ) -> MCResult:
     """
     Simulate scenario-mixture peaks and bucket them.
@@ -117,6 +128,9 @@ def run_mixture_monte_carlo(
       - "brownian_bridge": continuous GBM peak via Brownian-bridge maxima between
         daily endpoints (jumps excluded — see brownian_bridge_max.py). Never falls
         back silently to path_max.
+
+    drift_mode / carry_mu_annual: see fx_report.model.gbm_vol.resolve_mu_annual
+    (defaults preserve prior scenario-μ behaviour).
     """
     engine = (peak_engine or "path_max").strip().lower()
     if engine not in VALID_PEAK_ENGINES:
@@ -143,6 +157,8 @@ def run_mixture_monte_carlo(
             seed=seed,
             mu_annual_shift=mu_annual_shift,
             sigma_mult_extra=sigma_mult_extra,
+            drift_mode=drift_mode,
+            carry_mu_annual=carry_mu_annual,
         )
     else:
         maxima, scenario_counts = _simulate_path_max_mixture(
@@ -154,6 +170,8 @@ def run_mixture_monte_carlo(
             seed=seed,
             mu_annual_shift=mu_annual_shift,
             sigma_mult_extra=sigma_mult_extra,
+            drift_mode=drift_mode,
+            carry_mu_annual=carry_mu_annual,
         )
 
     raw = assign_buckets(maxima, bucket_edges)

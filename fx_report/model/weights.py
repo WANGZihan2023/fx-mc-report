@@ -67,6 +67,12 @@ class ModelWeights:
     evidence_logit_scale: float = 0.08
     # "path_max" = discrete GBM+jumps path max; "brownian_bridge" = continuous BB peak (no jumps)
     peak_engine: str = "path_max"
+    # Hull-style vol: "window" = sample std of log returns; "ewma" = RiskMetrics-style EWMA
+    vol_estimator: str = "window"
+    ewma_lambda: float = 0.94
+    # GBM drift: "scenario" (default real-world mixture μ) | "zero" | "carry" (rate-diff placeholder)
+    drift_mode: str = "scenario"
+    carry_mu_annual: float = 0.0  # used when drift_mode == "carry" (no live rates fetch)
 
     scenarios: list[ScenarioSpec] = field(default_factory=list)
     evidence: list[EvidenceItem] = field(default_factory=list)
