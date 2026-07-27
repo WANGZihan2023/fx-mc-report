@@ -926,8 +926,14 @@ def render_label_audit_section(
         save_label_audit,
     )
 
+    # Anchor + prominent header (must stay above long report / charts)
+    st.markdown('<div id="label-audit-section"></div>', unsafe_allow_html=True)
     st.markdown("---")
     st.subheader("证据人工标注")
+    st.caption(
+        "对照模型方向填写你的判断；保存后可看同意率，也可用于重算权重。"
+        "无证据时仍可展开「怎么填？」并加载练习样例。"
+    )
 
     news_meta = news_meta or {}
     diag = diag or {}
@@ -967,9 +973,14 @@ def render_label_audit_section(
                 news_keys_present=has_news_api(cfg),
             )
         )
+        st.markdown("**没有真实证据时，请先加载练习样例练手：**")
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("加载练习样例（演示标注）", key="btn_load_demo_labels"):
+            if st.button(
+                "加载练习样例（演示标注）",
+                key="btn_load_demo_labels",
+                type="primary",
+            ):
                 st.session_state["label_audit_use_demo"] = True
                 st.session_state.pop("label_edits", None)
                 st.session_state.pop("label_edit_fp", None)
@@ -977,7 +988,7 @@ def render_label_audit_section(
                 st.rerun()
         with c2:
             st.info(
-                "要看**真实**新闻证据：侧栏「API 配置」填写 `NEWSAPI_KEY` 或 "
+                "要看**真实**新闻证据：侧栏「API / AI Key」填写 `NEWSAPI_KEY` 或 "
                 "`FINNHUB_API_KEY`（RSS 也会尽量抓取），保存后重新运行分析。"
             )
         return
@@ -1236,6 +1247,24 @@ def main() -> None:
         st.sidebar.caption("默认先验（未勾选校准）")
 
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
+
+    with st.sidebar.expander("⑨ 证据人工标注", expanded=False):
+        if "last_report" in st.session_state:
+            n_ev = len(st.session_state.get("last_auto_evidence") or [])
+            st.markdown(
+                "标注区在主区 **「本次分析审计」正下方**"
+                "（完整报告与流水线明细之上，不必滚到页底）。"
+            )
+            st.caption(
+                f"当前证据条数：{n_ev}"
+                + (" · 无证据时可点「加载练习样例」" if n_ev == 0 else "")
+            )
+            st.markdown("[↓ 跳到证据人工标注](#label-audit-section)")
+        else:
+            st.caption(
+                "先点主区「运行分析」。标注区会出现在审计面板正下方；"
+                "即使没有新闻证据，也会显示「怎么填？」与「加载练习样例」。"
+            )
 
     st.title(f"FX Analyse · {display_spec.pair}")
     if bullish_ok:
@@ -1698,12 +1727,27 @@ def main() -> None:
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"
         f"· {note}"
     )
+    st.markdown(
+        "**↓ 证据人工标注在下方**"
+        "（紧随本审计面板；完整报告 / PDF 在更下面。"
+        "侧栏也可打开 ⑨。） · "
+        "[跳转到标注区](#label-audit-section)"
+    )
+
+    # Labeling immediately after audit — before long charts / 900px report HTML
+    render_label_audit_section(
+        pair=diag["market"]["pair"],
+        bullish=bullish,
+        evidence_rows=st.session_state.get("last_auto_evidence") or [],
+        news_meta=news_meta,
+        diag=diag,
+    )
 
     st.bar_chart(
         pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间")
     )
 
-    with st.expander("完整报告（FX Analyse 格式）", expanded=True):
+    with st.expander("完整报告（FX Analyse 格式）", expanded=False):
         pdf_bytes = st.session_state.get("last_pdf_bytes")
         html_doc = st.session_state.get("last_report_html")
         c1, c2, c3 = st.columns(3)
@@ -1732,7 +1776,9 @@ def main() -> None:
         )
         audit_csv = st.session_state.get("last_label_audit_csv")
         if audit_csv:
-            st.caption("证据标注请到下方「证据人工标注」填写；此处可下载当前 CSV。")
+            st.caption(
+                "证据标注请到上方审计下的「证据人工标注」填写；此处可下载当前 CSV。"
+            )
             st.download_button(
                 "下载证据标注 CSV（label_audit）",
                 audit_csv.encode("utf-8"),
@@ -1781,14 +1827,6 @@ def main() -> None:
             file_name="diagnostics.json",
             mime="application/json",
         )
-
-    render_label_audit_section(
-        pair=diag["market"]["pair"],
-        bullish=bullish,
-        evidence_rows=st.session_state.get("last_auto_evidence") or [],
-        news_meta=news_meta,
-        diag=diag,
-    )
 
 
 if __name__ == "__main__":

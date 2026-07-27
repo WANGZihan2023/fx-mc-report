@@ -108,7 +108,7 @@ streamlit run app.py
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
 - **历史回测**折叠区：最多 30 行小回测，展示 hit rate / Brier / 明细表
-- 运行后可在 **「证据人工标注」** 网页填写方向/类别（不必手改 CSV）；说明见 `docs/label_audit.md`
+- 运行后在 **「本次分析审计」正下方** 的 **「证据人工标注」** 填写方向/类别（侧栏 ⑨；不必手改 CSV）；说明见 `docs/label_audit.md`
 - 标注保存为 `output/label_audit_{PAIR}_{日期}.csv`，亦可下载
 
 ## 数据源
