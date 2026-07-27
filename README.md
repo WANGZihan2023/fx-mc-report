@@ -74,6 +74,8 @@ python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 
 # 校准档位：
 #   smoke  — CLI 默认小样本（如 --n-iters 40 --max-rows 80）用于联调
+#   daily  — 每日中等强度（launchd 03:00）：./scripts/daily_calibrate.sh
+#               默认 8 对 history=2000 step=5 sims=4000 iters=40；见 docs/calibration_loop.md
 #   overnight — 单/双对过夜：./scripts/overnight_calibrate.sh
 #               默认 USD/AUD + AUD/USD；HISTORY_DAYS=2000 STEP=5 N_SIMS=8000 N_ITERS=80 MAX_ROWS=250
 #               日志 output/overnight_calib_YYYYMMDD.log  PID output/overnight_calib.pid
@@ -137,7 +139,7 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 ## 相关文档
 
 - 证据人工标注（label_audit）+ Stage 3 标签学习：`docs/label_audit.md`
-- 校准日常闭环（overnight → sync → Railway）：`docs/calibration_loop.md`
+- 校准日常闭环（overnight / **每日 launchd 03:00** → sync → Railway）：`docs/calibration_loop.md`（本机已可 `./scripts/install_daily_calibrate.sh`）
 - 长期分享 / Streamlit 公开设置：`docs/sharing.md`
 - **Docker 云部署（WeasyPrint / 澳洲）**：`docs/deploy-docker.md`（含 **`APP_PASSWORD`**）
 - 云端 redeploy 标记：`docs/CLOUD_REDEPLOY.txt`

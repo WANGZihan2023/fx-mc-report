@@ -75,7 +75,7 @@ git commit -m "Refresh bundled calibrated params"
 git push   # Railway 自动重建镜像
 ```
 
-更完整的「过夜 → sync → push → 确认」步骤见 **`docs/calibration_loop.md`**（含可选 cron 一行示例）。
+更完整的「过夜 / **每日 launchd** → sync → push → 确认」步骤见 **`docs/calibration_loop.md`**（本机可 `./scripts/install_daily_calibrate.sh`，默认每天 03:00 Asia/Shanghai）。
 
 **如何确认云端已加载校准**：打开公网 URL → 选货币对 → 页顶应显示「已加载校准参数」+ Holdout hit rate / Brier；侧栏勾选「使用校准参数」；跑一次分析后「本次分析审计」里参数来源应为校准 JSON 文件名（非「默认先验」）。
 
