@@ -8,6 +8,14 @@ from typing import Sequence
 import numpy as np
 
 from fx_report.model.gbm_vol import gbm_log_step_params, resolve_mu_annual
+from fx_report.model.jumps import (
+    VALID_JUMP_MODELS,
+    bb_jumps_caveat_message,
+    lambda_annual_from_horizon,
+    merton_compensator_drift_daily,
+    normalize_jump_model,
+    sample_merton_jumps,
+)
 from fx_report.model.weights import ScenarioSpec
 
 VALID_PEAK_ENGINES = ("path_max", "brownian_bridge")
@@ -27,6 +35,9 @@ class MCResult:
     percentiles: dict[str, float]
     peak_engine: str = "path_max"
     variance_reduction: str = "none"
+    jump_model: str = "merton"
+    jump_compensate: bool = False
+    bb_jumps_caveat: str | None = None
 
 
 def bucket_labels_from_edges(edges: Sequence[float]) -> list[str]:
@@ -64,16 +75,26 @@ def _simulate_path_max_mixture(
     drift_mode: str = "scenario",
     carry_mu_annual: float = 0.0,
     variance_reduction: str = "none",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
 ) -> tuple[np.ndarray, dict[str, int]]:
     """
-    Exact log-Euler GBM (Hull Ch13) + compound Poisson jumps; peak = max along
-    daily path. Δt = 1/252 yr; diffusion = σ_daily = σ_ann √Δt.
+    Exact log-Euler GBM (Hull Ch13) + Merton compound Poisson jumps (Cont–Tankov
+    Ch 3.2 / 4.3); peak = max along daily path. Δt = 1/252 yr.
+
+    Jump sizes are Gaussian in log-space (Merton). Occurrence uses Bernoulli
+    with p = λ_daily = expected_jumps / trading_days (= λ_ann · Δt).
+
+    If jump_compensate: subtract λ_ann · (E[e^J]−1) · Δt from daily log-drift.
+    Default jump_compensate=False preserves pre–Goal-B mean behaviour.
     """
     vr = (variance_reduction or "none").strip().lower()
     if vr not in VALID_VARIANCE_REDUCTION:
         raise ValueError(
             f"unknown variance_reduction={variance_reduction!r}; expected one of {VALID_VARIANCE_REDUCTION}"
         )
+    jm = normalize_jump_model(jump_model)
+    use_jumps = jm == "merton"
 
     rng = np.random.default_rng(seed)
     weights = np.array([s.weight for s in scenarios], dtype=np.float64)
@@ -96,7 +117,6 @@ def _simulate_path_max_mixture(
             mu_annual_shift=mu_annual_shift,
         )
         sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
-        lam_daily = sc.expected_jumps / max(trading_days, 1)
 
         if vr == "antithetic":
             # Antithetic for diffusion increments (and reuse the same jump draw per pair)
@@ -104,17 +124,38 @@ def _simulate_path_max_mixture(
             z_base = rng.standard_normal((base_m, trading_days))
             z = np.vstack([z_base, -z_base])[:m]
 
-            jump_occur_base = rng.random((base_m, trading_days)) < lam_daily
-            jump_size_base = rng.normal(sc.jump_mean, sc.jump_std, size=(base_m, trading_days))
-            jumps_base = np.where(jump_occur_base, jump_size_base, 0.0)
-            jumps = np.vstack([jumps_base, jumps_base])[:m]
+            if use_jumps:
+                jumps_base = sample_merton_jumps(
+                    rng,
+                    n_paths=base_m,
+                    trading_days=trading_days,
+                    expected_jumps=sc.expected_jumps,
+                    jump_mean=sc.jump_mean,
+                    jump_std=sc.jump_std,
+                )
+                jumps = np.vstack([jumps_base, jumps_base])[:m]
+            else:
+                jumps = np.zeros((m, trading_days), dtype=np.float64)
         else:
             z = rng.standard_normal((m, trading_days))
-            jump_occur = rng.random((m, trading_days)) < lam_daily
-            jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
-            jumps = np.where(jump_occur, jump_size, 0.0)
+            if use_jumps:
+                jumps = sample_merton_jumps(
+                    rng,
+                    n_paths=m,
+                    trading_days=trading_days,
+                    expected_jumps=sc.expected_jumps,
+                    jump_mean=sc.jump_mean,
+                    jump_std=sc.jump_std,
+                )
+            else:
+                jumps = np.zeros((m, trading_days), dtype=np.float64)
 
         _dt, _sig_ann, drift, diffusion = gbm_log_step_params(mu, sigma)
+        if use_jumps and jump_compensate and float(sc.expected_jumps) > 0.0:
+            lam_ann = lambda_annual_from_horizon(sc.expected_jumps, trading_days)
+            drift = drift + merton_compensator_drift_daily(
+                lam_ann, sc.jump_mean, sc.jump_std
+            )
         log_rets = drift + diffusion * z + jumps
 
         log_path = np.cumsum(log_rets, axis=1)
@@ -140,15 +181,23 @@ def run_mixture_monte_carlo(
     drift_mode: str = "scenario",
     carry_mu_annual: float = 0.0,
     variance_reduction: str = "none",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
 ) -> MCResult:
     """
     Simulate scenario-mixture peaks and bucket them.
 
     peak_engine:
-      - "path_max" (default): discrete GBM + compound Poisson jumps; max along path
+      - "path_max" (default): discrete GBM + Merton compound Poisson jumps; max along path
       - "brownian_bridge": continuous GBM peak via Brownian-bridge maxima between
         daily endpoints (jumps excluded — see brownian_bridge_max.py). Never falls
         back silently to path_max.
+
+    jump_model:
+      - "merton" (default): Cont–Tankov / Merton log-normal compound Poisson on path_max
+      - "none": diffusion only (ignores scenario expected_jumps)
+
+    jump_compensate: if True, apply −λ(E[e^J]−1)Δt to daily log-drift (default False).
 
     drift_mode / carry_mu_annual: see fx_report.model.gbm_vol.resolve_mu_annual
     (defaults preserve prior scenario-μ behaviour).
@@ -165,12 +214,18 @@ def run_mixture_monte_carlo(
             f"unknown variance_reduction={variance_reduction!r}; expected one of {VALID_VARIANCE_REDUCTION}"
         )
 
+    jm = normalize_jump_model(jump_model)
+
     if spot <= 0:
         raise ValueError("spot must be positive")
     if n_sims < 1:
         raise ValueError("n_sims must be positive")
     if not scenarios:
         raise ValueError("scenarios must be non-empty")
+
+    caveat = bb_jumps_caveat_message(
+        peak_engine=engine, jump_model=jm, scenarios=scenarios
+    )
 
     if engine == "brownian_bridge":
         from fx_report.model.brownian_bridge_max import run_brownian_bridge_mixture
@@ -201,6 +256,8 @@ def run_mixture_monte_carlo(
             drift_mode=drift_mode,
             carry_mu_annual=carry_mu_annual,
             variance_reduction=vr,
+            jump_model=jm,
+            jump_compensate=bool(jump_compensate),
         )
 
     raw = assign_buckets(maxima, bucket_edges)
@@ -224,6 +281,9 @@ def run_mixture_monte_carlo(
         percentiles=pct,
         peak_engine=engine,
         variance_reduction=vr,
+        jump_model=jm,
+        jump_compensate=bool(jump_compensate),
+        bb_jumps_caveat=caveat,
     )
 
 
@@ -253,3 +313,16 @@ def enforce_math_floor(probs: dict[str, float], spot: float, edges: Sequence[flo
         return out
 
     return {k: v / mass for k, v in out.items()}
+
+
+# Re-export for callers / docs
+__all__ = [
+    "MCResult",
+    "VALID_PEAK_ENGINES",
+    "VALID_VARIANCE_REDUCTION",
+    "VALID_JUMP_MODELS",
+    "assign_buckets",
+    "bucket_labels_from_edges",
+    "enforce_math_floor",
+    "run_mixture_monte_carlo",
+]

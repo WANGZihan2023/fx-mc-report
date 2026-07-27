@@ -67,6 +67,10 @@ class ModelWeights:
     evidence_logit_scale: float = 0.08
     # "path_max" = discrete GBM+jumps path max; "brownian_bridge" = continuous BB peak (no jumps)
     peak_engine: str = "path_max"
+    # Cont–Tankov / Merton compound Poisson on path_max: "merton" | "none"
+    jump_model: str = "merton"
+    # If True, subtract λ(E[e^J]−1)Δt from daily log-drift (default False = legacy mean)
+    jump_compensate: bool = False
     # Hull-style vol: "window" = sample std of log returns; "ewma" = RiskMetrics-style EWMA
     vol_estimator: str = "window"
     ewma_lambda: float = 0.94

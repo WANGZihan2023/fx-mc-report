@@ -201,6 +201,11 @@ def build_diagnostics(
         "seed": weights.seed,
         "peak_engine": getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max")),
         "variance_reduction": getattr(mc, "variance_reduction", "none"),
+        "jump_model": getattr(mc, "jump_model", getattr(weights, "jump_model", "merton")),
+        "jump_compensate": bool(
+            getattr(mc, "jump_compensate", getattr(weights, "jump_compensate", False))
+        ),
+        "bb_jumps_caveat": getattr(mc, "bb_jumps_caveat", None),
         "evidence_score_check": evidence_score(weights.evidence),
         "evidence_quality": None,
         "fallback_templates": False,

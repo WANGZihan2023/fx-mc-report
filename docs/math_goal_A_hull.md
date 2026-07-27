@@ -35,6 +35,8 @@
 
 ## 未做（刻意）
 
-- Goal B/C（跳跃校准、障碍等）  
+- Goal C 以外的更多 VR（控制变量等）  
 - 实时利率曲线拉 carry  
 - GARCH(1,1) 全估计（仅 EWMA 轻量选项）
+
+> Goal B（Cont–Tankov / Merton 跳跃）见 `docs/math_goal_B_cont_tankov.md`。

@@ -37,6 +37,18 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         default="none",
         help="Variance reduction for MC maxima: none (current) or antithetic",
     )
+    p.add_argument(
+        "--jump-model",
+        choices=["merton", "none"],
+        default="merton",
+        help="Jump model on path_max: merton (Cont–Tankov/Merton compound Poisson) or none",
+    )
+    p.add_argument(
+        "--jump-compensate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Apply Merton compensator −λ(E[e^J]−1)Δt to daily log-drift (default: off)",
+    )
     p.add_argument("--out", type=str, default="output")
     p.add_argument("--no-news", action="store_true")
     p.add_argument("--keep-templates", action="store_true")
@@ -83,6 +95,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         lookback=args.lookback,
         peak_engine=args.peak_engine,
         variance_reduction=args.variance_reduction,
+        jump_model=args.jump_model,
+        jump_compensate=bool(args.jump_compensate),
         mode=args.mode,  # type: ignore[arg-type]
         max_news=args.max_news,
         keep_templates=args.keep_templates,

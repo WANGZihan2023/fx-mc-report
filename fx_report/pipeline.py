@@ -535,6 +535,8 @@ def step6_math_analysis(
         drift_mode=getattr(weights, "drift_mode", "scenario"),
         carry_mu_annual=float(getattr(weights, "carry_mu_annual", 0.0)),
         variance_reduction=variance_reduction,
+        jump_model=getattr(weights, "jump_model", "merton"),
+        jump_compensate=bool(getattr(weights, "jump_compensate", False)),
     )
     probs = enforce_math_floor(mc.raw_probs, market.spot, edges)
     return score, mu_shift, sigma_extra, scenarios, edges, mc, probs
@@ -720,6 +722,8 @@ def run_pipeline(
     lookback: int = 60,
     peak_engine: str = "path_max",
     variance_reduction: str = "none",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
     mode: ClassifyMode = "hybrid",
     max_news: int = 10,
     keep_templates: bool = False,
@@ -811,6 +815,9 @@ def run_pipeline(
         base.max_scenario_shift = float(model_weights.max_scenario_shift)
         if getattr(model_weights, "peak_engine", None):
             base.peak_engine = str(model_weights.peak_engine)
+        if getattr(model_weights, "jump_model", None):
+            base.jump_model = str(model_weights.jump_model)
+        base.jump_compensate = bool(getattr(model_weights, "jump_compensate", False))
         if model_weights.scenarios:
             base.scenarios = list(model_weights.scenarios)
         if model_weights.evidence:
@@ -825,11 +832,14 @@ def run_pipeline(
         base.seed = seed
         base.vol_lookback_days = lookback
         base.peak_engine = str(peak_engine or "path_max")
+        base.jump_model = str(jump_model or "merton")
+        base.jump_compensate = bool(jump_compensate)
     say(
         f"  → 分档 "
         f"{'相对% ' + str(base.bucket_pct_cuts) if base.use_relative_buckets else '绝对 ' + str(base.bucket_edges)}"
     )
     say(f"  → peak_engine={base.peak_engine}")
+    say(f"  → jump_model={base.jump_model}  jump_compensate={base.jump_compensate}")
     say(f"  → vol_estimator={base.vol_estimator}  drift_mode={base.drift_mode}")
     say(f"  → calibrated_params={cal_source}")
     say(f"  → template_policy={template_policy}")
@@ -945,6 +955,8 @@ def run_pipeline(
         market, base, evidence, variance_reduction=variance_reduction
     )
     say(f"  → S={score:+.3f}  μ_shift={mu_shift:+.4f}  σ×={sigma_extra:.3f}")
+    if getattr(mc, "bb_jumps_caveat", None):
+        say(f"  ⚠ {mc.bb_jumps_caveat}")
     for k, v in probs.items():
         say(f"  · {k}: {v:.1%}")
 

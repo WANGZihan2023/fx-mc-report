@@ -19,8 +19,11 @@ Bridge max sampler (standard barrier / continuous-monitoring identity):
 
 Approximation limits
 --------------------
-- Jumps (compound Poisson) are **not** included in this engine. Use path_max
-  if jump risk should thicken the peak distribution.
+- Jumps (compound Poisson / Merton) are **not** included in this engine. Use
+  path_max if jump risk should thicken the peak distribution. When
+  peak_engine=brownian_bridge and scenario expected_jumps > 0 with
+  jump_model=merton, monte_carlo / UI / pipeline emit an explicit caveat
+  (see fx_report.model.jumps.bb_jumps_caveat_message).
 - Discrete-day endpoints + continuous bridges approximate the continuous GBM
   peak; finer calendars reduce residual discretisation bias on the endpoints.
 """

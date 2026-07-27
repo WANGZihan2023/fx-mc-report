@@ -600,7 +600,21 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "峰值引擎 peak_engine",
             _engine_opts,
             index=_engine_idx,
-            help="path_max=离散GBM+跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
+            help="path_max=离散GBM+Merton跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
+        )
+        _jm_opts = ["merton", "none"]
+        _jm_default = getattr(base, "jump_model", "merton")
+        _jm_idx = _jm_opts.index(_jm_default) if _jm_default in _jm_opts else 0
+        jump_model = st.selectbox(
+            "跳跃模型 jump_model",
+            _jm_opts,
+            index=_jm_idx,
+            help="merton=Cont–Tankov/Merton 复合泊松（对数正态跳跃）；none=关闭跳跃",
+        )
+        jump_compensate = st.checkbox(
+            "Merton 补偿子 jump_compensate",
+            value=bool(getattr(base, "jump_compensate", False)),
+            help="开启后日度对数漂移减 λ(E[e^J]−1)Δt；默认关以保持旧行为",
         )
         _vr_opts = ["none", "antithetic"]
         variance_reduction = st.selectbox(
@@ -609,8 +623,13 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             index=0,
             help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
         )
+        if peak_engine == "brownian_bridge" and jump_model == "merton":
+            st.warning(
+                "brownian_bridge 不含跳跃。若情景 E[jumps]>0，跳跃会被忽略；"
+                "需要跳跃加厚峰值尾部时请改用 path_max。"
+            )
         st.caption(
-            "切换引擎后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine。"
+            "切换引擎/跳跃后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine / jump_model。"
         )
         st.caption("分档边界请在主区「概率区间」设置（相对现价涨幅% 或绝对汇率价位）。")
         use_rel = True
@@ -658,9 +677,17 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         cur["weight"] = st.slider("权重", 0.0, 1.0, cur["weight"], 0.01, key=f"w_{focus}")
         cur["mu"] = st.slider("μ", -0.2, 0.2, cur["mu"], 0.005, key=f"mu_{focus}")
         cur["sm"] = st.slider("σ×", 0.5, 2.5, cur["sm"], 0.05, key=f"sm_{focus}")
-        cur["ej"] = st.slider("E[jumps]", 0.0, 3.0, cur["ej"], 0.05, key=f"ej_{focus}")
-        cur["jm"] = st.slider("jump μ", -0.03, 0.03, cur["jm"], 0.001, key=f"jm_{focus}")
-        cur["js"] = st.slider("jump σ", 0.001, 0.03, cur["js"], 0.001, key=f"js_{focus}")
+        cur["ej"] = st.slider(
+            "E[jumps]（窗口内期望跳跃次数）",
+            0.0,
+            3.0,
+            cur["ej"],
+            0.05,
+            key=f"ej_{focus}",
+            help="horizon E[N_T]；日强度 λ_daily=E[jumps]/交易日 = λ_ann·Δt，Δt=1/252",
+        )
+        cur["jm"] = st.slider("jump μ_J", -0.03, 0.03, cur["jm"], 0.001, key=f"jm_{focus}")
+        cur["js"] = st.slider("jump σ_J", 0.001, 0.03, cur["js"], 0.001, key=f"js_{focus}")
         st.session_state["scenario_edits"][focus] = cur
         scenarios = [
             ScenarioSpec(
@@ -805,6 +832,8 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         max_scenario_shift=float(max_shift),
         evidence_logit_scale=float(logit_scale),
         peak_engine=str(peak_engine),
+        jump_model=str(jump_model),
+        jump_compensate=bool(jump_compensate),
         scenarios=scenarios,
         evidence=evidence,
     ), {
@@ -945,6 +974,8 @@ def _apply_human_label_recompute(filled: pd.DataFrame, *, is_demo: bool) -> dict
                 sigma_mult_extra=float(reco["sigma_mult_extra"]),
                 peak_engine=str(mapping.get("peak_engine") or "path_max"),
                 variance_reduction=str(mapping.get("variance_reduction") or "none"),
+                jump_model=str(mapping.get("jump_model") or "merton"),
+                jump_compensate=bool(mapping.get("jump_compensate") or False),
             )
             probs = enforce_math_floor(mc.raw_probs, float(market["spot"]), edges_t)
             new_diag["raw_probs"] = mc.raw_probs
@@ -1799,6 +1830,8 @@ def main() -> None:
                 "trading_days": int(result.weights.trading_days),
                 "seed": int(result.weights.seed),
                 "peak_engine": str(getattr(result.weights, "peak_engine", "path_max")),
+                "jump_model": str(getattr(result.weights, "jump_model", "merton")),
+                "jump_compensate": bool(getattr(result.weights, "jump_compensate", False)),
                 "variance_reduction": str(getattr(result.mc, "variance_reduction", "none")),
             }
             st.session_state["label_audit_use_demo"] = False
@@ -1840,6 +1873,9 @@ def main() -> None:
     # —— 本次分析审计（prominent）——
     news_meta = st.session_state.get("last_news_meta") or diag.get("news_meta") or {}
     peak_eng = diag.get("peak_engine") or news_meta.get("peak_engine") or "path_max"
+    jump_mdl = diag.get("jump_model") or news_meta.get("jump_model") or "merton"
+    jump_comp = bool(diag.get("jump_compensate") or news_meta.get("jump_compensate") or False)
+    bb_caveat = diag.get("bb_jumps_caveat") or news_meta.get("bb_jumps_caveat")
     cal_used = diag.get("calibrated_params") or news_meta.get("calibrated_params") or "default"
     cal_is_default = str(cal_used).strip().lower() in {"default", "", "none"}
     cal_zh = "默认先验" if cal_is_default else f"已加载校准参数（`{Path(str(cal_used)).name}`）"
@@ -1861,7 +1897,9 @@ def main() -> None:
         note_bits.append("本次使用了模板/先验证据（非纯新闻驱动），已标记并降权或告警。")
     if eq == "news_empty_no_prior":
         note_bits.append("新闻未产出证据且 template_policy=off → S≈0，未静默填模板。")
-    if peak_eng == "brownian_bridge":
+    if bb_caveat:
+        note_bits.append(str(bb_caveat))
+    elif peak_eng == "brownian_bridge":
         note_bits.append("brownian_bridge 不含跳跃项，与 path_max 峰值分布可能不同。")
     note = " ".join(note_bits) if note_bits else "证据链按新闻驱动（或空证据诚实路径）。"
 
@@ -1922,6 +1960,7 @@ def main() -> None:
     st.info(
         f"**本次分析审计**  \n"
         f"· peak_engine：`{peak_eng}`  \n"
+        f"· jump_model：`{jump_mdl}`　jump_compensate=`{jump_comp}`  \n"
         f"· 参数来源：{cal_zh}  \n"
         f"{oos_line}"
         f"{agree_line}"

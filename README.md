@@ -98,6 +98,9 @@ python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_param
 # 峰值引擎冒烟对比
 python scripts/smoke_peak_engines.py
 
+# Goal B：Merton 跳跃 / BB 警告冒烟
+python scripts/smoke_jumps_goal_b.py
+
 # 证据链诚实性（无静默模板回退）
 python scripts/smoke_evidence_honesty.py
 

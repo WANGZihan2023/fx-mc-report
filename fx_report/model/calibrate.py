@@ -137,6 +137,8 @@ def pack_params(w: ModelWeights) -> dict[str, Any]:
         "vol_lookback_days": w.vol_lookback_days,
         "scenarios": [asdict(s) for s in w.scenarios],
         "peak_engine": getattr(w, "peak_engine", "path_max"),
+        "jump_model": getattr(w, "jump_model", "merton"),
+        "jump_compensate": bool(getattr(w, "jump_compensate", False)),
         "vol_estimator": getattr(w, "vol_estimator", "window"),
         "ewma_lambda": float(getattr(w, "ewma_lambda", 0.94)),
         "drift_mode": getattr(w, "drift_mode", "scenario"),
@@ -181,6 +183,10 @@ def apply_calibrated_params(base: ModelWeights, params: dict[str, Any]) -> Model
             setattr(base, "peak_engine", params["peak_engine"])
         except Exception:
             pass
+    if "jump_model" in params:
+        base.jump_model = str(params["jump_model"] or "merton")
+    if "jump_compensate" in params:
+        base.jump_compensate = bool(params["jump_compensate"])
     if "vol_estimator" in params:
         base.vol_estimator = str(params["vol_estimator"] or "window")
     if "ewma_lambda" in params:
@@ -571,6 +577,8 @@ def calibrate_from_samples(
         max_scenario_shift=base.max_scenario_shift,
         evidence_logit_scale=base.evidence_logit_scale,
         peak_engine=getattr(base, "peak_engine", "path_max"),
+        jump_model=getattr(base, "jump_model", "merton"),
+        jump_compensate=bool(getattr(base, "jump_compensate", False)),
         vol_estimator=getattr(base, "vol_estimator", "window"),
         ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),
         drift_mode=getattr(base, "drift_mode", "scenario"),
