@@ -1,11 +1,11 @@
 {
   "pair": "GBP/USD",
   "loss_name": "brier",
-  "loss": 0.7087584450616605,
-  "baseline_loss": 0.7267426448457798,
-  "n_samples": 350,
-  "n_sims": 7000,
-  "n_iters": 70,
+  "loss": 0.6887746767201869,
+  "baseline_loss": 0.7211206979786331,
+  "n_samples": 192,
+  "n_sims": 4000,
+  "n_iters": 40,
   "params": {
     "score_to_mu_a": 0.03173591600002954,
     "score_to_sigma_b": 0.035,
@@ -24,36 +24,42 @@
     "scenarios": [
       {
         "name": "escalation",
-        "weight": 0.9128538786501236,
+        "weight": 0.3225582181716513,
         "mu_annual": -0.13466868197446993,
         "sigma_mult": 1.3478541597217832,
-        "expected_jumps": 2.2714517267690177,
-        "jump_mean": 0.002368286429816542,
+        "expected_jumps": 1.0,
+        "jump_mean": 0.006666666666666668,
         "jump_std": 0.007,
         "narrative": "风险升高 / 避险或单边冲击 → GBP/USD 上尾加厚"
       },
       {
         "name": "baseline",
-        "weight": 0.04169780288365311,
-        "mu_annual": 0.08333333333333331,
-        "sigma_mult": 0.5,
-        "expected_jumps": 0.8333333333333334,
+        "weight": 0.29593985990526167,
+        "mu_annual": -0.016642570866231134,
+        "sigma_mult": 1.0,
+        "expected_jumps": 2.5,
         "jump_mean": -0.007939516434084939,
         "jump_std": 0.004,
         "narrative": "中性胶着 → GBP/USD 峰值多落在中档"
       },
       {
         "name": "deescalation",
-        "weight": 0.04544831846622348,
-        "mu_annual": 0.18921173207170333,
-        "sigma_mult": 0.5,
+        "weight": 0.38150192192308696,
+        "mu_annual": -0.03,
+        "sigma_mult": 1.1692344133610462,
         "expected_jumps": 0.0,
-        "jump_mean": -0.02,
+        "jump_mean": -0.005,
         "jump_std": 0.004,
         "narrative": "缓和 / 逆风消退 → GBP/USD 峰值受压"
       }
     ],
     "peak_engine": "path_max",
+    "jump_model": "merton",
+    "jump_compensate": false,
+    "vol_estimator": "window",
+    "ewma_lambda": 0.94,
+    "drift_mode": "scenario",
+    "carry_mu_annual": 0.0,
     "calibration": {
       "baseline": "S=0",
       "version": 1
