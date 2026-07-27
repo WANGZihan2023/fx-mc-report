@@ -664,6 +664,7 @@ def _oos_meta_span(calib_oos: Any) -> str:
         return ""
     hit = calib_oos.get("holdout_hit_rate")
     brier = calib_oos.get("holdout_brier")
+    skill = calib_oos.get("holdout_skill_brier")
     n = calib_oos.get("holdout_n")
     if hit is None and brier is None:
         return ""
@@ -673,11 +674,15 @@ def _oos_meta_span(calib_oos: Any) -> str:
     except (TypeError, ValueError):
         brier_s = "—"
     try:
+        skill_s = f"{float(skill):.3f}" if skill is not None and skill == skill else "—"
+    except (TypeError, ValueError):
+        skill_s = "—"
+    try:
         n_s = str(int(n)) if n is not None and n == n else "—"
     except (TypeError, ValueError):
         n_s = "—"
     return (
-        f'<span>OOS holdout hit {hit_s} · Brier {brier_s} · n={n_s}</span>'
+        f'<span>OOS holdout hit {hit_s} · Brier {brier_s} · Skill {skill_s} · n={n_s}</span>'
     )
 
 

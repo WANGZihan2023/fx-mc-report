@@ -8,7 +8,9 @@ output/
 .env
 .env.*
 
-# Copyrighted textbook (local reference only — do not push)
+# Copyrighted textbook / papers (local reference only — do not push)
 docs/refs/*.pdf
 docs/refs/_hull_*
 docs/refs/_ocr/
+*.pdf
+

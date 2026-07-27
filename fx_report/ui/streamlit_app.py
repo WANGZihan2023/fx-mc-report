@@ -140,14 +140,38 @@ def render_calib_trust_panel(pair: str, *, cal_loaded: bool, cal_path: str | Non
     hold = oos.get("holdout") or {}
     train = oos.get("train") or {}
     st.markdown("**校准 holdout（OOS）** — 时序末段样本，非样本内过拟合指标")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Holdout hit rate", _fmt_pct(hold.get("hit_rate")))
     c2.metric("Holdout Brier", _fmt_num(hold.get("brier")))
-    c3.metric("Train hit rate", _fmt_pct(train.get("hit_rate")))
-    c4.metric(
+    c3.metric("Skill（Brier）", _fmt_num(hold.get("skill_brier")))
+    c4.metric("Train hit rate", _fmt_pct(train.get("hit_rate")))
+    c5.metric(
         "Holdout n",
         f"{int(hold.get('n') or 0)}" if hold.get("n") == hold.get("n") else "—",
     )
+    if hold.get("reliability_ece") is not None and hold.get("reliability_ece") == hold.get(
+        "reliability_ece"
+    ):
+        st.caption(
+            f"评分规则：Brier / log-loss（严格恰当）· "
+            f"Skill = 1 − 模型分/气候基准 · "
+            f"可靠性 ECE={_fmt_num(hold.get('reliability_ece'))}"
+        )
+    rel = hold.get("reliability_buckets") or []
+    if rel:
+        with st.expander("可靠性（预测概率 vs 实际命中）", expanded=False):
+            st.caption("分档均值预测概率 vs 经验命中率（holdout）")
+            rel_df = pd.DataFrame(rel)
+            if not rel_df.empty:
+                show_rel = rel_df.rename(
+                    columns={
+                        "bucket": "分档",
+                        "mean_p": "预测均值",
+                        "emp_rate": "实际命中",
+                        "n": "n",
+                    }
+                )
+                st.dataframe(show_rel, hide_index=True, use_container_width=True)
     note = oos.get("note") or ""
     src = oos.get("source") or ""
     bits = [b for b in (src, note) if b]
@@ -161,7 +185,9 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
         st.caption(
             "来自 `calib_oos_summary_*.json`（优先本地 output/，否则镜像内置 "
             f"`{BUNDLED_CALIBRATED_DIR.as_posix()}`）。"
-            "Holdout = 时序末段，用于判断校准是否过拟合。"
+            "Holdout = 时序末段。评分规则：Brier / log-loss；"
+            "Skill = 1 − 模型分/气候频率基准（越高越好）；"
+            "可靠性 ECE = |预测概率 − 实际命中| 加权平均。"
         )
         try:
             board = calib_oos_board_dataframe()
@@ -201,7 +227,11 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
         show["holdout_hit"] = show["holdout_hit"].map(_safe_pct)
         show["train_hit"] = show["train_hit"].map(_safe_pct)
         show["holdout_brier"] = show["holdout_brier"].map(_safe_num)
+        show["holdout_skill_brier"] = show["holdout_skill_brier"].map(_safe_num)
+        show["holdout_logloss"] = show["holdout_logloss"].map(_safe_num)
+        show["holdout_ece"] = show["holdout_ece"].map(_safe_num)
         show["train_brier"] = show["train_brier"].map(_safe_num)
+        show["train_skill_brier"] = show["train_skill_brier"].map(_safe_num)
         show["holdout_n"] = show["holdout_n"].map(_safe_int)
         show["train_n"] = show["train_n"].map(_safe_int)
         show = show.rename(
@@ -209,14 +239,41 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
                 "pair": "货币对",
                 "holdout_hit": "Holdout hit",
                 "holdout_brier": "Holdout Brier",
+                "holdout_skill_brier": "Skill（Brier）",
+                "holdout_logloss": "Holdout log-loss",
+                "holdout_ece": "可靠性 ECE",
                 "holdout_n": "Holdout n",
                 "train_hit": "Train hit",
                 "train_brier": "Train Brier",
+                "train_skill_brier": "Train Skill",
                 "train_n": "Train n",
                 "source": "来源",
             }
         )
         st.dataframe(show, hide_index=True, use_container_width=True)
+
+        # Reliability detail for current pair when available
+        if current_pair:
+            try:
+                oos_cur = load_calib_oos_summary(current_pair)
+            except Exception:
+                oos_cur = None
+            hold_cur = (oos_cur or {}).get("holdout") or {}
+            rel_b = hold_cur.get("reliability_buckets") or []
+            if rel_b:
+                st.markdown(f"**{current_pair} 可靠性（预测概率 vs 实际命中）**")
+                st.dataframe(
+                    pd.DataFrame(rel_b).rename(
+                        columns={
+                            "bucket": "分档",
+                            "mean_p": "预测均值",
+                            "emp_rate": "实际命中",
+                            "n": "n",
+                        }
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
         if current_pair:
             st.caption(
@@ -229,6 +286,7 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
                 st.caption(
                     f"本对 holdout hit={_fmt_pct(row.get('holdout_hit'))} · "
                     f"Brier={_fmt_num(row.get('holdout_brier'))} · "
+                    f"Skill={_fmt_num(row.get('holdout_skill_brier'))} · "
                     f"n={_safe_int(row.get('holdout_n'))}"
                 )
 
@@ -1515,6 +1573,10 @@ def main() -> None:
                         "hit_rate": bt.hit_rate_argmax,
                         "brier": bt.mean_brier,
                         "logloss": bt.mean_logloss,
+                        "skill_brier": (bt.summary or {}).get("skill_brier"),
+                        "skill_logloss": (bt.summary or {}).get("skill_logloss"),
+                        "reliability_ece": (bt.summary or {}).get("reliability_ece"),
+                        "reliability_buckets": (bt.summary or {}).get("reliability_buckets"),
                         "n": bt.n_rows,
                         "params": bt.params_source,
                         "engine": bt.peak_engine,
@@ -1543,20 +1605,45 @@ def main() -> None:
                     )
             if st.session_state.get("last_backtest"):
                 bt = st.session_state["last_backtest"]
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("argmax hit", f"{100 * bt['hit_rate']:.1f}%")
                 m2.metric("mean Brier", f"{bt['brier']:.4f}")
                 m3.metric("mean log-loss", f"{bt['logloss']:.4f}")
-                m4.metric("n", bt["n"])
+                sk = bt.get("skill_brier")
+                m4.metric(
+                    "Skill（Brier）",
+                    f"{float(sk):.4f}" if sk is not None and sk == sk else "—",
+                )
+                m5.metric("n", bt["n"])
                 st.caption(
-                    f"engine=`{bt.get('engine')}` · params=`{bt.get('params')}`"
+                    f"engine=`{bt.get('engine')}` · params=`{bt.get('params')}` · "
+                    "评分规则：严格恰当 Brier / log-loss；Skill vs 气候频率基准"
                 )
                 st.dataframe(pd.DataFrame(bt["table"]), hide_index=True, use_container_width=True)
+                rel_b = bt.get("reliability_buckets") or []
+                if rel_b:
+                    with st.expander("可靠性（预测概率 vs 实际命中）", expanded=False):
+                        st.dataframe(
+                            pd.DataFrame(rel_b).rename(
+                                columns={
+                                    "bucket": "分档",
+                                    "mean_p": "预测均值",
+                                    "emp_rate": "实际命中",
+                                    "n": "n",
+                                }
+                            ),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+                        ece = bt.get("reliability_ece")
+                        if ece is not None and ece == ece:
+                            st.caption(f"可靠性 ECE={float(ece):.4f}")
                 hold = (bt.get("summary") or {}).get("holdout_oos") or {}
                 if hold.get("n"):
                     st.caption(
                         f"OOS holdout：n={int(hold['n'])}  "
                         f"brier={hold.get('brier', float('nan')):.4f}  "
+                        f"skill_brier={hold.get('skill_brier', float('nan')):.4f}  "
                         f"logloss={hold.get('logloss', float('nan')):.4f}  "
                         f"hit={100 * hold.get('hit_rate', 0):.1f}%"
                     )
@@ -1772,6 +1859,7 @@ def main() -> None:
         oos_line = (
             f"· Holdout hit={_fmt_pct(h.get('hit_rate'))}　"
             f"Brier={_fmt_num(h.get('brier'))}　"
+            f"Skill={_fmt_num(h.get('skill_brier'))}　"
             f"n={int(h.get('n') or 0)}  \n"
         )
 

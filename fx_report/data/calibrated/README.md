@@ -5,7 +5,7 @@ Small JSON only — copied into the Docker image because `output/` is gitignored
 | File | Role |
 |------|------|
 | `calibrated_params_{PAIR}.json` | Stage-1 MC priors / score_to_* |
-| `calib_oos_summary_{PAIR}.json` | Train vs holdout Brier / hit rate |
+| `calib_oos_summary_{PAIR}.json` | Train vs holdout Brier / log-loss / skill / reliability |
 
 **Refresh after overnight calibration** (from repo root):
 

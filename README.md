@@ -69,7 +69,7 @@ python run_cli.py build-peaks --pair USD/AUD
 # 或：python scripts/build_peak_dataset.py --pair USD/AUD
 
 # Stage 1：校准 MC 参数（S=0）→ output/calibrated_params_USDAUD.json
-# 同时写 output/calib_oos_summary_USDAUD.json（train vs holdout Brier/logloss）
+# 同时写 output/calib_oos_summary_USDAUD.json（train vs holdout Brier/logloss/skill）
 python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 
 # 校准档位：
@@ -87,9 +87,10 @@ python run_cli.py calibrate --pair USD/AUD --n-iters 40 --max-rows 80
 # 启动示例（防休眠）：
 #   caffeinate -i nohup ./scripts/overnight_calibrate_full.sh >/dev/null 2>&1 &
 
-# 历史回测（argmax hit / Brier / log-loss 表）
+# 历史回测（argmax hit / Brier / log-loss / skill / 可靠性）
 python run_cli.py backtest --pair USD/AUD --max-rows 40
 # → output/backtest_USDAUD.csv + backtest_USDAUD_summary.json + calib_oos_summary_USDAUD.json
+# 评分规则说明：docs/math_goal_E_gneiting.md
 
 # 流水线使用校准参数
 python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_params_USDAUD.json

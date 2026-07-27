@@ -316,7 +316,7 @@ def calib_oos_board_dataframe(
     output_dir: str | Path = "output",
 ) -> pd.DataFrame:
     """
-    Cross-pair trust table: holdout/train hit rate + Brier for UI「跨对质量」.
+    Cross-pair trust table: holdout/train hit rate + Brier + skill for UI「跨对质量」.
     """
     records: list[dict[str, Any]] = []
     for data in load_all_calib_oos_summaries(
@@ -336,9 +336,13 @@ def calib_oos_board_dataframe(
                 "pair": data.get("pair") or "",
                 "holdout_hit": hold.get("hit_rate"),
                 "holdout_brier": hold.get("brier"),
+                "holdout_skill_brier": hold.get("skill_brier"),
+                "holdout_logloss": hold.get("logloss"),
+                "holdout_ece": hold.get("reliability_ece"),
                 "holdout_n": hold.get("n"),
                 "train_hit": train.get("hit_rate"),
                 "train_brier": train.get("brier"),
+                "train_skill_brier": train.get("skill_brier"),
                 "train_n": train.get("n"),
                 "source": src,
             }
@@ -347,9 +351,13 @@ def calib_oos_board_dataframe(
         "pair",
         "holdout_hit",
         "holdout_brier",
+        "holdout_skill_brier",
+        "holdout_logloss",
+        "holdout_ece",
         "holdout_n",
         "train_hit",
         "train_brier",
+        "train_skill_brier",
         "train_n",
         "source",
     ]
@@ -665,13 +673,17 @@ def calibrate_pair(
             n_sims=n_sims,
             seed=seed,
             max_rows=oos_cap,
+            baseline_mode="frequency",
         )
+        train_clim = train_m.get("baseline_probs")
         hold_m = eval_split_metrics(
             hold_df,
             cal_w,
             n_sims=n_sims,
             seed=seed + 10_000,
             max_rows=oos_cap,
+            baseline_mode="frequency",
+            baseline_probs=train_clim if train_clim else None,
         )
         oos_path = write_calib_oos_summary(
             pair,
@@ -685,13 +697,15 @@ def calibrate_pair(
                 "baseline_loss": result.baseline_loss,
                 "n_sims": n_sims,
                 "params_path": str(out),
+                "scoring": "gneiting_brier_log_skill",
             },
         )
         if verbose:
             print(
                 f"OOS summary → {oos_path}  "
                 f"train_brier={train_m.get('brier', float('nan')):.4f}  "
-                f"holdout_brier={hold_m.get('brier', float('nan')):.4f}"
+                f"holdout_brier={hold_m.get('brier', float('nan')):.4f}  "
+                f"holdout_skill_brier={hold_m.get('skill_brier', float('nan')):.4f}"
             )
     except Exception as exc:
         if verbose:

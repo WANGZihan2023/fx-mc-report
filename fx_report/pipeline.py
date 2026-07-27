@@ -694,8 +694,12 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
         tc.extra["calib_oos"] = {
             "holdout_hit_rate": hold.get("hit_rate"),
             "holdout_brier": hold.get("brier"),
+            "holdout_skill_brier": hold.get("skill_brier"),
+            "holdout_logloss": hold.get("logloss"),
+            "holdout_ece": hold.get("reliability_ece"),
             "holdout_n": hold.get("n"),
             "train_brier": train.get("brier"),
+            "train_skill_brier": train.get("skill_brier"),
             "train_hit_rate": train.get("hit_rate"),
             "source": oos.get("source"),
         }

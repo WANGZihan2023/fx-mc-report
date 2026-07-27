@@ -29,6 +29,7 @@ from fx_report.model.monte_carlo import (
     bucket_labels_from_edges,
     run_mixture_monte_carlo,
 )
+from fx_report.model.scoring import summarize_forecast_scores
 from fx_report.model.weights import ModelWeights, default_scenarios, default_weights
 
 
@@ -116,20 +117,29 @@ def eval_split_metrics(
     seed: int,
     peak_engine: str | None = None,
     max_rows: int | None = None,
-) -> dict[str, float]:
-    """Mean Brier / log-loss / argmax hit-rate on a dataframe slice."""
+    baseline_mode: str = "frequency",
+    baseline_probs: Sequence[float] | np.ndarray | None = None,
+) -> dict[str, Any]:
+    """
+    Mean Brier / log-loss / argmax hit-rate on a dataframe slice, plus
+    skill vs baseline and compact reliability (Goal E / J).
+    """
+    empty = summarize_forecast_scores(
+        np.zeros((0, 1)),
+        np.zeros((0, 1)),
+        baseline_mode=baseline_mode,  # type: ignore[arg-type]
+        baseline_probs=baseline_probs,
+    )
     if df is None or len(df) == 0:
-        return {"n": 0, "brier": float("nan"), "logloss": float("nan"), "hit_rate": float("nan")}
+        return empty
     use = df
     if max_rows is not None and len(df) > max_rows:
         rng = np.random.default_rng(seed)
         idx = rng.choice(len(df), size=max_rows, replace=False)
         use = df.iloc[sorted(idx)]
     cuts_fb = weights.bucket_pct_cuts
-    brier_sum = 0.0
-    ll_sum = 0.0
-    hits = 0
-    n = 0
+    ps: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
     for j, (_, row) in enumerate(use.iterrows()):
         cuts = _cuts_from_row(row, cuts_fb)
         edges = _edges_from_row(row, cuts)
@@ -147,17 +157,28 @@ def eval_split_metrics(
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
-        brier_sum += float(np.sum((p - y) ** 2))
-        ll_sum += float(-np.sum(y * np.log(p)))
-        if int(np.argmax(p)) == int(np.argmax(y)):
-            hits += 1
-        n += 1
-    return {
-        "n": float(n),
-        "brier": brier_sum / max(n, 1),
-        "logloss": ll_sum / max(n, 1),
-        "hit_rate": hits / max(n, 1),
-    }
+        # Align lengths if edge count ever differs across rows
+        k = min(len(p), len(y))
+        ps.append(p[:k])
+        ys.append(y[:k])
+    if not ps:
+        return empty
+    # Pad to common k (normally all equal)
+    k_max = max(len(v) for v in ps)
+    p_mat = np.zeros((len(ps), k_max), dtype=np.float64)
+    y_mat = np.zeros((len(ys), k_max), dtype=np.float64)
+    for i, (pv, yv) in enumerate(zip(ps, ys)):
+        p_mat[i, : len(pv)] = pv
+        y_mat[i, : len(yv)] = yv
+        s = p_mat[i].sum()
+        if s > 0:
+            p_mat[i] /= s
+    return summarize_forecast_scores(
+        p_mat,
+        y_mat,
+        baseline_mode=baseline_mode,  # type: ignore[arg-type]
+        baseline_probs=baseline_probs,
+    )
 
 
 def write_calib_oos_summary(
@@ -179,7 +200,9 @@ def write_calib_oos_summary(
         "holdout": holdout_metrics,
         "note": (
             "Holdout is the last ~25% of peak samples by asof. "
-            "If holdout.n==0, split was skipped (too few rows)."
+            "If holdout.n==0, split was skipped (too few rows). "
+            "Metrics include brier/logloss/hit_rate plus skill_* vs frequency "
+            "baseline and reliability_* (Goal E/J)."
         ),
     }
     if extra:
@@ -249,6 +272,8 @@ def run_backtest(
             print(f"Subsampled {len(use)} / {len(df)} rows")
 
     rows: list[dict[str, Any]] = []
+    ps: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
     brier_sum = 0.0
     ll_sum = 0.0
     hits = 0
@@ -283,6 +308,8 @@ def run_backtest(
         brier_sum += brier
         ll_sum += logloss
         hits += hit
+        ps.append(p)
+        ys.append(y)
 
         rec: dict[str, Any] = {
             "asof": row.get("asof"),
@@ -312,15 +339,46 @@ def run_backtest(
     mean_ll = ll_sum / max(n, 1)
     hit_rate = hits / max(n, 1)
 
+    # Full-table skill / reliability (same rows as CSV)
+    if ps:
+        k_max = max(len(v) for v in ps)
+        p_mat = np.zeros((len(ps), k_max), dtype=np.float64)
+        y_mat = np.zeros((len(ys), k_max), dtype=np.float64)
+        for i, (pv, yv) in enumerate(zip(ps, ys)):
+            p_mat[i, : len(pv)] = pv
+            y_mat[i, : len(yv)] = yv
+            s = p_mat[i].sum()
+            if s > 0:
+                p_mat[i] /= s
+        table_scores = summarize_forecast_scores(p_mat, y_mat, baseline_mode="frequency")
+    else:
+        table_scores = summarize_forecast_scores(
+            np.zeros((0, 1)), np.zeros((0, 1)), baseline_mode="frequency"
+        )
+
     # OOS: chronological split on full sample (not just subsample), metrics with same n_sims
     train_df, hold_df = _chrono_split(df, holdout_frac=holdout_frac)
     # Cap OOS eval cost
     oos_cap = min(max_rows or 40, 40)
     train_m = eval_split_metrics(
-        train_df, weights, n_sims=n_sims, seed=seed, peak_engine=engine, max_rows=oos_cap
+        train_df,
+        weights,
+        n_sims=n_sims,
+        seed=seed,
+        peak_engine=engine,
+        max_rows=oos_cap,
+        baseline_mode="frequency",
     )
+    train_clim = train_m.get("baseline_probs")
     hold_m = eval_split_metrics(
-        hold_df, weights, n_sims=n_sims, seed=seed + 10_000, peak_engine=engine, max_rows=oos_cap
+        hold_df,
+        weights,
+        n_sims=n_sims,
+        seed=seed + 10_000,
+        peak_engine=engine,
+        max_rows=oos_cap,
+        baseline_mode="frequency",
+        baseline_probs=train_clim if train_clim else None,
     )
 
     summary: dict[str, Any] = {
@@ -331,6 +389,13 @@ def run_backtest(
         "hit_rate_argmax": hit_rate,
         "mean_brier": mean_brier,
         "mean_logloss": mean_ll,
+        "skill_brier": table_scores.get("skill_brier"),
+        "skill_logloss": table_scores.get("skill_logloss"),
+        "baseline_brier": table_scores.get("baseline_brier"),
+        "baseline_mode": table_scores.get("baseline_mode"),
+        "reliability_ece": table_scores.get("reliability_ece"),
+        "reliability_argmax": table_scores.get("reliability_argmax"),
+        "reliability_buckets": table_scores.get("reliability_buckets"),
         "peak_engine": engine,
         "params_source": params_source,
         "samples_path": str(path),
@@ -338,7 +403,8 @@ def run_backtest(
         "holdout_oos": hold_m,
         "note": (
             "S=0 backtest on historical peaks. hit=1 when argmax predicted bucket "
-            "matches realized path-max bucket. OOS = last ~25% by asof."
+            "matches realized path-max bucket. OOS = last ~25% by asof. "
+            "skill_brier = 1 - brier/baseline_brier (frequency climatology)."
         ),
     }
 
@@ -367,7 +433,8 @@ def run_backtest(
     if verbose:
         print(
             f"Backtest {pair}: hit_rate={hit_rate:.1%}  "
-            f"brier={mean_brier:.4f}  logloss={mean_ll:.4f}  n={n}"
+            f"brier={mean_brier:.4f}  logloss={mean_ll:.4f}  "
+            f"skill_brier={table_scores.get('skill_brier', float('nan')):.4f}  n={n}"
         )
         print(f"Wrote {csv_path}")
         print(f"Wrote {summary_path}")
