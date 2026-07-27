@@ -236,6 +236,116 @@ def load_calib_oos_summary(pair: str, **kwargs: Any) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def discover_calib_oos_pairs(
+    *,
+    prefer_output: bool = True,
+    output_dir: str | Path = "output",
+) -> list[str]:
+    """
+    Pairs that have a calib_oos_summary_*.json (bundled and/or local output/).
+    Returns display pairs like 'AUD/USD' when parseable, else safe token.
+    """
+    seen: dict[str, str] = {}  # safe -> display
+
+    def _ingest(root: Path) -> None:
+        if not root.is_dir():
+            return
+        for p in sorted(root.glob("calib_oos_summary_*.json")):
+            safe = p.stem.replace("calib_oos_summary_", "")
+            if not safe or safe in seen:
+                continue
+            # Prefer slash form from file contents when available
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                pair = str(data.get("pair") or "")
+            except Exception:
+                pair = ""
+            if not pair and len(safe) == 6:
+                pair = f"{safe[:3]}/{safe[3:]}"
+            seen[safe] = pair or safe
+
+    out_root = Path(output_dir)
+    if prefer_output:
+        _ingest(out_root)
+        _ingest(BUNDLED_CALIBRATED_DIR)
+    else:
+        _ingest(BUNDLED_CALIBRATED_DIR)
+        _ingest(out_root)
+    return [seen[k] for k in sorted(seen.keys())]
+
+
+def load_all_calib_oos_summaries(
+    *,
+    prefer_output: bool = True,
+    output_dir: str | Path = "output",
+) -> list[dict[str, Any]]:
+    """Load OOS summaries for every pair with a summary JSON (typically 8)."""
+    rows: list[dict[str, Any]] = []
+    for pair in discover_calib_oos_pairs(
+        prefer_output=prefer_output, output_dir=output_dir
+    ):
+        data = load_calib_oos_summary(
+            pair, prefer_output=prefer_output, output_dir=output_dir
+        )
+        if not data:
+            continue
+        path = resolve_calib_oos_summary_path(
+            pair, prefer_output=prefer_output, output_dir=output_dir
+        )
+        payload = dict(data)
+        payload["_path"] = str(path) if path else ""
+        rows.append(payload)
+    return rows
+
+
+def calib_oos_board_dataframe(
+    *,
+    prefer_output: bool = True,
+    output_dir: str | Path = "output",
+) -> pd.DataFrame:
+    """
+    Cross-pair trust table: holdout/train hit rate + Brier for UI「跨对质量」.
+    """
+    records: list[dict[str, Any]] = []
+    for data in load_all_calib_oos_summaries(
+        prefer_output=prefer_output, output_dir=output_dir
+    ):
+        hold = data.get("holdout") or {}
+        train = data.get("train") or {}
+        path = str(data.get("_path") or "")
+        if "data/calibrated" in path.replace("\\", "/"):
+            src = "bundled"
+        elif path:
+            src = "output"
+        else:
+            src = str(data.get("source") or "")
+        records.append(
+            {
+                "pair": data.get("pair") or "",
+                "holdout_hit": hold.get("hit_rate"),
+                "holdout_brier": hold.get("brier"),
+                "holdout_n": hold.get("n"),
+                "train_hit": train.get("hit_rate"),
+                "train_brier": train.get("brier"),
+                "train_n": train.get("n"),
+                "source": src,
+            }
+        )
+    cols = [
+        "pair",
+        "holdout_hit",
+        "holdout_brier",
+        "holdout_n",
+        "train_hit",
+        "train_brier",
+        "train_n",
+        "source",
+    ]
+    if not records:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(records)[cols]
+
+
 def _predict_probs(
     spot: float,
     sigma_daily: float,

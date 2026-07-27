@@ -145,6 +145,244 @@ def compute_agree(model_direction: Any, human_direction: Any) -> str:
     return "yes" if m == h else "no"
 
 
+def direction_to_int(raw: Any) -> int | None:
+    """
+    Map direction token → EvidenceItem.direction int.
+    unclear / empty → None (caller should keep model direction).
+    """
+    d = normalize_direction(raw)
+    if d == "up":
+        return 1
+    if d == "down":
+        return -1
+    if d == "neutral":
+        return 0
+    return None
+
+
+def agree_rate_stats(
+    df: pd.DataFrame | None,
+    *,
+    is_demo: bool = False,
+) -> dict[str, Any]:
+    """
+    Human vs model direction agree rate from a label_audit frame / session edits.
+
+    agree_rate = n_yes / (n_yes + n_no); None when no decisive labels yet.
+    Does not invent metrics for empty / practice-only rows.
+    """
+    empty: dict[str, Any] = {
+        "n_rows": 0,
+        "n_labeled": 0,
+        "n_yes": 0,
+        "n_no": 0,
+        "n_unsure": 0,
+        "agree_rate": None,
+        "has_labels": False,
+        "is_demo": bool(is_demo),
+        "caption": "尚无人工方向标注，不显示同意率。",
+    }
+    if df is None or getattr(df, "empty", True):
+        return empty
+
+    work = df.copy()
+    for col in ("model_direction", "human_direction", "agree"):
+        if col not in work.columns:
+            work[col] = ""
+
+    # Refresh agree from directions when human_direction is set
+    agrees: list[str] = []
+    n_labeled = 0
+    for _, row in work.iterrows():
+        hd = normalize_direction(row.get("human_direction", ""))
+        if not hd:
+            agrees.append("")
+            continue
+        n_labeled += 1
+        ag = str(row.get("agree") or "").strip().lower()
+        if ag not in AGREE_VALUES:
+            ag = compute_agree(row.get("model_direction", ""), hd)
+        agrees.append(ag)
+
+    n_yes = sum(1 for a in agrees if a == "yes")
+    n_no = sum(1 for a in agrees if a == "no")
+    n_unsure = sum(1 for a in agrees if a == "unsure")
+    decisive = n_yes + n_no
+    rate = (n_yes / decisive) if decisive > 0 else None
+
+    if n_labeled == 0:
+        caption = "尚无人工方向标注，不显示同意率。"
+        if is_demo:
+            caption = "练习样例未填方向 — 不计入真实同意率。"
+    elif rate is None:
+        caption = (
+            f"已标 {n_labeled} 条，但均为 unsure/unclear，暂无同意率。"
+            + ("（练习样例）" if is_demo else "")
+        )
+    else:
+        caption = (
+            f"同意率 {100 * rate:.0f}%（{n_yes}/{decisive} 条有明确对错"
+            f"；另 unsure={n_unsure}）"
+            + (" · 练习样例，非正式指标" if is_demo else "")
+        )
+
+    return {
+        "n_rows": int(len(work)),
+        "n_labeled": int(n_labeled),
+        "n_yes": int(n_yes),
+        "n_no": int(n_no),
+        "n_unsure": int(n_unsure),
+        "agree_rate": rate,
+        "has_labels": n_labeled > 0,
+        "is_demo": bool(is_demo),
+        "caption": caption,
+    }
+
+
+def labels_dict_from_audit_df(df: pd.DataFrame) -> dict[str, dict[str, str]]:
+    """statement_id → {human_direction, human_category, agree}."""
+    out: dict[str, dict[str, str]] = {}
+    if df is None or df.empty:
+        return out
+    for _, row in df.iterrows():
+        sid = str(row.get("statement_id") or "")
+        if not sid:
+            continue
+        out[sid] = {
+            "human_direction": normalize_direction(row.get("human_direction", "")),
+            "human_category": str(row.get("human_category") or ""),
+            "agree": str(row.get("agree") or "").strip().lower(),
+        }
+    return out
+
+
+def apply_human_labels_to_evidence(
+    evidence_rows: Sequence[dict[str, Any]],
+    labels: dict[str, dict[str, str]] | pd.DataFrame,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Override direction (+ optional category) on evidence dicts using human labels.
+
+    Matching key: statement_id, else id.
+    human unclear/empty → keep model direction (no override).
+    Returns (new_rows, n_overridden).
+    """
+    if isinstance(labels, pd.DataFrame):
+        lab_map = labels_dict_from_audit_df(labels)
+    else:
+        lab_map = labels or {}
+
+    out: list[dict[str, Any]] = []
+    n_overridden = 0
+    for raw in evidence_rows:
+        row = dict(raw)
+        sid = str(row.get("statement_id") or row.get("id") or "")
+        lab = lab_map.get(sid) or {}
+        hd = normalize_direction(lab.get("human_direction", ""))
+        d_int = direction_to_int(hd)
+        if d_int is not None:
+            row["dir"] = d_int
+            row["direction"] = d_int
+            n_overridden += 1
+        hc = str(lab.get("human_category") or "").strip()
+        if hc and hc in LABEL_CATEGORIES:
+            row["category"] = hc
+        out.append(row)
+    return out, n_overridden
+
+
+def evidence_dicts_to_items(rows: Sequence[dict[str, Any]]) -> list[Any]:
+    """Rebuild EvidenceItem list from session / diagnostics dicts."""
+    from fx_report.model.weights import EvidenceItem
+
+    items: list[EvidenceItem] = []
+    for row in rows:
+        direction = row.get("direction", row.get("dir", 0))
+        try:
+            direction_i = int(direction)
+        except (TypeError, ValueError):
+            direction_i = direction_to_int(direction) or 0
+        items.append(
+            EvidenceItem(
+                id=str(row.get("id") or row.get("statement_id") or ""),
+                title=str(row.get("title") or ""),
+                direction=direction_i,
+                strength=float(row.get("strength") or 0.0),
+                freshness=float(row.get("freshness") if row.get("freshness") is not None else 1.0),
+                unpriced=float(row.get("unpriced") if row.get("unpriced") is not None else 1.0),
+                category=str(row.get("category") or row.get("model_category") or "other"),
+                note=str(row.get("note") or ""),
+                strength_label=str(row.get("strength_label") or row.get("label") or ""),
+                strength_breakdown=dict(row.get("strength_breakdown") or {}),
+                source_tier=str(row.get("source_tier") or ""),
+                surprise=str(row.get("surprise") or ""),
+                scope=str(row.get("scope") or ""),
+                statement_id=str(row.get("statement_id") or row.get("id") or ""),
+                url=str(row.get("url") or ""),
+                is_prior=bool(row.get("is_prior", False)),
+            )
+        )
+    return items
+
+
+def recompute_score_and_scenarios(
+    evidence: Sequence[Any],
+    base_scenarios: Sequence[Any],
+    *,
+    score_to_mu_a: float,
+    score_to_sigma_b: float,
+    evidence_logit_scale: float,
+    scenario_temperature: float,
+    max_scenario_shift: float,
+) -> dict[str, Any]:
+    """Recompute S / μ / σ× / scenario weights after human direction overrides."""
+    from fx_report.model.weights import (
+        ScenarioSpec,
+        apply_evidence_to_scenarios,
+        evidence_score,
+    )
+
+    items = list(evidence)
+    if items and isinstance(items[0], dict):
+        items = evidence_dicts_to_items(items)  # type: ignore[arg-type]
+
+    scenarios_in: list[ScenarioSpec] = []
+    for s in base_scenarios:
+        if isinstance(s, ScenarioSpec):
+            scenarios_in.append(s)
+        elif isinstance(s, dict):
+            scenarios_in.append(
+                ScenarioSpec(
+                    name=str(s.get("name") or ""),
+                    weight=float(s.get("weight") or 0.0),
+                    mu_annual=float(s.get("mu_annual") or 0.0),
+                    sigma_mult=float(s.get("sigma_mult") or 1.0),
+                    expected_jumps=float(s.get("expected_jumps") or 0.0),
+                    jump_mean=float(s.get("jump_mean") or 0.0),
+                    jump_std=float(s.get("jump_std") or 0.0),
+                    narrative=str(s.get("narrative") or ""),
+                )
+            )
+
+    score = evidence_score(items)
+    mu_shift = float(score_to_mu_a) * score
+    sigma_extra = 1.0 + float(score_to_sigma_b) * abs(score)
+    scenarios = apply_evidence_to_scenarios(
+        scenarios_in,
+        score,
+        logit_scale=float(evidence_logit_scale),
+        temperature=float(scenario_temperature),
+        max_shift=float(max_scenario_shift),
+    )
+    return {
+        "score_S": score,
+        "mu_annual_shift": mu_shift,
+        "sigma_mult_extra": sigma_extra,
+        "scenarios_adjusted": scenarios,
+        "evidence": items,
+    }
+
+
 def category_label(cat: str) -> str:
     zh = CATEGORY_ZH.get(cat, "")
     return f"{cat}（{zh}）" if zh else cat

@@ -69,9 +69,11 @@
 3. 展开 **「怎么填？」** 看例子  
 4. （可选）点 **「一键按模型预填再改」**，只改不同意的几条  
 5. 每条选 `human_direction` / `human_category`；`agree` 一般会自动填  
-6. 点 **「保存标注到 output/」** → 文件  
+6. 有标注后页面会显示 **同意率**（yes / yes+no）；练习样例会标明非正式  
+7. （可选）勾选 **「用人工标注重算权重」** → **「应用人工标注重算」**：用人工方向覆盖模型方向，重算 S 与情景权重（并尽量重跑 MC）  
+8. 点 **「保存标注到 output/」** → 文件  
    `output/label_audit_{PAIR}_{YYYY-MM-DD}.csv`  
-7. 或点 **下载当前标注 CSV**
+9. 或点 **下载当前标注 CSV**
 
 ### 没有证据时
 
@@ -82,6 +84,7 @@
 
 ## 代码位置
 
-- 词表与存盘：`fx_report/model/label_audit.py`
-- CSV 导出：`fx_report/model/backtest.py` → `evidence_to_label_audit`
-- UI：`fx_report/ui/streamlit_app.py` → `render_label_audit_section`
+- 词表与存盘 / 同意率 / 标注重算：`fx_report.model.label_audit`
+- CSV 导出：`fx_report.model.backtest` → `evidence_to_label_audit`
+- UI：`fx_report.ui.streamlit_app` → `render_label_audit_section`
+- 跨对 OOS 看板：同 UI → `render_cross_pair_quality_board`

@@ -31,6 +31,7 @@ from fx_report.pipeline import run_pipeline, step2_assess_info_needs
 from fx_report.report.text import rubric_markdown
 from fx_report.model.calibrate import (
     BUNDLED_CALIBRATED_DIR,
+    calib_oos_board_dataframe,
     load_calib_oos_summary,
     resolve_calibrated_params_path,
 )
@@ -151,6 +152,84 @@ def render_calib_trust_panel(pair: str, *, cal_loaded: bool, cal_path: str | Non
     bits = [b for b in (src, note) if b]
     if bits:
         st.caption(" · ".join(bits))
+
+
+def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
+    """「跨对质量」— bundled/local calib_oos_summary for all calibrated pairs."""
+    with st.expander("跨对质量（OOS / 校准 holdout）", expanded=False):
+        st.caption(
+            "来自 `calib_oos_summary_*.json`（优先本地 output/，否则镜像内置 "
+            f"`{BUNDLED_CALIBRATED_DIR.as_posix()}`）。"
+            "Holdout = 时序末段，用于判断校准是否过拟合。"
+        )
+        try:
+            board = calib_oos_board_dataframe()
+        except Exception as exc:
+            st.warning(f"无法加载跨对 OOS 摘要：{exc}")
+            return
+        if board.empty:
+            st.info("未找到任何 calib_oos_summary_*.json。")
+            return
+
+        show = board.copy()
+
+        def _safe_pct(x: object) -> str:
+            try:
+                if x is None or (isinstance(x, float) and x != x):
+                    return "—"
+                return _fmt_pct(float(x))
+            except (TypeError, ValueError):
+                return "—"
+
+        def _safe_num(x: object) -> str:
+            try:
+                if x is None or (isinstance(x, float) and x != x):
+                    return "—"
+                return _fmt_num(float(x))
+            except (TypeError, ValueError):
+                return "—"
+
+        def _safe_int(x: object) -> str:
+            try:
+                if x is None or (isinstance(x, float) and x != x):
+                    return "—"
+                return str(int(float(x)))
+            except (TypeError, ValueError):
+                return "—"
+
+        show["holdout_hit"] = show["holdout_hit"].map(_safe_pct)
+        show["train_hit"] = show["train_hit"].map(_safe_pct)
+        show["holdout_brier"] = show["holdout_brier"].map(_safe_num)
+        show["train_brier"] = show["train_brier"].map(_safe_num)
+        show["holdout_n"] = show["holdout_n"].map(_safe_int)
+        show["train_n"] = show["train_n"].map(_safe_int)
+        show = show.rename(
+            columns={
+                "pair": "货币对",
+                "holdout_hit": "Holdout hit",
+                "holdout_brier": "Holdout Brier",
+                "holdout_n": "Holdout n",
+                "train_hit": "Train hit",
+                "train_brier": "Train Brier",
+                "train_n": "Train n",
+                "source": "来源",
+            }
+        )
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+        if current_pair:
+            st.caption(
+                f"当前分析对 **{current_pair}**：可到下方「历史回测（argmax hit / Brier）」"
+                f"跑小样本核对；完整 CLI：`python run_cli.py backtest --pair {current_pair}`"
+            )
+            cur = board[board["pair"] == current_pair]
+            if not cur.empty:
+                row = cur.iloc[0]
+                st.caption(
+                    f"本对 holdout hit={_fmt_pct(row.get('holdout_hit'))} · "
+                    f"Brier={_fmt_num(row.get('holdout_brier'))} · "
+                    f"n={_safe_int(row.get('holdout_n'))}"
+                )
 
 
 def _horizon(start: date, end: date) -> str:
@@ -695,6 +774,127 @@ def _clear_label_widget_keys(sids: list[str] | None = None) -> None:
             st.session_state.pop(k, None)
 
 
+def _apply_human_label_recompute(filled: pd.DataFrame, *, is_demo: bool) -> dict:
+    """
+    Override evidence directions from human labels, recompute S + scenario weights,
+    optionally re-run MC and refresh session diagnostics / probs.
+    """
+    from fx_report.model.label_audit import (
+        apply_human_labels_to_evidence,
+        recompute_score_and_scenarios,
+    )
+    from fx_report.model.monte_carlo import enforce_math_floor, run_mixture_monte_carlo
+
+    if is_demo:
+        return {"ok": False, "error": "练习样例不重算真实运行权重。"}
+
+    evidence_rows = st.session_state.get("last_auto_evidence") or []
+    base_scenarios = st.session_state.get("last_base_scenarios") or []
+    mapping = st.session_state.get("last_weight_mapping") or {}
+    diag = st.session_state.get("last_diag") or {}
+
+    if not evidence_rows:
+        return {"ok": False, "error": "无本次运行证据，无法重算。"}
+    if not base_scenarios or not mapping:
+        return {
+            "ok": False,
+            "error": "缺少情景/映射快照（请重新「运行分析」后再用人工标注重算）。",
+        }
+
+    overridden, n_overridden = apply_human_labels_to_evidence(evidence_rows, filled)
+    if n_overridden == 0:
+        return {"ok": False, "error": "没有可用的人工方向（unclear/空不覆盖）。请先标注。"}
+
+    reco = recompute_score_and_scenarios(
+        overridden,
+        base_scenarios,
+        score_to_mu_a=float(mapping["score_to_mu_a"]),
+        score_to_sigma_b=float(mapping["score_to_sigma_b"]),
+        evidence_logit_scale=float(mapping["evidence_logit_scale"]),
+        scenario_temperature=float(mapping["scenario_temperature"]),
+        max_scenario_shift=float(mapping["max_scenario_shift"]),
+    )
+
+    # Update lightweight evidence rows for UI tables
+    id_to_dir = {
+        str(e.get("statement_id") or e.get("id") or ""): e.get("dir", e.get("direction"))
+        for e in overridden
+    }
+    id_to_cat = {
+        str(e.get("statement_id") or e.get("id") or ""): e.get("category")
+        for e in overridden
+    }
+    refreshed = []
+    for row in evidence_rows:
+        r = dict(row)
+        sid = str(r.get("statement_id") or r.get("id") or "")
+        if sid in id_to_dir and id_to_dir[sid] is not None:
+            r["dir"] = id_to_dir[sid]
+            r["direction"] = id_to_dir[sid]
+        if sid in id_to_cat and id_to_cat[sid]:
+            r["category"] = id_to_cat[sid]
+        refreshed.append(r)
+    st.session_state["last_auto_evidence"] = refreshed
+
+    # Update diagnostics
+    new_diag = dict(diag)
+    new_diag["score_S"] = reco["score_S"]
+    new_diag["mu_annual_shift"] = reco["mu_annual_shift"]
+    new_diag["sigma_mult_extra"] = reco["sigma_mult_extra"]
+    new_diag["scenarios_adjusted"] = [s.__dict__ for s in reco["scenarios_adjusted"]]
+    new_diag["human_label_override"] = {
+        "n_overridden": n_overridden,
+        "score_S": reco["score_S"],
+    }
+
+    mc_note = ""
+    market = diag.get("market") or {}
+    edges = diag.get("bucket_edges") or st.session_state.get("last_edges")
+    if (
+        market.get("spot") is not None
+        and market.get("sigma_daily") is not None
+        and edges
+    ):
+        try:
+            edges_t = tuple(float(x) for x in edges)
+            mc = run_mixture_monte_carlo(
+                spot=float(market["spot"]),
+                sigma_daily_base=float(market["sigma_daily"]),
+                scenarios=reco["scenarios_adjusted"],
+                trading_days=int(mapping.get("trading_days") or 66),
+                n_sims=int(mapping.get("n_sims") or 10_000),
+                seed=int(mapping.get("seed") or 42),
+                bucket_edges=edges_t,
+                mu_annual_shift=float(reco["mu_annual_shift"]),
+                sigma_mult_extra=float(reco["sigma_mult_extra"]),
+                peak_engine=str(mapping.get("peak_engine") or "path_max"),
+            )
+            probs = enforce_math_floor(mc.raw_probs, float(market["spot"]), edges_t)
+            new_diag["raw_probs"] = mc.raw_probs
+            new_diag["calibrated_probs"] = probs
+            new_diag["percentiles"] = mc.percentiles
+            new_diag["scenario_path_counts"] = mc.scenario_counts
+            st.session_state["last_probs"] = probs
+            mc_note = f"；已重跑 MC（n={mc.n_sims:,}）"
+        except Exception as exc:
+            mc_note = f"；MC 重跑失败（权重已更新）：{exc}"
+
+    st.session_state["last_diag"] = new_diag
+    st.session_state["human_label_recomputed"] = {
+        "applied": True,
+        "n_overridden": n_overridden,
+        "score_S": reco["score_S"],
+        "mu_annual_shift": reco["mu_annual_shift"],
+        "sigma_mult_extra": reco["sigma_mult_extra"],
+    }
+    return {
+        "ok": True,
+        "n_overridden": n_overridden,
+        "score_S": reco["score_S"],
+        "note": mc_note,
+    }
+
+
 def render_label_audit_section(
     *,
     pair: str,
@@ -710,6 +910,7 @@ def render_label_audit_section(
         AGREE_ZH,
         HUMAN_DIRECTIONS,
         LABEL_CATEGORIES,
+        agree_rate_stats,
         category_label,
         compute_agree,
         demo_evidence_rows,
@@ -920,13 +1121,61 @@ def render_label_audit_section(
     csv_bytes = filled.to_csv(index=False).encode("utf-8")
     st.session_state["last_label_audit_csv"] = filled.to_csv(index=False)
 
+    stats = agree_rate_stats(filled, is_demo=use_demo)
+    st.session_state["last_label_agree_stats"] = stats
+
     out_path = label_audit_path(pair)
     n_done = int((filled["human_direction"].astype(str).str.len() > 0).sum())
     st.caption(f"已填方向 {n_done}/{len(filled)} · 保存路径：`{out_path}`")
 
+    # Agree rate panel — only real metrics when labels present (no fake numbers)
+    if stats["has_labels"]:
+        m1, m2, m3, m4 = st.columns(4)
+        if stats["agree_rate"] is not None:
+            m1.metric("同意率", f"{100 * float(stats['agree_rate']):.0f}%")
+        else:
+            m1.metric("同意率", "—")
+        m2.metric("一致 yes", int(stats["n_yes"]))
+        m3.metric("不一致 no", int(stats["n_no"]))
+        m4.metric("unsure", int(stats["n_unsure"]))
+        st.caption(stats["caption"])
+    else:
+        st.caption(stats["caption"])
+
+    # Human-label → recompute S / scenario weights for current run
+    st.markdown("##### 标注重算")
+    use_human_reweight = st.checkbox(
+        "用人工标注重算权重",
+        key="use_human_reweight",
+        help=(
+            "用 human_direction 覆盖模型方向，重算证据分 S 与情景权重；"
+            "有行情快照时一并重跑 MC。练习样例不会改真实运行。"
+        ),
+        disabled=use_demo,
+    )
+    apply_reweight = st.button(
+        "应用人工标注重算",
+        key="btn_apply_human_reweight",
+        disabled=use_demo or not use_human_reweight,
+        help="需勾选上方开关，且至少有一条明确人工方向（非 unclear）",
+    )
+
     if save_clicked:
         saved = save_label_audit(filled, out_path)
         st.success(f"已保存：{saved}")
+        if use_human_reweight and not use_demo and stats["has_labels"]:
+            apply_reweight = True
+
+    if apply_reweight and use_human_reweight and not use_demo:
+        result = _apply_human_label_recompute(filled, is_demo=use_demo)
+        if result.get("ok"):
+            st.success(
+                f"已用人工标注覆盖 {result['n_overridden']} 条方向，"
+                f"S={result['score_S']:+.3f}{result.get('note') or ''}"
+            )
+            st.rerun()
+        else:
+            st.warning(result.get("error") or "重算失败")
 
     pair_safe = pair.replace("/", "")
     st.download_button(
@@ -1000,6 +1249,7 @@ def main() -> None:
     render_calib_trust_panel(
         analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
     )
+    render_cross_pair_quality_board(current_pair=analysis_spec.pair)
 
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
         api_opts = render_api_settings_panel()
@@ -1299,17 +1549,48 @@ def main() -> None:
                     "statement_id": w.evidence.statement_id or w.evidence.id,
                     "title": w.evidence.title,
                     "dir": w.evidence.direction,
+                    "direction": w.evidence.direction,
                     "label": w.evidence.strength_label,
                     "strength": w.evidence.strength,
+                    "freshness": w.evidence.freshness,
+                    "unpriced": w.evidence.unpriced,
                     "category": w.evidence.category,
                     "url": getattr(w.evidence, "url", "") or "",
+                    "is_prior": bool(getattr(w.evidence, "is_prior", False)),
                     "contrib": w.weight_contrib,
                 }
                 for w in result.weighted
             ]
+            # Base priors (pre-evidence) + mapping for human-label recompute
+            st.session_state["last_base_scenarios"] = [
+                {
+                    "name": s.name,
+                    "weight": s.weight,
+                    "mu_annual": s.mu_annual,
+                    "sigma_mult": s.sigma_mult,
+                    "expected_jumps": s.expected_jumps,
+                    "jump_mean": s.jump_mean,
+                    "jump_std": s.jump_std,
+                    "narrative": s.narrative,
+                }
+                for s in result.weights.scenarios
+            ]
+            st.session_state["last_weight_mapping"] = {
+                "score_to_mu_a": float(result.weights.score_to_mu_a),
+                "score_to_sigma_b": float(result.weights.score_to_sigma_b),
+                "evidence_logit_scale": float(result.weights.evidence_logit_scale),
+                "scenario_temperature": float(result.weights.scenario_temperature),
+                "max_scenario_shift": float(result.weights.max_scenario_shift),
+                "n_sims": int(result.weights.n_sims),
+                "trading_days": int(result.weights.trading_days),
+                "seed": int(result.weights.seed),
+                "peak_engine": str(getattr(result.weights, "peak_engine", "path_max")),
+            }
             st.session_state["label_audit_use_demo"] = False
             st.session_state.pop("label_edits", None)
             st.session_state.pop("label_edit_fp", None)
+            st.session_state.pop("last_label_agree_stats", None)
+            st.session_state.pop("human_label_recomputed", None)
             # label_audit template (human columns empty)
             try:
                 from fx_report.model.backtest import evidence_to_label_audit
@@ -1379,11 +1660,34 @@ def main() -> None:
             f"n={int(h.get('n') or 0)}  \n"
         )
 
+    agree_stats = st.session_state.get("last_label_agree_stats") or {}
+    agree_line = ""
+    if agree_stats.get("has_labels") and agree_stats.get("agree_rate") is not None:
+        demo_tag = "（练习）" if agree_stats.get("is_demo") else ""
+        agree_line = (
+            f"· 标注同意率={100 * float(agree_stats['agree_rate']):.0f}%"
+            f"（yes={agree_stats.get('n_yes', 0)} / "
+            f"decisive={int(agree_stats.get('n_yes', 0)) + int(agree_stats.get('n_no', 0))}）"
+            f"{demo_tag}  \n"
+        )
+    elif agree_stats.get("has_labels"):
+        agree_line = f"· 标注：{agree_stats.get('caption', '已有标注但无明确对错')}  \n"
+
+    human_re = st.session_state.get("human_label_recomputed") or {}
+    human_line = ""
+    if human_re.get("applied"):
+        human_line = (
+            f"· 已用人工标注重算：S={human_re.get('score_S', 0):+.3f}　"
+            f"覆盖方向 {human_re.get('n_overridden', 0)} 条  \n"
+        )
+
     st.info(
         f"**本次分析审计**  \n"
         f"· peak_engine：`{peak_eng}`  \n"
         f"· 参数来源：{cal_zh}  \n"
         f"{oos_line}"
+        f"{agree_line}"
+        f"{human_line}"
         f"· 证据分 S={diag.get('score_S', 0):+.3f}　"
         f"μ_shift={diag.get('mu_annual_shift', 0):+.4f}　"
         f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"

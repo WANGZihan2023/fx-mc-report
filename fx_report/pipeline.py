@@ -672,6 +672,25 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
     tc.extra["evidence_quality"] = diag["evidence_quality"]
     tc.extra["fallback_templates"] = diag["fallback_templates"]
     tc.extra["template_policy"] = diag["template_policy"]
+    # OOS / calib trust line when bundled or local summary exists
+    try:
+        from fx_report.model.calibrate import load_calib_oos_summary
+
+        oos = load_calib_oos_summary(market.pair)
+    except Exception:
+        oos = None
+    if oos:
+        hold = oos.get("holdout") or {}
+        train = oos.get("train") or {}
+        tc.extra["calib_oos"] = {
+            "holdout_hit_rate": hold.get("hit_rate"),
+            "holdout_brier": hold.get("brier"),
+            "holdout_n": hold.get("n"),
+            "train_brier": train.get("brier"),
+            "train_hit_rate": train.get("hit_rate"),
+            "source": oos.get("source"),
+        }
+        diag["calib_oos"] = tc.extra["calib_oos"]
     return full_report, report_html, tc, diag, horizon
 
 

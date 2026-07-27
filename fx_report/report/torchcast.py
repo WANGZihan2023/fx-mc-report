@@ -658,6 +658,29 @@ h1.question {{
 """
 
 
+def _oos_meta_span(calib_oos: Any) -> str:
+    """Short holdout/calib trust line for HTML/PDF meta strip (empty if none)."""
+    if not isinstance(calib_oos, dict) or not calib_oos:
+        return ""
+    hit = calib_oos.get("holdout_hit_rate")
+    brier = calib_oos.get("holdout_brier")
+    n = calib_oos.get("holdout_n")
+    if hit is None and brier is None:
+        return ""
+    hit_s = _pct(float(hit)) if hit is not None else "—"
+    try:
+        brier_s = f"{float(brier):.3f}" if brier is not None else "—"
+    except (TypeError, ValueError):
+        brier_s = "—"
+    try:
+        n_s = str(int(n)) if n is not None and n == n else "—"
+    except (TypeError, ValueError):
+        n_s = "—"
+    return (
+        f'<span>OOS holdout hit {hit_s} · Brier {brier_s} · n={n_s}</span>'
+    )
+
+
 def render_html(report: TorchcastReport) -> str:
     # probability bars
     max_p = max(report.probs.values()) if report.probs else 1.0
@@ -762,6 +785,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>Analysis quote {_esc(report.pair)}</span>
     <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
     <span>Evidence {_esc(str(report.extra.get("evidence_quality") or "n/a"))}</span>
+    {_oos_meta_span(report.extra.get("calib_oos"))}
   </div>
 
   <div class="panel">
