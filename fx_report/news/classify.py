@@ -25,7 +25,7 @@ SOURCE_MAP: list[tuple[str, str]] = [
     (r"reuters|bloomberg", "tier1_wire"),
     (r"goldman|jpmorgan|morgan stanley|ubs|citi|barclays|hsbc|mufg|nomura|deutsche bank|stonex|ing ", "tier1_bank"),
     (r"inbox:.*\.(pdf|PDF)", "tier1_bank"),  # 投放的付费研报 PDF 按投行档处理
-    (r"cnbc|bbc|guardian|afr\.com|scmp|nikkei|investing\.com|marketwatch|yahoo|newsapi|finnhub", "tier2_media"),
+    (r"cnbc|bbc|guardian|afr\.com|scmp|nikkei|investing\.com|marketwatch|yahoo|newsapi|finnhub|news\.google", "tier2_media"),
 ]
 
 # Surprise keywords
@@ -305,8 +305,13 @@ def pair_relevance(text: str, pair: str) -> float:
     for kw in extras.get(pair, []):
         if kw in t:
             score += 1.5
+    # Broad FX / macro signals — help free RSS survive MIN_PAIR_RELEVANCE
     if "dollar" in t or "usd" in t or "fx" in t or "forex" in t or "currency" in t:
         score += 0.5
+    if re.search(r"\b(fed|fomc|powell|inflation|cpi|yield|treasury|rate (hike|cut))\b", t):
+        score += 0.4
+    if re.search(r"\b(central bank|monetary policy|interest rate)\b", t):
+        score += 0.3
     return score
 
 
@@ -314,7 +319,9 @@ def pair_relevance(text: str, pair: str) -> float:
 _pair_relevance = pair_relevance
 
 # Headlines below this relevance are excluded from main evidence (no silent junk).
-MIN_PAIR_RELEVANCE = 0.5
+# Slightly lower than before so free RSS / Google News can contribute when no API keys;
+# still filters obvious unrelated noise (score 0 stays out).
+MIN_PAIR_RELEVANCE = 0.35
 
 
 def match_drivers_from_text(

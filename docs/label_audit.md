@@ -69,10 +69,11 @@
 3. 展开 **「怎么填？」** 看例子  
 4. （可选）点 **「一键按模型预填再改」**，只改不同意的几条  
 5. 每条选 `human_direction` / `human_category`；`agree` 一般会自动填  
-6. 有标注后页面会显示 **同意率**（yes / yes+no）；练习样例会标明非正式  
+6. 有标注后页面会显示 **抽检准确率**（= 同意率 yes / yes+no）；练习样例会标明非正式  
 7. （可选）勾选 **「用人工标注重算权重」** → **「应用人工标注重算」**：用人工方向覆盖模型方向，重算 S 与情景权重（并尽量重跑 MC）  
 8. 点 **「保存标注到 output/」** → 文件  
    `output/label_audit_{PAIR}_{YYYY-MM-DD}.csv`  
+   同时写入 `output/label_spotcheck_{PAIR}_{日期}.json`（抽检准确率）  
 9. 或点 **下载当前标注 CSV**
 
 ### 没有证据时
@@ -81,11 +82,26 @@
 
 - **怎么填？** — 字段说明与例子（默认展开）  
 - **加载练习样例** — 用演示语句练手（主按钮）  
-- 或去侧栏 **API / AI Key** 填写 `NEWSAPI_KEY` / `FINNHUB_API_KEY` 后重跑
+- **Railway / 环境变量检查清单** — `NEWSAPI_KEY` / `FINNHUB_API_KEY` / LLM / `APP_PASSWORD` 等  
+- 无 Key 时流水线仍会试 **央行 RSS + Google News 公开 RSS**；相关度不够则 evidence_n=0（诚实空证据）
+
+## Stage 3 · 标签学习强度（脚手架）
+
+当 `output/label_audit_*.csv` 合计有 **≥ 20** 条带 `human_direction`（up/down/neutral）的标注时：
+
+1. 系统拟合 **类别 → 方向先验** 与 **强度倍率**（`fx_report.model.label_learn`）  
+2. 侧栏 **② 抓取与判定** 勾选 **「使用标签学习到的强度」** 后，下次运行会把倍率应用到证据 `strength`  
+3. 若不足 20 条：UI / 审计框显示 **「标注不足，需至少 20 条」**——代码路径已就绪，等你标够即可  
+
+拟合结果可落盘：`output/label_learned_params.json`。
+
+这不是端到端深度学习，只是可开关的最小闭环，方便清单「可学习证据」结构上完成。
 
 ## 代码位置
 
-- 词表与存盘 / 同意率 / 标注重算：`fx_report.model.label_audit`
+- 词表与存盘 / 同意率 / 抽检 / 标注重算：`fx_report.model.label_audit`
+- Stage 3 强度学习：`fx_report.model.label_learn`
 - CSV 导出：`fx_report.model.backtest` → `evidence_to_label_audit`
 - UI：`fx_report.ui.streamlit_app` → `render_label_audit_section`
 - 跨对 OOS 看板：同 UI → `render_cross_pair_quality_board`
+- 校准日常闭环：`docs/calibration_loop.md`

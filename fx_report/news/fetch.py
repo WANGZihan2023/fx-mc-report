@@ -66,11 +66,32 @@ OFFICIAL_RSS: list[tuple[str, str, str]] = [
     ("BOE", "https://www.bankofengland.co.uk/rss/news", "bankofengland.co.uk"),
 ]
 
+# Pair-specific official / public feeds (still no API key)
 PAIR_EXTRA_RSS: dict[str, list[tuple[str, str, str]]] = {
-    "USD/JPY": [("BOJ", "https://www.boj.or.jp/en/announcements/release_new/index.htm", "boj.or.jp")],
+    "USD/JPY": [],
     "EUR/USD": [],
     "USD/CNH": [],
     "USD/CNY": [],
+    "USD/CAD": [],
+    "NZD/USD": [],
+    "USD/CHF": [],
+    "USD/AUD": [],
+    "AUD/USD": [],
+    "GBP/USD": [],
+}
+
+# Free Google News RSS (no key) — query tuned per pair; filtered again by relevance
+PAIR_GOOGLE_NEWS_Q: dict[str, str] = {
+    "USD/AUD": 'RBA OR "Australian dollar" OR AUDUSD OR "iron ore" OR Aussie',
+    "AUD/USD": 'RBA OR "Australian dollar" OR AUDUSD OR Aussie',
+    "EUR/USD": 'ECB OR "euro zone" OR EURUSD OR Lagarde',
+    "GBP/USD": '"Bank of England" OR GBPUSD OR sterling OR Bailey',
+    "USD/JPY": '"Bank of Japan" OR USDJPY OR yen OR Ueda OR BOJ',
+    "USD/CNH": 'PBOC OR "offshore yuan" OR CNH OR renminbi',
+    "USD/CNY": 'PBOC OR yuan OR CNY OR renminbi',
+    "USD/CAD": '"Bank of Canada" OR USDCAD OR loonie OR oil',
+    "NZD/USD": 'RBNZ OR "New Zealand dollar" OR kiwi OR OCR',
+    "USD/CHF": 'SNB OR "Swiss franc" OR USDCHF',
 }
 
 PAIR_NEWSAPI_QUERIES: dict[str, list[str]] = {
@@ -86,15 +107,42 @@ PAIR_NEWSAPI_QUERIES: dict[str, list[str]] = {
     "USD/CHF": ["SNB OR \"Swiss franc\""],
 }
 
-# Soft relevance filter for official feeds (keep if matches OR if Fed/RBA always for AUD pairs)
+# Soft relevance filter for official / public feeds
 PAIR_KEEP_KEYWORDS: dict[str, re.Pattern[str]] = {
-    "USD/AUD": re.compile(r"RBA|Australia|AUD|Aussie|iron ore|Fed|FOMC|inflation|CPI|rate|oil|Iran|Hormuz", re.I),
-    "AUD/USD": re.compile(r"RBA|Australia|AUD|Aussie|iron ore|Fed|FOMC|inflation|CPI|rate|oil", re.I),
-    "EUR/USD": re.compile(r"ECB|euro|EUR|Fed|FOMC|inflation|CPI", re.I),
-    "GBP/USD": re.compile(r"Bank of England|BOE|sterling|GBP|Fed|inflation", re.I),
-    "USD/JPY": re.compile(r"BOJ|Japan|yen|JPY|Fed|yield", re.I),
-    "USD/CNH": re.compile(r"China|yuan|PBOC|CNH|CNY|renminbi|Fed", re.I),
-    "USD/CNY": re.compile(r"China|yuan|PBOC|CNY|renminbi|Fed", re.I),
+    "USD/AUD": re.compile(
+        r"RBA|Australia|AUD|Aussie|iron ore|Fed|FOMC|inflation|CPI|rate|oil|"
+        r"Iran|Hormuz|China|yield|dollar|FX|forex|currency",
+        re.I,
+    ),
+    "AUD/USD": re.compile(
+        r"RBA|Australia|AUD|Aussie|iron ore|Fed|FOMC|inflation|CPI|rate|oil|"
+        r"China|yield|dollar|FX|forex",
+        re.I,
+    ),
+    "EUR/USD": re.compile(
+        r"ECB|euro|EUR|Lagarde|Fed|FOMC|inflation|CPI|yield|dollar|FX|forex", re.I
+    ),
+    "GBP/USD": re.compile(
+        r"Bank of England|BOE|sterling|GBP|Bailey|Fed|inflation|CPI|yield|FX", re.I
+    ),
+    "USD/JPY": re.compile(
+        r"BOJ|Japan|yen|JPY|Ueda|Fed|yield|Treasury|FX|forex|dollar", re.I
+    ),
+    "USD/CNH": re.compile(
+        r"China|yuan|PBOC|CNH|CNY|renminbi|Fed|offshore|fixing|FX", re.I
+    ),
+    "USD/CNY": re.compile(
+        r"China|yuan|PBOC|CNY|renminbi|Fed|onshore|fixing|FX", re.I
+    ),
+    "USD/CAD": re.compile(
+        r"Bank of Canada|BoC|Canada|CAD|loonie|oil|crude|Fed|inflation|FX", re.I
+    ),
+    "NZD/USD": re.compile(
+        r"RBNZ|New Zealand|NZD|kiwi|OCR|Fed|dairy|inflation|FX", re.I
+    ),
+    "USD/CHF": re.compile(
+        r"SNB|Swiss|franc|CHF|Fed|safe.?haven|yield|FX", re.I
+    ),
 }
 
 
@@ -206,6 +254,38 @@ def fetch_official_rss(pair: str, limit_per_feed: int = 8) -> list[Headline]:
             out.append(h)
             if len(out) >= 40:
                 return out
+    return out
+
+
+def fetch_google_news_rss(pair: str, limit: int = 12) -> list[Headline]:
+    """
+    Public Google News RSS — no API key.
+    Relevance is soft-filtered with PAIR_KEEP_KEYWORDS; classify layer applies
+    pair_relevance again before evidence.
+    """
+    q = PAIR_GOOGLE_NEWS_Q.get(pair) or pair.replace("/", " ")
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(q)}&hl=en-US&gl=US&ceid=US:en"
+    )
+    try:
+        raw = _http_get(url, timeout=15)
+    except Exception:
+        return []
+    items = _parse_rss_xml(raw, "Google News", "news.google.com")
+    keep = PAIR_KEEP_KEYWORDS.get(pair)
+    out: list[Headline] = []
+    for h in items:
+        h.provider = "google_news_rss"
+        blob = f"{h.title} {h.summary}"
+        if keep is not None and not keep.search(blob):
+            continue
+        # Drop obvious non-FX junk that sometimes slips in
+        if re.search(r"\b(recipe|sports|celebrity|horoscope)\b", blob, re.I):
+            continue
+        out.append(h)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -359,8 +439,15 @@ def _dedupe_sort(headlines: list[Headline], max_items: int) -> list[Headline]:
         uniq.append(h)
 
     def sort_key(h: Headline) -> tuple[int, float]:
-        # Prefer official > inbox > keyed APIs
-        rank = {"official_rss": 0, "ai_research": 1, "inbox": 2, "newsapi": 3, "finnhub": 4}.get(h.provider, 9)
+        # Prefer official > free Google RSS > inbox > keyed APIs
+        rank = {
+            "official_rss": 0,
+            "google_news_rss": 1,
+            "ai_research": 2,
+            "inbox": 3,
+            "newsapi": 4,
+            "finnhub": 5,
+        }.get(h.provider, 9)
         ts = h.published.timestamp() if h.published else 0.0
         return (rank, -ts)
 
@@ -374,13 +461,15 @@ def fetch_headlines_for_pair(
     *,
     allow_legacy: bool | None = None,  # ignored (compat)
 ) -> list[Headline]:
-    """Official RSS + inbox + vault news APIs."""
+    """Official RSS + free Google News RSS + inbox + vault news APIs."""
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
     queries = PAIR_NEWSAPI_QUERIES.get(spec.pair) or [spec.pair.replace("/", " ")]
 
     headlines: list[Headline] = []
     headlines.extend(fetch_official_rss(spec.pair))
+    # Always try free public Google News RSS (helps when no NewsAPI/Finnhub key)
+    headlines.extend(fetch_google_news_rss(spec.pair, limit=12))
     headlines.extend(fetch_inbox_headlines(limit=max_items))
     for q in queries[:2]:
         headlines.extend(fetch_newsapi(q, cfg, limit=12))
@@ -398,7 +487,7 @@ def fetch_status_summary() -> str:
     paths = vault_paths(cfg)
     parts = [
         "market=ECB/Frankfurter(+FRED/Twelve/Alpha)",
-        "news=Fed/RBA/ECB/BOE RSS",
+        "news=Fed/RBA/ECB/BOE RSS + Google News RSS (free)",
         f"NewsAPI={'ON' if is_set(cfg, 'NEWSAPI_KEY') else 'off'}",
         f"Finnhub={'ON' if is_set(cfg, 'FINNHUB_API_KEY') else 'off'}",
         f"inbox={len(inbox_files(cfg))}",

@@ -718,6 +718,7 @@ def run_pipeline(
     model_weights: ModelWeights | None = None,
     calibrated_params_path: str | Path | None = None,
     calibrated_params_label: str | None = None,
+    use_label_learned_strength: bool = False,
 ) -> PipelineResult:
     """跑完整七步；可选写入 output/。
 
@@ -726,6 +727,7 @@ def run_pipeline(
 
     `calibrated_params_path`：可选 Stage-1 JSON，覆盖 score_to_* / 情景先验等。
     `template_policy`：off（默认，无静默模板）/ prior_only / fallback_warn。
+    `use_label_learned_strength`：若 label_audit 标注 ≥N 条，用类别强度倍率缩放证据。
     """
     log: list[str] = []
 
@@ -869,6 +871,41 @@ def run_pipeline(
         f"quality={news_meta.get('evidence_quality')}｜"
         f"fallback_templates={news_meta.get('fallback_templates')}"
     )
+
+    # Optional Stage-3: scale strength from accumulated human labels
+    label_learn_meta: dict[str, Any] = {
+        "requested": bool(use_label_learned_strength),
+        "applied": False,
+        "ready": False,
+        "message": "",
+    }
+    if use_label_learned_strength:
+        from fx_report.model.label_learn import (
+            apply_label_learned_strength,
+            fit_label_learned_params,
+            save_label_learned_params,
+        )
+
+        learned = fit_label_learned_params()
+        label_learn_meta["ready"] = bool(learned.ready)
+        label_learn_meta["n_labeled"] = learned.n_labeled
+        label_learn_meta["min_required"] = learned.min_required
+        label_learn_meta["message"] = learned.message
+        if learned.ready:
+            evidence, apply_meta = apply_label_learned_strength(evidence, learned)
+            label_learn_meta.update(apply_meta)
+            try:
+                save_label_learned_params(learned)
+            except Exception:
+                pass
+            say(
+                f"  → 标签学习强度：已应用 "
+                f"（scaled={apply_meta.get('n_strength_scaled', 0)}，"
+                f"nudged={apply_meta.get('n_dir_nudged', 0)}）"
+            )
+        else:
+            say(f"  → 标签学习强度未启用：{learned.message}")
+    news_meta["label_learn"] = label_learn_meta
 
     # 5
     say("【5/7】对每条信息赋予权重")

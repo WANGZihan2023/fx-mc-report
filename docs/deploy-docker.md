@@ -75,7 +75,18 @@ git commit -m "Refresh bundled calibrated params"
 git push   # Railway 自动重建镜像
 ```
 
+更完整的「过夜 → sync → push → 确认」步骤见 **`docs/calibration_loop.md`**（含可选 cron 一行示例）。
+
 **如何确认云端已加载校准**：打开公网 URL → 选货币对 → 页顶应显示「已加载校准参数」+ Holdout hit rate / Brier；侧栏勾选「使用校准参数」；跑一次分析后「本次分析审计」里参数来源应为校准 JSON 文件名（非「默认先验」）。
+
+### 访问密码（务必设）
+
+| 变量 | 说明 |
+|------|------|
+| **`APP_PASSWORD`** | 推荐。设置后打开页面先输密码 |
+| `FX_REPORT_PASSWORD` | 与上等效的别名 |
+
+未设置则**任何人有链接即可打开 UI**。只放在 Railway **Variables**，不要写进代码或 git。
 
 ---
 

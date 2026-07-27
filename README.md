@@ -136,14 +136,15 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 
 ## 相关文档
 
-- 证据人工标注（label_audit）：`docs/label_audit.md`
+- 证据人工标注（label_audit）+ Stage 3 标签学习：`docs/label_audit.md`
+- 校准日常闭环（overnight → sync → Railway）：`docs/calibration_loop.md`
 - 长期分享 / Streamlit 公开设置：`docs/sharing.md`
-- **Docker 云部署（WeasyPrint / 澳洲）**：`docs/deploy-docker.md`
+- **Docker 云部署（WeasyPrint / 澳洲）**：`docs/deploy-docker.md`（含 **`APP_PASSWORD`**）
 - 云端 redeploy 标记：`docs/CLOUD_REDEPLOY.txt`
 - 部署推送：`scripts/deploy.sh`
 - 临时隧道分享：`scripts/share.sh`
 - 同步校准到镜像：`scripts/sync_calibrated_to_deploy.sh` → `fx_report/data/calibrated/`
 
-### 云部署访问密码（可选）
+### 云部署访问密码（可选但强烈建议）
 
 Railway **Variables** 设置 `APP_PASSWORD=你的密码`（或 `FX_REPORT_PASSWORD`）。未设置时本地/云上均不弹密码门。**不要**把密码写进 git。

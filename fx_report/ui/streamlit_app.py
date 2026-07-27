@@ -519,6 +519,14 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         )
         max_news_ev = st.slider("最多头条证据条数", 3, 20, 10, 1)
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
+        use_label_learned = st.checkbox(
+            "使用标签学习到的强度",
+            value=False,
+            help=(
+                "Stage 3：若 output/label_audit_*.csv 中 human_direction ≥N 条，"
+                "按类别拟合强度倍率并应用到本次证据；不足则提示「标注不足」。"
+            ),
+        )
 
     # ③ 蒙特卡洛（分档切点在主区设置）
     with st.sidebar.expander("③ 蒙特卡洛", expanded=False):
@@ -741,6 +749,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "max_news_ev": int(max_news_ev),
         "classify_mode": classify_mode,
         "fetch_fulltext": fetch_fulltext,
+        "use_label_learned_strength": use_label_learned,
         "llm_key": "",
         "llm_base": "",
         "llm_model": "",
@@ -911,6 +920,7 @@ def render_label_audit_section(
         HUMAN_DIRECTIONS,
         LABEL_CATEGORIES,
         agree_rate_stats,
+        aggregate_spotcheck_stats,
         category_label,
         compute_agree,
         demo_evidence_rows,
@@ -920,10 +930,13 @@ def render_label_audit_section(
         help_markdown,
         label_audit_path,
         load_label_audit,
+        load_spotcheck_stats,
         merge_human_labels,
         normalize_direction,
         prefill_from_model,
+        railway_env_checklist_markdown,
         save_label_audit,
+        save_spotcheck_stats,
     )
 
     # Anchor + prominent header (must stay above long report / charts)
@@ -988,9 +1001,12 @@ def render_label_audit_section(
                 st.rerun()
         with c2:
             st.info(
-                "要看**真实**新闻证据：侧栏「API / AI Key」填写 `NEWSAPI_KEY` 或 "
-                "`FINNHUB_API_KEY`（RSS 也会尽量抓取），保存后重新运行分析。"
+                "要看**真实**新闻证据：侧栏「API / AI Key」或 Railway Variables 填写 "
+                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（无 Key 也会试央行 + Google News RSS），"
+                "保存后重新运行分析。"
             )
+        with st.expander("Railway / 环境变量检查清单", expanded=True):
+            st.markdown(railway_env_checklist_markdown(news_keys_present=has_news_api(cfg)))
         return
 
     if use_demo:
@@ -1134,24 +1150,59 @@ def render_label_audit_section(
 
     stats = agree_rate_stats(filled, is_demo=use_demo)
     st.session_state["last_label_agree_stats"] = stats
+    # Alias for audit panel / spot-check wording
+    if stats.get("agree_rate") is not None:
+        stats = {**stats, "抽检准确率": stats["agree_rate"]}
 
     out_path = label_audit_path(pair)
     n_done = int((filled["human_direction"].astype(str).str.len() > 0).sum())
     st.caption(f"已填方向 {n_done}/{len(filled)} · 保存路径：`{out_path}`")
 
-    # Agree rate panel — only real metrics when labels present (no fake numbers)
+    # 抽检准确率 (= agree_rate) — visible whenever labels exist
     if stats["has_labels"]:
         m1, m2, m3, m4 = st.columns(4)
         if stats["agree_rate"] is not None:
-            m1.metric("同意率", f"{100 * float(stats['agree_rate']):.0f}%")
+            m1.metric("抽检准确率", f"{100 * float(stats['agree_rate']):.0f}%")
+            m1.caption("= 同意率 yes/(yes+no)")
         else:
-            m1.metric("同意率", "—")
+            m1.metric("抽检准确率", "—")
         m2.metric("一致 yes", int(stats["n_yes"]))
         m3.metric("不一致 no", int(stats["n_no"]))
         m4.metric("unsure", int(stats["n_unsure"]))
         st.caption(stats["caption"])
     else:
         st.caption(stats["caption"])
+        saved_sc = load_spotcheck_stats(pair)
+        if saved_sc and saved_sc.get("agree_rate") is not None:
+            st.info(
+                f"磁盘已有抽检准确率 "
+                f"{100 * float(saved_sc['agree_rate']):.0f}% "
+                f"（{saved_sc.get('as_of', '')} · yes={saved_sc.get('n_yes')} / "
+                f"no={saved_sc.get('n_no')}）"
+            )
+
+    # Aggregate across all label_audit files (non-demo)
+    agg = aggregate_spotcheck_stats()
+    if agg.get("has_labels") and agg.get("agree_rate") is not None and not use_demo:
+        st.caption(
+            f"全部已保存标注合计抽检准确率："
+            f"{100 * float(agg['agree_rate']):.0f}% "
+            f"（{agg.get('n_yes', 0)}/{int(agg.get('n_yes', 0)) + int(agg.get('n_no', 0))}）"
+        )
+
+    # Stage 3 learn status
+    from fx_report.model.label_learn import (
+        MIN_LABELS_FOR_LEARN,
+        fit_label_learned_params,
+    )
+
+    learned_preview = fit_label_learned_params()
+    if learned_preview.ready:
+        st.success(f"标签学习可用：{learned_preview.message}（侧栏勾选即可应用到下次运行）")
+    else:
+        st.caption(
+            f"标签学习（Stage 3）：{learned_preview.message or f'标注不足，需至少 {MIN_LABELS_FOR_LEARN} 条'}"
+        )
 
     # Human-label → recompute S / scenario weights for current run
     st.markdown("##### 标注重算")
@@ -1173,9 +1224,19 @@ def render_label_audit_section(
 
     if save_clicked:
         saved = save_label_audit(filled, out_path)
-        st.success(f"已保存：{saved}")
+        sc_path = save_spotcheck_stats(stats, pair)
+        st.success(f"已保存：{saved}；抽检准确率 → `{sc_path.name}`")
         if use_human_reweight and not use_demo and stats["has_labels"]:
             apply_reweight = True
+        # Refresh learned params preview after save
+        try:
+            from fx_report.model.label_learn import save_label_learned_params
+
+            lp = fit_label_learned_params()
+            if lp.ready:
+                save_label_learned_params(lp)
+        except Exception:
+            pass
 
     if apply_reweight and use_human_reweight and not use_demo:
         result = _apply_human_label_recompute(filled, is_demo=use_demo)
@@ -1265,6 +1326,29 @@ def main() -> None:
                 "先点主区「运行分析」。标注区会出现在审计面板正下方；"
                 "即使没有新闻证据，也会显示「怎么填？」与「加载练习样例」。"
             )
+
+    with st.sidebar.expander("⑩ 待你完成（云端）", expanded=True):
+        from fx_report.config.api_config import has_news_api, load_config
+        from fx_report.model.label_learn import MIN_LABELS_FOR_LEARN, fit_label_learned_params
+        import os
+
+        cfg_side = load_config()
+        news_ok = has_news_api(cfg_side)
+        pw_ok = bool(os.environ.get("APP_PASSWORD") or os.environ.get("FX_REPORT_PASSWORD"))
+        learned_side = fit_label_learned_params()
+        n_lab = int(learned_side.n_labeled or 0)
+        st.markdown(
+            f"""
+**仍需你在 Railway / 本机完成：**
+
+- {'✅' if news_ok else '☐'} 填 `NEWSAPI_KEY` / `FINNHUB_API_KEY`（及可选 LLM Key）
+- {'✅' if pw_ok else '☐'} 设 `APP_PASSWORD`（访问口令）
+- {'✅' if n_lab >= MIN_LABELS_FOR_LEARN else '☐'} 实盘标注 ≥{MIN_LABELS_FOR_LEARN} 条（当前 **{n_lab}**）
+
+无 Key 时仍会试央行 RSS + Google News；标注够后可勾「使用标签学习到的强度」。
+详见 `docs/deploy-docker.md` / `docs/label_audit.md`。
+""".strip()
+        )
 
     st.title(f"FX Analyse · {display_spec.pair}")
     if bullish_ok:
@@ -1537,6 +1621,9 @@ def main() -> None:
                 model_weights=weights,
                 calibrated_params_path=None,  # already merged into sidebar weights
                 calibrated_params_label=cal_label,
+                use_label_learned_strength=bool(
+                    news_opts.get("use_label_learned_strength")
+                ),
             )
 
             if result.market.notes:
@@ -1694,13 +1781,23 @@ def main() -> None:
     if agree_stats.get("has_labels") and agree_stats.get("agree_rate") is not None:
         demo_tag = "（练习）" if agree_stats.get("is_demo") else ""
         agree_line = (
-            f"· 标注同意率={100 * float(agree_stats['agree_rate']):.0f}%"
-            f"（yes={agree_stats.get('n_yes', 0)} / "
+            f"· 抽检准确率={100 * float(agree_stats['agree_rate']):.0f}%"
+            f"（同意率 yes={agree_stats.get('n_yes', 0)} / "
             f"decisive={int(agree_stats.get('n_yes', 0)) + int(agree_stats.get('n_no', 0))}）"
             f"{demo_tag}  \n"
         )
     elif agree_stats.get("has_labels"):
         agree_line = f"· 标注：{agree_stats.get('caption', '已有标注但无明确对错')}  \n"
+    else:
+        # Fall back to disk spotcheck for this pair
+        from fx_report.model.label_audit import load_spotcheck_stats
+
+        disk_sc = load_spotcheck_stats(diag["market"]["pair"])
+        if disk_sc and disk_sc.get("agree_rate") is not None:
+            agree_line = (
+                f"· 抽检准确率（已保存）={100 * float(disk_sc['agree_rate']):.0f}% "
+                f"（{disk_sc.get('as_of', '')}）  \n"
+            )
 
     human_re = st.session_state.get("human_label_recomputed") or {}
     human_line = ""
@@ -1710,6 +1807,18 @@ def main() -> None:
             f"覆盖方向 {human_re.get('n_overridden', 0)} 条  \n"
         )
 
+    ll = news_meta.get("label_learn") or {}
+    ll_line = ""
+    if ll.get("requested"):
+        if ll.get("applied"):
+            ll_line = (
+                f"· 标签学习强度：已应用 "
+                f"（scaled={ll.get('n_strength_scaled', 0)}，"
+                f"nudged={ll.get('n_dir_nudged', 0)}）  \n"
+            )
+        else:
+            ll_line = f"· 标签学习强度：未应用 — {ll.get('message') or '标注不足'}  \n"
+
     st.info(
         f"**本次分析审计**  \n"
         f"· peak_engine：`{peak_eng}`  \n"
@@ -1717,6 +1826,7 @@ def main() -> None:
         f"{oos_line}"
         f"{agree_line}"
         f"{human_line}"
+        f"{ll_line}"
         f"· 证据分 S={diag.get('score_S', 0):+.3f}　"
         f"μ_shift={diag.get('mu_annual_shift', 0):+.4f}　"
         f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"

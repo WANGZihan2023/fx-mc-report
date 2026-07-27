@@ -54,6 +54,11 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Stage-1 JSON（如 output/calibrated_params_USDAUD.json）",
     )
+    p.add_argument(
+        "--use-label-learned-strength",
+        action="store_true",
+        help="Stage 3：若 label_audit 标注≥N 条，用类别强度倍率缩放证据",
+    )
     p.add_argument("--api-status", action="store_true")
     p.add_argument("--quiet", action="store_true")
 
@@ -82,6 +87,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         verbose=not args.quiet,
         bullish_currency=args.bullish,
         calibrated_params_path=args.calibrated_params,
+        use_label_learned_strength=bool(args.use_label_learned_strength),
     )
     return 0
 

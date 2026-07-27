@@ -583,6 +583,25 @@ def load_label_audit(path: Path | str) -> pd.DataFrame:
     return df[list(LABEL_AUDIT_COLUMNS)]
 
 
+def railway_env_checklist_markdown(*, news_keys_present: bool = False) -> str:
+    """Checklist of Railway / vault env vars that unlock real news evidence."""
+    news_mark = "✓ 本机/会话已检测到新闻 Key" if news_keys_present else "□ 建议填"
+    return f"""
+**Railway Variables / 本机 vault 建议检查：**
+
+| 变量 | 用途 | 状态提示 |
+|------|------|----------|
+| `NEWSAPI_KEY` 或 `FINNHUB_API_KEY` | 新闻头条（无 Key 时仅靠央行 RSS） | {news_mark} |
+| `GROQ_API_KEY` / `LLM_API_KEY` | hybrid/LLM 证据判定 | 可选但推荐 |
+| `FRED_API_KEY` | 行情增强 | 可选 |
+| `TAVILY_API_KEY` / `BRAVE_API_KEY` | AI 检索员 | 可选 |
+| `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | 访问口令 | 云端强烈建议 |
+
+无新闻 Key 时系统仍会抓 **Fed/RBA/ECB/BOE 等官方 RSS** +（若启用）Google News 公开 RSS；
+相关度过滤后可能仍为 0 条——属诚实空证据，不是静默模板。
+""".strip()
+
+
 def empty_reason_message(
     *,
     evidence_n: int = 0,
@@ -598,11 +617,18 @@ def empty_reason_message(
     if quality == "news_empty_no_prior" or evidence_n == 0:
         if not news_keys_present and fetched == 0:
             bits.append(
-                "常见原因：未配置新闻 API Key（NewsAPI / Finnhub），或 RSS 未抓到相关头条。"
+                "常见原因：未配置新闻 API Key（NewsAPI / Finnhub），且免费 RSS 未抓到相关头条。"
             )
             bits.append(
-                "解决：侧栏「API 配置」填写 `NEWSAPI_KEY` 或 `FINNHUB_API_KEY` 后重新运行；"
+                "解决：在 Railway Variables 或侧栏「API / AI Key」填写 "
+                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（可选 `GROQ_API_KEY`），保存后重新运行；"
                 "也可先加载下方「练习样例」熟悉标注。"
+            )
+        elif not news_keys_present and fetched > 0:
+            bits.append(
+                f"无新闻 API Key，但免费 RSS/公开源抓到 {fetched} 条头条；"
+                "未能分类出可用证据（相关度不足或方向无法判定）。"
+                "可换货币对、放宽侧栏最多头条数，或配置 Key 后再跑。"
             )
         else:
             bits.append(
@@ -610,3 +636,90 @@ def empty_reason_message(
                 "可换货币对重跑，或先用练习样例练习标注流程。"
             )
     return " ".join(bits)
+
+
+def spotcheck_filename(pair: str, as_of: date | None = None) -> str:
+    pair_safe = (pair or "PAIR").replace("/", "")
+    d = (as_of or date.today()).isoformat()
+    return f"label_spotcheck_{pair_safe}_{d}.json"
+
+
+def spotcheck_path(pair: str, as_of: date | None = None, out_dir: Path | None = None) -> Path:
+    root = out_dir or project_output_dir()
+    return root / spotcheck_filename(pair, as_of)
+
+
+def save_spotcheck_stats(
+    stats: dict[str, Any],
+    pair: str,
+    *,
+    as_of: date | None = None,
+    out_dir: Path | None = None,
+) -> Path:
+    """Persist 抽检准确率 (= agree_rate) next to label_audit CSV."""
+    import json
+
+    path = spotcheck_path(pair, as_of=as_of, out_dir=out_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pair": pair,
+        "as_of": (as_of or date.today()).isoformat(),
+        "抽检准确率": stats.get("agree_rate"),
+        "agree_rate": stats.get("agree_rate"),
+        "n_yes": stats.get("n_yes"),
+        "n_no": stats.get("n_no"),
+        "n_unsure": stats.get("n_unsure"),
+        "n_labeled": stats.get("n_labeled"),
+        "n_rows": stats.get("n_rows"),
+        "is_demo": stats.get("is_demo"),
+        "caption": stats.get("caption"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def load_spotcheck_stats(
+    pair: str,
+    *,
+    as_of: date | None = None,
+    out_dir: Path | None = None,
+) -> dict[str, Any] | None:
+    import json
+
+    path = spotcheck_path(pair, as_of=as_of, out_dir=out_dir)
+    if not path.exists():
+        # Fall back to newest spotcheck for this pair
+        root = out_dir or project_output_dir()
+        pair_safe = (pair or "PAIR").replace("/", "")
+        cands = sorted(root.glob(f"label_spotcheck_{pair_safe}_*.json"), reverse=True)
+        if not cands:
+            return None
+        path = cands[0]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def load_all_label_audits(out_dir: Path | None = None) -> pd.DataFrame:
+    """Concatenate every output/label_audit_*.csv (for aggregate 抽检 / learning)."""
+    root = out_dir or project_output_dir()
+    frames: list[pd.DataFrame] = []
+    if root.is_dir():
+        for p in sorted(root.glob("label_audit_*.csv")):
+            try:
+                frames.append(load_label_audit(p))
+            except Exception:
+                continue
+    if not frames:
+        return pd.DataFrame(columns=list(LABEL_AUDIT_COLUMNS))
+    return pd.concat(frames, ignore_index=True)
+
+
+def aggregate_spotcheck_stats(out_dir: Path | None = None) -> dict[str, Any]:
+    """Agree-rate / 抽检准确率 across all saved label_audit CSVs (non-demo files)."""
+    df = load_all_label_audits(out_dir)
+    stats = agree_rate_stats(df, is_demo=False)
+    stats["抽检准确率"] = stats.get("agree_rate")
+    return stats
