@@ -28,10 +28,11 @@
 │   ├── config/            # API / vault 配置
 │   ├── market/            # 货币对、驱动因子、行情抓取
 │   ├── news/              # 新闻抓取 / 分类 / LLM / AI 检索
-│   ├── model/             # 权重、强度评分、蒙特卡洛
+│   ├── model/             # 权重、强度评分、蒙特卡洛、校准
+│   ├── data/calibrated/   # **入库**的 Stage-1 JSON（云部署用；优先仍读 output/）
 │   ├── report/            # 报告与 diagnostics 文本
 │   └── ui/                # Streamlit 页面与 API 面板
-├── scripts/               # 一键启动 / 分享 / 部署
+├── scripts/               # 一键启动 / 分享 / 部署 / sync_calibrated_to_deploy.sh
 ├── docs/                  # 分享说明等
 └── output/                # 运行产物（git 忽略）
 ```
@@ -40,6 +41,12 @@
 流水线：`fx_report/pipeline.py`  
 AI 检索员：`fx_report/news/ai_research.py`（`--no-ai-research` 可关）
 
+校准参数搜索顺序：`output/calibrated_params_{PAIR}.json`（本地过夜刷新）→ `fx_report/data/calibrated/`（镜像内置）。过夜跑完后同步到入库目录：
+
+```bash
+./scripts/sync_calibrated_to_deploy.sh
+git add fx_report/data/calibrated/ && git commit -m "Refresh bundled calibrated params" && git push
+```
 | 货币对 | 典型影响因子 |
 |--------|--------------|
 | USD/AUD | 地缘、油、Fed、RBA、铁矿、CPI |
@@ -135,3 +142,8 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 - 云端 redeploy 标记：`docs/CLOUD_REDEPLOY.txt`
 - 部署推送：`scripts/deploy.sh`
 - 临时隧道分享：`scripts/share.sh`
+- 同步校准到镜像：`scripts/sync_calibrated_to_deploy.sh` → `fx_report/data/calibrated/`
+
+### 云部署访问密码（可选）
+
+Railway **Variables** 设置 `APP_PASSWORD=你的密码`（或 `FX_REPORT_PASSWORD`）。未设置时本地/云上均不弹密码门。**不要**把密码写进 git。

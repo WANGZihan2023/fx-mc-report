@@ -1,0 +1,23 @@
+{
+  "pair": "USD/CAD",
+  "split": "chronological_asof",
+  "train": {
+    "n": 40.0,
+    "brier": 0.7847974014462081,
+    "logloss": 1.5458728970312996,
+    "hit_rate": 0.3
+  },
+  "holdout": {
+    "n": 40.0,
+    "brier": 0.642963786309499,
+    "logloss": 1.2271854106427535,
+    "hit_rate": 0.5
+  },
+  "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows).",
+  "source": "calibrate",
+  "loss_name": "brier",
+  "calibrated_loss": 0.7186948006085321,
+  "baseline_loss": 0.7569993119601693,
+  "n_sims": 7000,
+  "params_path": "output/calibrated_params_USDCAD.json"
+}

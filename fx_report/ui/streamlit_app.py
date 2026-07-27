@@ -8,6 +8,7 @@ Multi-pair FX peak-bucket forecaster — Streamlit UI（精简折叠版）。
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -28,6 +29,11 @@ from fx_report.market.pairs import (
 )
 from fx_report.pipeline import run_pipeline, step2_assess_info_needs
 from fx_report.report.text import rubric_markdown
+from fx_report.model.calibrate import (
+    BUNDLED_CALIBRATED_DIR,
+    load_calib_oos_summary,
+    resolve_calibrated_params_path,
+)
 from fx_report.model.monte_carlo import bucket_labels_from_edges
 from fx_report.model.strength import (
     SOURCE_TIER_POINTS,
@@ -67,6 +73,84 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def _app_password() -> str | None:
+    """Railway/local gate: APP_PASSWORD or FX_REPORT_PASSWORD. Unset = open (local OK)."""
+    for key in ("APP_PASSWORD", "FX_REPORT_PASSWORD"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
+    return None
+
+
+def _require_password() -> bool:
+    """Return True if the user may see the main UI."""
+    expected = _app_password()
+    if expected is None:
+        return True
+    if st.session_state.get("_auth_ok") is True:
+        return True
+    st.title("FX Analyse")
+    st.caption("此部署已启用访问密码（环境变量 APP_PASSWORD / FX_REPORT_PASSWORD）。")
+    entered = st.text_input("访问密码", type="password", key="auth_password_input")
+    if st.button("进入", type="primary", key="auth_submit"):
+        if entered == expected:
+            st.session_state["_auth_ok"] = True
+            st.rerun()
+        st.error("密码错误")
+    return False
+
+
+def _fmt_pct(x: float | None, *, digits: int = 1) -> str:
+    if x is None or (isinstance(x, float) and (x != x)):  # NaN
+        return "—"
+    return f"{100 * float(x):.{digits}f}%"
+
+
+def _fmt_num(x: float | None, *, digits: int = 3) -> str:
+    if x is None or (isinstance(x, float) and (x != x)):
+        return "—"
+    return f"{float(x):.{digits}f}"
+
+
+def render_calib_trust_panel(pair: str, *, cal_loaded: bool, cal_path: str | None) -> None:
+    """Prominent holdout / OOS + calibrated-vs-prior status (trust surface)."""
+    oos = load_calib_oos_summary(pair)
+    if cal_loaded and cal_path:
+        src_label = "已加载校准参数"
+        path_hint = Path(cal_path).name
+        if "data/calibrated" in str(cal_path).replace("\\", "/"):
+            path_hint = f"{path_hint}（镜像内置）"
+        elif str(cal_path).startswith("output") or "/output/" in str(cal_path).replace("\\", "/"):
+            path_hint = f"{path_hint}（本地 output/）"
+        st.success(f"**{src_label}** · `{path_hint}`")
+    else:
+        st.warning("**默认先验** · 未使用 Stage-1 校准 JSON（或文件不存在）")
+
+    if not oos:
+        st.caption(
+            f"无 holdout 摘要（期望 `calib_oos_summary_{pair.replace('/', '')}.json` "
+            f"于 output/ 或 `{BUNDLED_CALIBRATED_DIR.name}/`）。"
+        )
+        return
+
+    hold = oos.get("holdout") or {}
+    train = oos.get("train") or {}
+    st.markdown("**校准 holdout（OOS）** — 时序末段样本，非样本内过拟合指标")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Holdout hit rate", _fmt_pct(hold.get("hit_rate")))
+    c2.metric("Holdout Brier", _fmt_num(hold.get("brier")))
+    c3.metric("Train hit rate", _fmt_pct(train.get("hit_rate")))
+    c4.metric(
+        "Holdout n",
+        f"{int(hold.get('n') or 0)}" if hold.get("n") == hold.get("n") else "—",
+    )
+    note = oos.get("note") or ""
+    src = oos.get("source") or ""
+    bits = [b for b in (src, note) if b]
+    if bits:
+        st.caption(" · ".join(bits))
 
 
 def _horizon(start: date, end: date) -> str:
@@ -856,6 +940,9 @@ def render_label_audit_section(
 
 
 def main() -> None:
+    if not _require_password():
+        return
+
     display_spec, bullish = pick_pair_in_sidebar()
 
     if st.session_state.get("pair_key") != display_spec.pair:
@@ -874,25 +961,30 @@ def main() -> None:
         st.session_state.pop("last_report", None)
 
     base = default_weights(analysis_spec)
-    safe_pair = analysis_spec.pair.replace("/", "")
-    default_cal = Path("output") / f"calibrated_params_{safe_pair}.json"
+    default_cal = resolve_calibrated_params_path(analysis_spec.pair)
     use_cal = st.sidebar.checkbox(
         "使用校准参数（Stage 1）",
-        value=default_cal.exists(),
-        help=f"若存在则加载 {default_cal}",
+        value=default_cal is not None,
+        help=(
+            "优先 output/calibrated_params_{PAIR}.json；"
+            f"否则用内置 {BUNDLED_CALIBRATED_DIR}"
+        ),
     )
-    cal_path = None
+    cal_path: str | None = None
     cal_label = "default"
-    if use_cal and default_cal.exists():
+    cal_loaded = False
+    if use_cal and default_cal is not None:
         from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
 
         apply_calibrated_params(base, load_calibrated_params(default_cal))
         cal_path = str(default_cal)
         cal_label = str(default_cal)
-        st.sidebar.caption(f"已加载 {default_cal.name}")
+        cal_loaded = True
+        st.sidebar.caption(f"已加载校准参数 · {default_cal.name}")
     elif use_cal:
-        st.sidebar.caption(f"未找到 {default_cal.name}，用默认先验")
-    _ = cal_path
+        st.sidebar.caption("未找到校准 JSON，用默认先验")
+    else:
+        st.sidebar.caption("默认先验（未勾选校准）")
 
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
@@ -904,6 +996,10 @@ def main() -> None:
         )
     else:
         st.caption("最高日高分档 · 七步情报流水线 · 请先在侧栏选择看涨货币")
+
+    render_calib_trust_panel(
+        analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
+    )
 
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
         api_opts = render_api_settings_panel()
@@ -1249,6 +1345,8 @@ def main() -> None:
     news_meta = st.session_state.get("last_news_meta") or diag.get("news_meta") or {}
     peak_eng = diag.get("peak_engine") or news_meta.get("peak_engine") or "path_max"
     cal_used = diag.get("calibrated_params") or news_meta.get("calibrated_params") or "default"
+    cal_is_default = str(cal_used).strip().lower() in {"default", "", "none"}
+    cal_zh = "默认先验" if cal_is_default else f"已加载校准参数（`{Path(str(cal_used)).name}`）"
     eq = diag.get("evidence_quality") or news_meta.get("evidence_quality") or "n/a"
     fb = bool(diag.get("fallback_templates") or news_meta.get("fallback_templates"))
     mode_used = news_meta.get("mode") or "n/a"
@@ -1271,10 +1369,21 @@ def main() -> None:
         note_bits.append("brownian_bridge 不含跳跃项，与 path_max 峰值分布可能不同。")
     note = " ".join(note_bits) if note_bits else "证据链按新闻驱动（或空证据诚实路径）。"
 
+    oos = load_calib_oos_summary(diag["market"]["pair"])
+    oos_line = ""
+    if oos:
+        h = oos.get("holdout") or {}
+        oos_line = (
+            f"· Holdout hit={_fmt_pct(h.get('hit_rate'))}　"
+            f"Brier={_fmt_num(h.get('brier'))}　"
+            f"n={int(h.get('n') or 0)}  \n"
+        )
+
     st.info(
         f"**本次分析审计**  \n"
         f"· peak_engine：`{peak_eng}`  \n"
-        f"· 校准参数：`{cal_used}`  \n"
+        f"· 参数来源：{cal_zh}  \n"
+        f"{oos_line}"
         f"· 证据分 S={diag.get('score_S', 0):+.3f}　"
         f"μ_shift={diag.get('mu_annual_shift', 0):+.4f}　"
         f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"

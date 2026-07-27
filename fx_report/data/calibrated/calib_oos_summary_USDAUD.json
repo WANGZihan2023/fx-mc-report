@@ -1,0 +1,23 @@
+{
+  "pair": "USD/AUD",
+  "split": "chronological_asof",
+  "train": {
+    "n": 40.0,
+    "brier": 0.7678531744275364,
+    "logloss": 1.4293867166517589,
+    "hit_rate": 0.25
+  },
+  "holdout": {
+    "n": 40.0,
+    "brier": 0.7261023568363562,
+    "logloss": 1.3295239721584358,
+    "hit_rate": 0.2
+  },
+  "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows).",
+  "source": "calibrate",
+  "loss_name": "brier",
+  "calibrated_loss": 0.747424931797803,
+  "baseline_loss": 0.7866613953563233,
+  "n_sims": 7000,
+  "params_path": "output/calibrated_params_USDAUD.json"
+}

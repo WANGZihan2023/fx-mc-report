@@ -1,0 +1,62 @@
+{
+  "pair": "USD/CAD",
+  "loss_name": "brier",
+  "loss": 0.7186948006085321,
+  "baseline_loss": 0.7569993119601693,
+  "n_samples": 350,
+  "n_sims": 7000,
+  "n_iters": 70,
+  "params": {
+    "score_to_mu_a": 0.040412573603215096,
+    "score_to_sigma_b": 0.09637249139933214,
+    "evidence_logit_scale": 0.08,
+    "scenario_temperature": 1.0,
+    "max_scenario_shift": 0.18,
+    "bucket_pct_cuts": [
+      0.0,
+      1.5,
+      3.0,
+      4.5
+    ],
+    "use_relative_buckets": true,
+    "trading_days": 66,
+    "vol_lookback_days": 60,
+    "scenarios": [
+      {
+        "name": "escalation",
+        "weight": 0.002671626412785408,
+        "mu_annual": 0.03762381258167305,
+        "sigma_mult": 2.0,
+        "expected_jumps": 0.5916559074939529,
+        "jump_mean": 0.006666666666666668,
+        "jump_std": 0.007,
+        "narrative": "风险升高 / 避险或单边冲击 → USD/CAD 上尾加厚"
+      },
+      {
+        "name": "baseline",
+        "weight": 0.6008238577238477,
+        "mu_annual": -0.016642570866231134,
+        "sigma_mult": 0.75,
+        "expected_jumps": 0.8333333333333334,
+        "jump_mean": 0.0005689148076165784,
+        "jump_std": 0.004,
+        "narrative": "中性胶着 → USD/CAD 峰值多落在中档"
+      },
+      {
+        "name": "deescalation",
+        "weight": 0.3965045158633668,
+        "mu_annual": 0.12264872410234513,
+        "sigma_mult": 0.5,
+        "expected_jumps": 1.25,
+        "jump_mean": -0.006666666666666666,
+        "jump_std": 0.004,
+        "narrative": "缓和 / 逆风消退 → USD/CAD 峰值受压"
+      }
+    ],
+    "peak_engine": "path_max",
+    "calibration": {
+      "baseline": "S=0",
+      "version": 1
+    }
+  }
+}

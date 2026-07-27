@@ -1,0 +1,23 @@
+{
+  "pair": "GBP/USD",
+  "split": "chronological_asof",
+  "train": {
+    "n": 40.0,
+    "brier": 0.66826696561638,
+    "logloss": 1.23743447322255,
+    "hit_rate": 0.475
+  },
+  "holdout": {
+    "n": 40.0,
+    "brier": 0.7305039339485037,
+    "logloss": 1.3466820032090778,
+    "hit_rate": 0.375
+  },
+  "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows).",
+  "source": "calibrate",
+  "loss_name": "brier",
+  "calibrated_loss": 0.7087584450616605,
+  "baseline_loss": 0.7267426448457798,
+  "n_sims": 7000,
+  "params_path": "output/calibrated_params_GBPUSD.json"
+}

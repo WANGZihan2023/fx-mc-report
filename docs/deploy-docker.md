@@ -49,6 +49,7 @@ git push
 
 | 变量 | 说明 |
 |------|------|
+| `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **访问密码**；设置后打开页面先输密码。勿写入代码/git |
 | `GROQ_API_KEY` / `LLM_API_KEY` | LLM（hybrid 模式） |
 | `FRED_API_KEY` | 行情增强 |
 | `NEWSAPI_KEY` / `TAVILY_API_KEY` | 新闻 / 检索 |
@@ -57,12 +58,28 @@ git push
 6. 区域：若控制台可选 Region，优先 **Sydney** 或东南亚  
 7. 等 Deploy 变绿 → 打开公网域名 → 跑报告 → 下载 PDF  
 
-分享给澳洲同事：把这个 `https://….up.railway.app` 发给他们即可（建议设成仅公司内部传播）。
+分享给澳洲同事：把这个 `https://….up.railway.app` 发给他们即可（建议设成仅公司内部传播；并设 `APP_PASSWORD`）。
+
+### 校准参数如何进云镜像
+
+`output/` 被 `.gitignore` / `.dockerignore` 排除，Railway **不会**自动带上过夜校准结果。仓库内已跟踪：
+
+`fx_report/data/calibrated/calibrated_params_*.json` + `calib_oos_summary_*.json`（8 对）
+
+运行时优先读本地 `output/`，否则读该内置目录。过夜校准后刷新并 redeploy：
+
+```bash
+./scripts/sync_calibrated_to_deploy.sh
+git add fx_report/data/calibrated/
+git commit -m "Refresh bundled calibrated params"
+git push   # Railway 自动重建镜像
+```
+
+**如何确认云端已加载校准**：打开公网 URL → 选货币对 → 页顶应显示「已加载校准参数」+ Holdout hit rate / Brier；侧栏勾选「使用校准参数」；跑一次分析后「本次分析审计」里参数来源应为校准 JSON 文件名（非「默认先验」）。
 
 ---
 
 ## 3. Render 部署（备选）
-
 1. https://render.com → New → **Web Service** → 连 GitHub 仓库  
 2. Runtime: **Docker**  
 3. Instance：Free 可试；正式用 Starter  
@@ -74,7 +91,7 @@ git push
 
 ## 4. 安全注意
 
-- 链接等于半公开：不要把含 Key 的管理页暴露给外人；需要的话以后再加密码/登录  
+- 链接等于半公开：务必在 Railway Variables 设置 `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`）；未设置则任何人可打开 UI  
 - Key 只放平台 **Environment Variables**，不要写进代码  
 - 不构成投资建议；内部分享即可  
 

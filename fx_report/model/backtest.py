@@ -224,10 +224,12 @@ def run_backtest(
         print(f"Loaded {len(df)} samples from {path}")
 
     weights, params_source = _resolve_weights(pair, calibrated_params_path=calibrated_params_path)
-    # Prefer explicit calibrated file next to samples if not given
-    if params_source == "default":
-        auto_cal = out / f"calibrated_params_{safe}.json"
-        if auto_cal.exists() and calibrated_params_path is None:
+    # Prefer output/ then bundled fx_report/data/calibrated/ if not given
+    if params_source == "default" and calibrated_params_path is None:
+        from fx_report.model.calibrate import resolve_calibrated_params_path
+
+        auto_cal = resolve_calibrated_params_path(pair, output_dir=out)
+        if auto_cal is not None:
             weights, params_source = _resolve_weights(pair, calibrated_params_path=auto_cal)
 
     engine = peak_engine or getattr(weights, "peak_engine", "path_max")

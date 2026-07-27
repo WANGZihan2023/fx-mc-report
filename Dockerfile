@@ -23,6 +23,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# App + bundled Stage-1 calib (fx_report/data/calibrated/). output/ is dockerignored.
 COPY . .
 
 # Railway / Render inject PORT; default 8501 for local docker run

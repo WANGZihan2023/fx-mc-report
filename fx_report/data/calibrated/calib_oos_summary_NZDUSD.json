@@ -1,0 +1,23 @@
+{
+  "pair": "NZD/USD",
+  "split": "chronological_asof",
+  "train": {
+    "n": 40.0,
+    "brier": 0.6737831529972651,
+    "logloss": 1.2384899545234824,
+    "hit_rate": 0.45
+  },
+  "holdout": {
+    "n": 40.0,
+    "brier": 0.7518347511664398,
+    "logloss": 1.4156145557140145,
+    "hit_rate": 0.45
+  },
+  "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows).",
+  "source": "calibrate",
+  "loss_name": "brier",
+  "calibrated_loss": 0.6914209565179961,
+  "baseline_loss": 0.7190057759252393,
+  "n_sims": 7000,
+  "params_path": "output/calibrated_params_NZDUSD.json"
+}

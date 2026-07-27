@@ -1,0 +1,62 @@
+{
+  "pair": "GBP/USD",
+  "loss_name": "brier",
+  "loss": 0.7087584450616605,
+  "baseline_loss": 0.7267426448457798,
+  "n_samples": 350,
+  "n_sims": 7000,
+  "n_iters": 70,
+  "params": {
+    "score_to_mu_a": 0.03173591600002954,
+    "score_to_sigma_b": 0.035,
+    "evidence_logit_scale": 0.08,
+    "scenario_temperature": 1.0,
+    "max_scenario_shift": 0.18,
+    "bucket_pct_cuts": [
+      0.0,
+      1.5,
+      3.0,
+      4.5
+    ],
+    "use_relative_buckets": true,
+    "trading_days": 66,
+    "vol_lookback_days": 60,
+    "scenarios": [
+      {
+        "name": "escalation",
+        "weight": 0.9128538786501236,
+        "mu_annual": -0.13466868197446993,
+        "sigma_mult": 1.3478541597217832,
+        "expected_jumps": 2.2714517267690177,
+        "jump_mean": 0.002368286429816542,
+        "jump_std": 0.007,
+        "narrative": "风险升高 / 避险或单边冲击 → GBP/USD 上尾加厚"
+      },
+      {
+        "name": "baseline",
+        "weight": 0.04169780288365311,
+        "mu_annual": 0.08333333333333331,
+        "sigma_mult": 0.5,
+        "expected_jumps": 0.8333333333333334,
+        "jump_mean": -0.007939516434084939,
+        "jump_std": 0.004,
+        "narrative": "中性胶着 → GBP/USD 峰值多落在中档"
+      },
+      {
+        "name": "deescalation",
+        "weight": 0.04544831846622348,
+        "mu_annual": 0.18921173207170333,
+        "sigma_mult": 0.5,
+        "expected_jumps": 0.0,
+        "jump_mean": -0.02,
+        "jump_std": 0.004,
+        "narrative": "缓和 / 逆风消退 → GBP/USD 峰值受压"
+      }
+    ],
+    "peak_engine": "path_max",
+    "calibration": {
+      "baseline": "S=0",
+      "version": 1
+    }
+  }
+}

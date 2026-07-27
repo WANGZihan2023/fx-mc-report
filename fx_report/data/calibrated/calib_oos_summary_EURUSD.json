@@ -1,0 +1,23 @@
+{
+  "pair": "EUR/USD",
+  "split": "chronological_asof",
+  "train": {
+    "n": 40.0,
+    "brier": 0.6304552503051546,
+    "logloss": 1.1559833934655086,
+    "hit_rate": 0.55
+  },
+  "holdout": {
+    "n": 40.0,
+    "brier": 0.6612752425222823,
+    "logloss": 1.1683874827767,
+    "hit_rate": 0.475
+  },
+  "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows).",
+  "source": "calibrate",
+  "loss_name": "brier",
+  "calibrated_loss": 0.652560028909978,
+  "baseline_loss": 0.6823760731080631,
+  "n_sims": 7000,
+  "params_path": "output/calibrated_params_EURUSD.json"
+}

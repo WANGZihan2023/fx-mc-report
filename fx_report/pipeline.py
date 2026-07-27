@@ -741,13 +741,21 @@ def run_pipeline(
     cal_source = "default"
     if calibrated_params_label:
         cal_source = str(calibrated_params_label)
+    # Prefer explicit path; else output/ then bundled fx_report/data/calibrated/
+    cal_path: Path | None = None
     if calibrated_params_path:
+        cal_path = Path(calibrated_params_path)
+    elif model_weights is None:
+        # CLI / default path: auto-load bundled or local overnight refresh
+        from fx_report.model.calibrate import resolve_calibrated_params_path
+
+        cal_path = resolve_calibrated_params_path(spec.pair)
+    if cal_path is not None:
         from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
 
-        cal_path = Path(calibrated_params_path)
         if cal_path.exists():
             apply_calibrated_params(base, load_calibrated_params(cal_path))
-            cal_source = str(cal_path)
+            cal_source = calibrated_params_label or str(cal_path)
             say(f"  → 已加载校准参数 {cal_path}")
         else:
             say(f"  → 警告：校准文件不存在，跳过：{cal_path}")

@@ -187,6 +187,55 @@ def load_calibrated_params(path: str | Path) -> dict[str, Any]:
     return data
 
 
+# Bundled into the Docker image (output/ is gitignored / dockerignored).
+BUNDLED_CALIBRATED_DIR = Path(__file__).resolve().parent.parent / "data" / "calibrated"
+
+
+def _pair_safe(pair: str) -> str:
+    return pair.replace("/", "")
+
+
+def resolve_calibrated_params_path(
+    pair: str,
+    *,
+    prefer_output: bool = True,
+    output_dir: str | Path = "output",
+) -> Path | None:
+    """Prefer local `output/` (overnight refresh), else bundled deploy copy."""
+    name = f"calibrated_params_{_pair_safe(pair)}.json"
+    candidates = [Path(output_dir) / name, BUNDLED_CALIBRATED_DIR / name]
+    if not prefer_output:
+        candidates = list(reversed(candidates))
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def resolve_calib_oos_summary_path(
+    pair: str,
+    *,
+    prefer_output: bool = True,
+    output_dir: str | Path = "output",
+) -> Path | None:
+    """Prefer local `output/` OOS summary, else bundled deploy copy."""
+    name = f"calib_oos_summary_{_pair_safe(pair)}.json"
+    candidates = [Path(output_dir) / name, BUNDLED_CALIBRATED_DIR / name]
+    if not prefer_output:
+        candidates = list(reversed(candidates))
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def load_calib_oos_summary(pair: str, **kwargs: Any) -> dict[str, Any] | None:
+    path = resolve_calib_oos_summary_path(pair, **kwargs)
+    if path is None:
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _predict_probs(
     spot: float,
     sigma_daily: float,
