@@ -49,16 +49,16 @@ git push
 
 | 变量 | 说明 |
 |------|------|
-| `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **访问密码**；设置后打开页面先输密码。勿写入代码/git |
+| `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **产品共享访问密钥**；镜像默认 `uniocean`。平台 Variables 可覆盖。 |
 | `GROQ_API_KEY` / `LLM_API_KEY` | LLM（hybrid 模式） |
 | `FRED_API_KEY` | 行情增强 |
 | `NEWSAPI_KEY` / `TAVILY_API_KEY` | 新闻 / 检索 |
 | `FX_PDF_ENGINE` | 默认已是 `weasyprint`，一般不用改 |
 
 6. 区域：若控制台可选 Region，优先 **Sydney** 或东南亚  
-7. 等 Deploy 变绿 → 打开公网域名 → 跑报告 → 下载 PDF  
+7. 等 Deploy 变绿 → 打开公网域名 → 输访问密码 → 跑报告 → 下载 PDF  
 
-分享给澳洲同事：把这个 `https://….up.railway.app` 发给他们即可（建议设成仅公司内部传播；并设 `APP_PASSWORD`）。
+分享给澳洲同事：把这个 `https://….up.railway.app` 发给他们，并告知共享密钥（默认 `uniocean`；若你在 Variables 改过则以你设的为准）。
 
 ### 校准参数如何进云镜像
 
@@ -79,14 +79,14 @@ git push   # Railway 自动重建镜像
 
 **如何确认云端已加载校准**：打开公网 URL → 选货币对 → 页顶应显示「已加载校准参数」+ Holdout hit rate / Brier；侧栏勾选「使用校准参数」；跑一次分析后「本次分析审计」里参数来源应为校准 JSON 文件名（非「默认先验」）。
 
-### 访问密码（务必设）
+### 访问密码（产品共享密钥）
 
 | 变量 | 说明 |
 |------|------|
-| **`APP_PASSWORD`** | 推荐。设置后打开页面先输密码 |
+| **`APP_PASSWORD`** | 产品共享访问密钥。Docker 镜像默认 `uniocean`；未设 env 时应用代码同样默认 `uniocean` |
 | `FX_REPORT_PASSWORD` | 与上等效的别名 |
 
-未设置则**任何人有链接即可打开 UI**。只放在 Railway **Variables**，不要写进代码或 git。
+所有访客打开页面都需先输密码。可用平台 **Variables** 覆盖默认值；不设则使用产品默认密钥。
 
 ---
 
@@ -102,7 +102,7 @@ git push   # Railway 自动重建镜像
 
 ## 4. 安全注意
 
-- 链接等于半公开：务必在 Railway Variables 设置 `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`）；未设置则任何人可打开 UI  
+- 链接等于半公开：所有访客需输入产品共享密钥（默认 `uniocean`；可用 `APP_PASSWORD` / `FX_REPORT_PASSWORD` 覆盖）  
 - Key 只放平台 **Environment Variables**，不要写进代码  
 - 不构成投资建议；内部分享即可  
 

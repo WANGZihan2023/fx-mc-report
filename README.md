@@ -147,6 +147,6 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 - 临时隧道分享：`scripts/share.sh`
 - 同步校准到镜像：`scripts/sync_calibrated_to_deploy.sh` → `fx_report/data/calibrated/`
 
-### 云部署访问密码（可选但强烈建议）
+### 云部署访问密码（产品共享密钥）
 
-Railway **Variables** 设置 `APP_PASSWORD=你的密码`（或 `FX_REPORT_PASSWORD`）。未设置时本地/云上均不弹密码门。**不要**把密码写进 git。
+所有访客打开页面都需输入密码。默认密钥为 **`uniocean`**（代码与 Docker 镜像均如此）。Railway **Variables** 设置 `APP_PASSWORD=你的密码`（或 `FX_REPORT_PASSWORD`）可覆盖默认。

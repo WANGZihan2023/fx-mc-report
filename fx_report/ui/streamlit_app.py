@@ -76,24 +76,25 @@ st.set_page_config(
 )
 
 
-def _app_password() -> str | None:
-    """Railway/local gate: APP_PASSWORD or FX_REPORT_PASSWORD. Unset = open (local OK)."""
+_DEFAULT_APP_PASSWORD = "uniocean"
+
+
+def _app_password() -> str:
+    """Product shared gate: APP_PASSWORD / FX_REPORT_PASSWORD, else default uniocean."""
     for key in ("APP_PASSWORD", "FX_REPORT_PASSWORD"):
         val = (os.environ.get(key) or "").strip()
         if val:
             return val
-    return None
+    return _DEFAULT_APP_PASSWORD
 
 
 def _require_password() -> bool:
-    """Return True if the user may see the main UI."""
+    """Return True if the user may see the main UI. Always requires a password."""
     expected = _app_password()
-    if expected is None:
-        return True
     if st.session_state.get("_auth_ok") is True:
         return True
     st.title("FX Analyse")
-    st.caption("此部署已启用访问密码（环境变量 APP_PASSWORD / FX_REPORT_PASSWORD）。")
+    st.caption("请输入访问密码（可用环境变量 APP_PASSWORD / FX_REPORT_PASSWORD 覆盖默认）。")
     entered = st.text_input("访问密码", type="password", key="auth_password_input")
     if st.button("进入", type="primary", key="auth_submit"):
         if entered == expected:
@@ -1330,11 +1331,9 @@ def main() -> None:
     with st.sidebar.expander("⑩ 待你完成（云端）", expanded=True):
         from fx_report.config.api_config import has_news_api, load_config
         from fx_report.model.label_learn import MIN_LABELS_FOR_LEARN, fit_label_learned_params
-        import os
 
         cfg_side = load_config()
         news_ok = has_news_api(cfg_side)
-        pw_ok = bool(os.environ.get("APP_PASSWORD") or os.environ.get("FX_REPORT_PASSWORD"))
         learned_side = fit_label_learned_params()
         n_lab = int(learned_side.n_labeled or 0)
         st.markdown(
@@ -1342,7 +1341,7 @@ def main() -> None:
 **仍需你在 Railway / 本机完成：**
 
 - {'✅' if news_ok else '☐'} 填 `NEWSAPI_KEY` / `FINNHUB_API_KEY`（及可选 LLM Key）
-- {'✅' if pw_ok else '☐'} 设 `APP_PASSWORD`（访问口令）
+- ✅ 访问口令已启用（默认 `uniocean`；可用 `APP_PASSWORD` 覆盖）
 - {'✅' if n_lab >= MIN_LABELS_FOR_LEARN else '☐'} 实盘标注 ≥{MIN_LABELS_FOR_LEARN} 条（当前 **{n_lab}**）
 
 无 Key 时仍会试央行 RSS + Google News；标注够后可勾「使用标签学习到的强度」。
