@@ -602,6 +602,13 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             index=_engine_idx,
             help="path_max=离散GBM+跳跃路径最大值；brownian_bridge=连续GBM布朗桥峰值（不含跳跃）",
         )
+        _vr_opts = ["none", "antithetic"]
+        variance_reduction = st.selectbox(
+            "方差缩减 variance_reduction",
+            _vr_opts,
+            index=0,
+            help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
+        )
         st.caption(
             "切换引擎后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine。"
         )
@@ -809,6 +816,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "classify_mode": classify_mode,
         "fetch_fulltext": fetch_fulltext,
         "use_label_learned_strength": use_label_learned,
+        "variance_reduction": str(variance_reduction),
         "llm_key": "",
         "llm_base": "",
         "llm_model": "",
@@ -936,6 +944,7 @@ def _apply_human_label_recompute(filled: pd.DataFrame, *, is_demo: bool) -> dict
                 mu_annual_shift=float(reco["mu_annual_shift"]),
                 sigma_mult_extra=float(reco["sigma_mult_extra"]),
                 peak_engine=str(mapping.get("peak_engine") or "path_max"),
+                variance_reduction=str(mapping.get("variance_reduction") or "none"),
             )
             probs = enforce_math_floor(mc.raw_probs, float(market["spot"]), edges_t)
             new_diag["raw_probs"] = mc.raw_probs
@@ -1496,6 +1505,7 @@ def main() -> None:
                         edges_cmp,
                         n_sims=cmp_n,
                         seed=int(weights.seed),
+                        variance_reduction=str(news_opts.get("variance_reduction") or "none"),
                     )
                     st.session_state["last_engine_compare"] = {
                         "n_sims": cmp["n_sims"],
@@ -1567,6 +1577,7 @@ def main() -> None:
                             max_rows=int(bt_rows),
                             seed=int(weights.seed),
                             peak_engine=getattr(weights, "peak_engine", None),
+                            variance_reduction=str(news_opts.get("variance_reduction") or "none"),
                             verbose=False,
                         )
                     st.session_state["last_backtest"] = {
@@ -1693,6 +1704,7 @@ def main() -> None:
                 days=weights.trading_days,
                 seed=weights.seed,
                 lookback=weights.vol_lookback_days,
+                variance_reduction=str(news_opts.get("variance_reduction") or "none"),
                 mode=mode_cls,  # type: ignore[arg-type]
                 max_news=news_opts["max_news_ev"],
                 keep_templates=news_opts["keep_templates"],
@@ -1787,6 +1799,7 @@ def main() -> None:
                 "trading_days": int(result.weights.trading_days),
                 "seed": int(result.weights.seed),
                 "peak_engine": str(getattr(result.weights, "peak_engine", "path_max")),
+                "variance_reduction": str(getattr(result.mc, "variance_reduction", "none")),
             }
             st.session_state["label_audit_use_demo"] = False
             st.session_state.pop("label_edits", None)

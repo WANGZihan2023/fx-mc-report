@@ -378,6 +378,7 @@ def _predict_probs(
     score_to_mu_a: float,
     score_to_sigma_b: float,
     score: float = 0.0,
+    variance_reduction: str = "none",
 ) -> np.ndarray:
     mu_shift = score_to_mu_a * score
     sigma_extra = 1.0 + score_to_sigma_b * abs(score)
@@ -391,6 +392,7 @@ def _predict_probs(
         bucket_edges=edges,
         mu_annual_shift=mu_shift,
         sigma_mult_extra=sigma_extra,
+        variance_reduction=variance_reduction,
     )
     return np.array(list(mc.raw_probs.values()), dtype=np.float64)
 
@@ -404,6 +406,7 @@ def sample_loss(
     cuts_fallback: tuple[float, float, float, float],
     n_sims: int,
     seed: int,
+    variance_reduction: str = "none",
     loss: str = "brier",
     max_rows: int | None = None,
 ) -> float:
@@ -430,6 +433,7 @@ def sample_loss(
             score_to_mu_a=score_to_mu_a,
             score_to_sigma_b=score_to_sigma_b,
             score=0.0,
+            variance_reduction=variance_reduction,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -475,6 +479,7 @@ def calibrate_from_samples(
     seed: int = 42,
     loss: str = "brier",
     max_rows: int = 80,
+    variance_reduction: str = "none",
     verbose: bool = True,
 ) -> CalibResult:
     """
@@ -504,6 +509,7 @@ def calibrate_from_samples(
             seed=seed,
             loss=loss,
             max_rows=max_rows,
+            variance_reduction=variance_reduction,
         )
 
     baseline = eval_x(x0)
@@ -618,6 +624,7 @@ def calibrate_pair(
     loss: str = "brier",
     max_rows: int = 80,
     holdout_frac: float = 0.25,
+    variance_reduction: str = "none",
     verbose: bool = True,
 ) -> tuple[Path, CalibResult]:
     safe = pair.replace("/", "")
@@ -653,6 +660,7 @@ def calibrate_pair(
         seed=seed,
         loss=loss,
         max_rows=max_rows,
+        variance_reduction=variance_reduction,
         verbose=verbose,
     )
     out = save_calibrated_params(result, out_dir=out_dir)
@@ -672,6 +680,7 @@ def calibrate_pair(
             cal_w,
             n_sims=n_sims,
             seed=seed,
+                variance_reduction=variance_reduction,
             max_rows=oos_cap,
             baseline_mode="frequency",
         )
@@ -681,6 +690,7 @@ def calibrate_pair(
             cal_w,
             n_sims=n_sims,
             seed=seed + 10_000,
+                variance_reduction=variance_reduction,
             max_rows=oos_cap,
             baseline_mode="frequency",
             baseline_probs=train_clim if train_clim else None,

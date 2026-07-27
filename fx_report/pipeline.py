@@ -506,6 +506,7 @@ def step6_math_analysis(
     market: MarketSnapshot,
     weights: ModelWeights,
     evidence: list[EvidenceItem],
+    variance_reduction: str = "none",
 ) -> tuple[float, float, float, list[ScenarioSpec], tuple[float, float, float, float], MCResult, dict[str, float]]:
     """6. 数学分析：证据分 → 情景/漂移/波动 → 蒙特卡洛分档"""
     weights.evidence = evidence
@@ -533,6 +534,7 @@ def step6_math_analysis(
         peak_engine=getattr(weights, "peak_engine", "path_max"),
         drift_mode=getattr(weights, "drift_mode", "scenario"),
         carry_mu_annual=float(getattr(weights, "carry_mu_annual", 0.0)),
+        variance_reduction=variance_reduction,
     )
     probs = enforce_math_floor(mc.raw_probs, market.spot, edges)
     return score, mu_shift, sigma_extra, scenarios, edges, mc, probs
@@ -717,6 +719,7 @@ def run_pipeline(
     seed: int = 42,
     lookback: int = 60,
     peak_engine: str = "path_max",
+    variance_reduction: str = "none",
     mode: ClassifyMode = "hybrid",
     max_news: int = 10,
     keep_templates: bool = False,
@@ -939,7 +942,7 @@ def run_pipeline(
     # 6
     say("【6/7】数学分析（蒙特卡洛）")
     score, mu_shift, sigma_extra, scenarios, edges, mc, probs = step6_math_analysis(
-        market, base, evidence
+        market, base, evidence, variance_reduction=variance_reduction
     )
     say(f"  → S={score:+.3f}  μ_shift={mu_shift:+.4f}  σ×={sigma_extra:.3f}")
     for k, v in probs.items():

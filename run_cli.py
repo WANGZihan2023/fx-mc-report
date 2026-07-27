@@ -31,6 +31,12 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         default="path_max",
         help="Peak estimator: path_max (GBM+jumps) or brownian_bridge (continuous GBM, no jumps)",
     )
+    p.add_argument(
+        "--variance-reduction",
+        choices=["none", "antithetic"],
+        default="none",
+        help="Variance reduction for MC maxima: none (current) or antithetic",
+    )
     p.add_argument("--out", type=str, default="output")
     p.add_argument("--no-news", action="store_true")
     p.add_argument("--keep-templates", action="store_true")
@@ -76,6 +82,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         seed=args.seed,
         lookback=args.lookback,
         peak_engine=args.peak_engine,
+        variance_reduction=args.variance_reduction,
         mode=args.mode,  # type: ignore[arg-type]
         max_news=args.max_news,
         keep_templates=args.keep_templates,
@@ -125,6 +132,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             loss=args.loss,
             max_rows=args.max_rows,
             verbose=not args.quiet,
+            variance_reduction=args.variance_reduction,
         )
     except Exception as exc:
         print(f"ERROR: {exc}")
@@ -146,6 +154,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             max_rows=args.max_rows,
             seed=args.seed,
             peak_engine=args.peak_engine,
+            variance_reduction=args.variance_reduction,
             verbose=not args.quiet,
         )
     except Exception as exc:
@@ -187,6 +196,12 @@ def main() -> int:
     cal_p.add_argument("--n-iters", type=int, default=40)
     cal_p.add_argument("--max-rows", type=int, default=80)
     cal_p.add_argument("--loss", choices=["brier", "logloss"], default="brier")
+    cal_p.add_argument(
+        "--variance-reduction",
+        choices=["none", "antithetic"],
+        default="none",
+        help="Variance reduction for MC maxima: none or antithetic",
+    )
     cal_p.add_argument("--seed", type=int, default=42)
     cal_p.add_argument("--quiet", action="store_true")
     cal_p.set_defaults(func=_cmd_calibrate)
@@ -209,6 +224,12 @@ def main() -> int:
         help="缺省跟校准参数 / 默认 path_max",
     )
     bt_p.add_argument("--seed", type=int, default=42)
+    bt_p.add_argument(
+        "--variance-reduction",
+        choices=["none", "antithetic"],
+        default="none",
+        help="Variance reduction for MC maxima: none or antithetic",
+    )
     bt_p.add_argument("--quiet", action="store_true")
     bt_p.set_defaults(func=_cmd_backtest)
 

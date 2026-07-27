@@ -76,6 +76,7 @@ def _predict_probs(
     seed: int,
     score: float = 0.0,
     peak_engine: str | None = None,
+    variance_reduction: str = "none",
 ) -> tuple[np.ndarray, list[str]]:
     mu_shift = weights.score_to_mu_a * score
     sigma_extra = 1.0 + weights.score_to_sigma_b * abs(score)
@@ -91,6 +92,7 @@ def _predict_probs(
         mu_annual_shift=mu_shift,
         sigma_mult_extra=sigma_extra,
         peak_engine=engine,
+        variance_reduction=variance_reduction,
     )
     return np.array(list(mc.raw_probs.values()), dtype=np.float64), list(mc.raw_probs.keys())
 
@@ -119,6 +121,7 @@ def eval_split_metrics(
     max_rows: int | None = None,
     baseline_mode: str = "frequency",
     baseline_probs: Sequence[float] | np.ndarray | None = None,
+    variance_reduction: str = "none",
 ) -> dict[str, Any]:
     """
     Mean Brier / log-loss / argmax hit-rate on a dataframe slice, plus
@@ -154,6 +157,7 @@ def eval_split_metrics(
             seed=seed + j,
             score=0.0,
             peak_engine=peak_engine,
+            variance_reduction=variance_reduction,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -222,6 +226,7 @@ def run_backtest(
     seed: int = 42,
     peak_engine: str | None = None,
     holdout_frac: float = 0.25,
+    variance_reduction: str = "none",
     write_oos: bool = True,
     verbose: bool = True,
 ) -> BacktestResult:
@@ -297,6 +302,7 @@ def run_backtest(
             seed=seed + j,
             score=0.0,
             peak_engine=engine,
+            variance_reduction=variance_reduction,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -368,6 +374,7 @@ def run_backtest(
         peak_engine=engine,
         max_rows=oos_cap,
         baseline_mode="frequency",
+        variance_reduction=variance_reduction,
     )
     train_clim = train_m.get("baseline_probs")
     hold_m = eval_split_metrics(
@@ -379,6 +386,7 @@ def run_backtest(
         max_rows=oos_cap,
         baseline_mode="frequency",
         baseline_probs=train_clim if train_clim else None,
+        variance_reduction=variance_reduction,
     )
 
     summary: dict[str, Any] = {
@@ -478,6 +486,7 @@ def compare_peak_engines(
     n_sims: int = 8_000,
     seed: int = 42,
     score: float | None = None,
+    variance_reduction: str = "none",
 ) -> dict[str, Any]:
     """
     Run MC twice (path_max vs brownian_bridge) with same spot/buckets/scenarios.
@@ -510,6 +519,7 @@ def compare_peak_engines(
             mu_annual_shift=mu_shift,
             sigma_mult_extra=sigma_extra,
             peak_engine=engine,
+            variance_reduction=variance_reduction,
         )
         results[engine] = dict(mc.raw_probs)
 

@@ -38,6 +38,7 @@ def sample_bridge_log_maxima(
     x1: np.ndarray,
     sigma2_dt: float,
     rng: np.random.Generator,
+    u: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Sample continuous max of BM bridges from x0 → x1 (same length arrays).
@@ -46,7 +47,8 @@ def sample_bridge_log_maxima(
     """
     if sigma2_dt <= 0:
         return np.maximum(x0, x1)
-    u = rng.random(size=x0.shape)
+    if u is None:
+        u = rng.random(size=x0.shape)
     u = np.clip(u, 1e-12, 1.0)
     disc = (x0 - x1) ** 2 - 2.0 * sigma2_dt * np.log(u)
     disc = np.maximum(disc, 0.0)
@@ -62,12 +64,17 @@ def simulate_bb_path_maxima(
     trading_days: int,
     n_paths: int,
     rng: np.random.Generator,
+    variance_reduction: str = "none",
 ) -> np.ndarray:
     """
     Simulate n_paths continuous GBM peaks via daily endpoints + Brownian bridges.
 
     Returns array of shape (n_paths,) of path maxima in spot units.
     """
+    vr = (variance_reduction or "none").strip().lower()
+    if vr not in ("none", "antithetic"):
+        raise ValueError("variance_reduction must be one of: none, antithetic")
+
     if n_paths < 1:
         return np.empty(0, dtype=np.float64)
     if spot <= 0:
@@ -78,7 +85,13 @@ def simulate_bb_path_maxima(
     _dt, _sigma_ann, drift, diffusion = gbm_log_step_params(mu_annual, sigma_daily)
     sigma2_dt = float(diffusion) ** 2  # = σ_ann² · Δt for one trading day
 
-    z = rng.standard_normal((n_paths, trading_days))
+    if vr == "antithetic":
+        base_n = (n_paths + 1) // 2
+        z_base = rng.standard_normal((base_n, trading_days))
+        z = np.vstack([z_base, -z_base])[:n_paths]
+    else:
+        z = rng.standard_normal((n_paths, trading_days))
+
     log_rets = drift + diffusion * z
     # log-spot path endpoints: shape (n, T+1) with column 0 = log(spot)
     log_x = np.empty((n_paths, trading_days + 1), dtype=np.float64)
@@ -86,11 +99,19 @@ def simulate_bb_path_maxima(
     log_x[:, 1:] = log_x[:, 0:1] + np.cumsum(log_rets, axis=1)
 
     # Continuous max on each daily bridge segment
+    if vr == "antithetic":
+        base_n = (n_paths + 1) // 2
+        u_base = rng.random(size=(base_n, trading_days))
+        u = np.vstack([u_base, 1.0 - u_base])[:n_paths]
+    else:
+        u = None
+
     seg_max = sample_bridge_log_maxima(
         log_x[:, :-1],
         log_x[:, 1:],
         sigma2_dt,
         rng,
+        u=u,
     )
     log_peak = np.maximum(np.max(seg_max, axis=1), log_x[:, 0])
     return np.exp(log_peak)
@@ -108,6 +129,7 @@ def run_brownian_bridge_mixture(
     sigma_mult_extra: float = 1.0,
     drift_mode: str = "scenario",
     carry_mu_annual: float = 0.0,
+    variance_reduction: str = "none",
 ) -> tuple[np.ndarray, dict[str, int]]:
     """
     Mixture over scenarios: BB continuous peaks (jumps ignored).
@@ -151,6 +173,7 @@ def run_brownian_bridge_mixture(
             trading_days=trading_days,
             n_paths=m,
             rng=rng,
+            variance_reduction=variance_reduction,
         )
 
     return maxima, scenario_counts

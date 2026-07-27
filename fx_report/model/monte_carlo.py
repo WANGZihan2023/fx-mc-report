@@ -11,6 +11,7 @@ from fx_report.model.gbm_vol import gbm_log_step_params, resolve_mu_annual
 from fx_report.model.weights import ScenarioSpec
 
 VALID_PEAK_ENGINES = ("path_max", "brownian_bridge")
+VALID_VARIANCE_REDUCTION = ("none", "antithetic")
 
 
 @dataclass
@@ -25,6 +26,7 @@ class MCResult:
     trading_days: int
     percentiles: dict[str, float]
     peak_engine: str = "path_max"
+    variance_reduction: str = "none"
 
 
 def bucket_labels_from_edges(edges: Sequence[float]) -> list[str]:
@@ -61,11 +63,18 @@ def _simulate_path_max_mixture(
     sigma_mult_extra: float,
     drift_mode: str = "scenario",
     carry_mu_annual: float = 0.0,
+    variance_reduction: str = "none",
 ) -> tuple[np.ndarray, dict[str, int]]:
     """
     Exact log-Euler GBM (Hull Ch13) + compound Poisson jumps; peak = max along
     daily path. Δt = 1/252 yr; diffusion = σ_daily = σ_ann √Δt.
     """
+    vr = (variance_reduction or "none").strip().lower()
+    if vr not in VALID_VARIANCE_REDUCTION:
+        raise ValueError(
+            f"unknown variance_reduction={variance_reduction!r}; expected one of {VALID_VARIANCE_REDUCTION}"
+        )
+
     rng = np.random.default_rng(seed)
     weights = np.array([s.weight for s in scenarios], dtype=np.float64)
     weights = weights / weights.sum()
@@ -89,10 +98,21 @@ def _simulate_path_max_mixture(
         sigma = sigma_daily_base * sc.sigma_mult * sigma_mult_extra
         lam_daily = sc.expected_jumps / max(trading_days, 1)
 
-        z = rng.standard_normal((m, trading_days))
-        jump_occur = rng.random((m, trading_days)) < lam_daily
-        jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
-        jumps = np.where(jump_occur, jump_size, 0.0)
+        if vr == "antithetic":
+            # Antithetic for diffusion increments (and reuse the same jump draw per pair)
+            base_m = (m + 1) // 2
+            z_base = rng.standard_normal((base_m, trading_days))
+            z = np.vstack([z_base, -z_base])[:m]
+
+            jump_occur_base = rng.random((base_m, trading_days)) < lam_daily
+            jump_size_base = rng.normal(sc.jump_mean, sc.jump_std, size=(base_m, trading_days))
+            jumps_base = np.where(jump_occur_base, jump_size_base, 0.0)
+            jumps = np.vstack([jumps_base, jumps_base])[:m]
+        else:
+            z = rng.standard_normal((m, trading_days))
+            jump_occur = rng.random((m, trading_days)) < lam_daily
+            jump_size = rng.normal(sc.jump_mean, sc.jump_std, size=(m, trading_days))
+            jumps = np.where(jump_occur, jump_size, 0.0)
 
         _dt, _sig_ann, drift, diffusion = gbm_log_step_params(mu, sigma)
         log_rets = drift + diffusion * z + jumps
@@ -119,6 +139,7 @@ def run_mixture_monte_carlo(
     peak_engine: str = "path_max",
     drift_mode: str = "scenario",
     carry_mu_annual: float = 0.0,
+    variance_reduction: str = "none",
 ) -> MCResult:
     """
     Simulate scenario-mixture peaks and bucket them.
@@ -136,6 +157,12 @@ def run_mixture_monte_carlo(
     if engine not in VALID_PEAK_ENGINES:
         raise ValueError(
             f"unknown peak_engine={peak_engine!r}; expected one of {VALID_PEAK_ENGINES}"
+        )
+
+    vr = (variance_reduction or "none").strip().lower()
+    if vr not in VALID_VARIANCE_REDUCTION:
+        raise ValueError(
+            f"unknown variance_reduction={variance_reduction!r}; expected one of {VALID_VARIANCE_REDUCTION}"
         )
 
     if spot <= 0:
@@ -159,6 +186,7 @@ def run_mixture_monte_carlo(
             sigma_mult_extra=sigma_mult_extra,
             drift_mode=drift_mode,
             carry_mu_annual=carry_mu_annual,
+            variance_reduction=vr,
         )
     else:
         maxima, scenario_counts = _simulate_path_max_mixture(
@@ -172,6 +200,7 @@ def run_mixture_monte_carlo(
             sigma_mult_extra=sigma_mult_extra,
             drift_mode=drift_mode,
             carry_mu_annual=carry_mu_annual,
+            variance_reduction=vr,
         )
 
     raw = assign_buckets(maxima, bucket_edges)
@@ -194,6 +223,7 @@ def run_mixture_monte_carlo(
         trading_days=trading_days,
         percentiles=pct,
         peak_engine=engine,
+        variance_reduction=vr,
     )
 
 
