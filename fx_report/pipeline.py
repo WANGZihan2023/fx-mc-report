@@ -20,6 +20,10 @@ from typing import Any, Literal
 
 from fx_report.market.fetch_data import MarketSnapshot, calibrate_unpriced_from_market, fetch_market
 from fx_report.model.monte_carlo import MCResult, enforce_math_floor, run_mixture_monte_carlo
+from fx_report.news.cluster import (
+    assign_event_clusters,
+    propagate_cluster_to_statements,
+)
 from fx_report.news.evidence import build_evidence_from_news
 from fx_report.news.fetch import (
     Headline,
@@ -43,6 +47,7 @@ from fx_report.model.weights import (
     ScenarioSpec,
     apply_evidence_to_scenarios,
     default_weights,
+    evidence_item_contrib,
     evidence_score,
     resolve_bucket_edges,
 )
@@ -81,6 +86,7 @@ class StoredStatement:
     published: str | None
     related_drivers: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    cluster_id: str = ""  # linked event cluster after step4
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -366,6 +372,9 @@ def _mark_prior_templates(
                 statement_id=e.statement_id,
                 url=e.url,
                 is_prior=True,
+                cluster_id=e.cluster_id,
+                cluster_size=e.cluster_size,
+                cluster_role=e.cluster_role,
             )
         )
     return out
@@ -412,6 +421,7 @@ def step4_evaluate_impact(
     fetch_fulltext: bool = True,
     statements: list[StoredStatement] | None = None,
     as_of_date: date | datetime | str | None = None,
+    cluster_events: bool = True,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
     """
     4. 评估每条信息对货币对的影响（方向 / 类别 / 强弱输入）
@@ -421,6 +431,7 @@ def step4_evaluate_impact(
       prior_only    — templates allowed, marked is_prior + downweighted
       fallback_warn — debug: use templates as-is, flag fallback_templates
     keep_templates: when news evidence non-empty, also append marked prior templates.
+    cluster_events: assign EVT-* clusters and keep_strongest when summing S (default on).
     """
     suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
     cfg = llm_cfg
@@ -440,6 +451,11 @@ def step4_evaluate_impact(
         "kept": 0,
         "classified": 0,
         "evidence_n": 0,
+        "evidence_raw_n": 0,
+        "cluster_n": 0,
+        "cluster_dup_n": 0,
+        "cluster_dedup_applied": False,
+        "cluster_dedup_mode": "off",
     }
 
     auto: list[EvidenceItem] = []
@@ -507,22 +523,34 @@ def step4_evaluate_impact(
             e.strength = min(e.strength, 0.25)
             e.direction = 0
 
+    # ECDA-style event clustering: same-theme headlines → one cluster before S
+    cluster_meta = assign_event_clusters(evidence, enabled=bool(cluster_events))
+    if statements:
+        propagate_cluster_to_statements(evidence, statements)
+    meta.update(cluster_meta.to_dict())
+    if cluster_events and cluster_meta.cluster_dedup_applied:
+        meta["cluster_dedup_mode"] = "keep_strongest"
+    elif cluster_events:
+        meta["cluster_dedup_mode"] = "keep_strongest"
+    else:
+        meta["cluster_dedup_mode"] = "off"
+
     meta["evidence_n"] = len(evidence)
+    meta["evidence_raw_n"] = cluster_meta.evidence_raw_n
     meta["prior_n"] = sum(1 for e in evidence if e.is_prior)
     meta["news_n"] = sum(1 for e in evidence if not e.is_prior)
     return evidence, meta
 
 
 def step5_assign_weights(evidence: list[EvidenceItem]) -> list[WeightedEvidence]:
-    """5. 对每条信息赋予权重（贡献分）；unclassified / prior 已在 score 层处理"""
+    """5. 对每条信息赋予权重（贡献分）；unclassified / prior / 簇内去重已在 score 层处理"""
     out: list[WeightedEvidence] = []
     for e in evidence:
         if (e.category or "").lower() == "unclassified":
             contrib = 0.0
             impact = "未分类｜不计入主分"
         else:
-            mult = 0.35 if e.is_prior else 1.0
-            contrib = mult * e.direction * e.strength * e.freshness * e.unpriced
+            contrib = evidence_item_contrib(e)
             if e.direction > 0:
                 impact = f"推高 {e.category} 路径上尾"
             elif e.direction < 0:
@@ -531,9 +559,15 @@ def step5_assign_weights(evidence: list[EvidenceItem]) -> list[WeightedEvidence]
                 impact = "中性"
             if e.is_prior:
                 impact = f"[先验] {impact}"
+            if e.cluster_role == "dup":
+                impact = f"[簇内降权 {e.cluster_id}] {impact}"
+            elif e.cluster_id and e.cluster_size > 1 and e.cluster_role == "rep":
+                impact = f"[簇代表 {e.cluster_id} n={e.cluster_size}] {impact}"
         note = f"{impact}｜label={e.strength_label or 'n/a'}｜contrib={contrib:+.3f}"
         if e.statement_id:
             note += f"｜{e.statement_id}"
+        if e.cluster_id:
+            note += f"｜{e.cluster_id}/{e.cluster_role or 'n/a'}"
         out.append(WeightedEvidence(evidence=e, impact_note=note, weight_contrib=contrib))
     return out
 
@@ -721,8 +755,13 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
         "kept": news_meta.get("kept", 0),
         "classified": news_meta.get("classified", 0),
         "evidence_n": news_meta.get("evidence_n", len(weights.evidence)),
+        "evidence_raw_n": news_meta.get("evidence_raw_n", news_meta.get("evidence_n", 0)),
         "prior_n": news_meta.get("prior_n", 0),
         "news_n": news_meta.get("news_n", 0),
+        "cluster_n": news_meta.get("cluster_n", 0),
+        "cluster_dup_n": news_meta.get("cluster_dup_n", 0),
+        "cluster_dedup_applied": bool(news_meta.get("cluster_dedup_applied")),
+        "cluster_dedup_mode": news_meta.get("cluster_dedup_mode", "off"),
     }
     if bullish_currency:
         diag["bullish_currency"] = bullish_currency
@@ -730,6 +769,9 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
     tc.extra["evidence_quality"] = diag["evidence_quality"]
     tc.extra["fallback_templates"] = diag["fallback_templates"]
     tc.extra["template_policy"] = diag["template_policy"]
+    tc.extra["cluster_n"] = news_meta.get("cluster_n", 0)
+    tc.extra["evidence_raw_n"] = news_meta.get("evidence_raw_n", news_meta.get("evidence_n", 0))
+    tc.extra["cluster_dedup_applied"] = bool(news_meta.get("cluster_dedup_applied"))
     # OOS / calib trust line when bundled or local summary exists
     try:
         from fx_report.model.calibrate import load_calib_oos_summary

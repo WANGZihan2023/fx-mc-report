@@ -791,6 +791,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>Analysis quote {_esc(report.pair)}</span>
     <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
     <span>Evidence {_esc(str(report.extra.get("evidence_quality") or "n/a"))}</span>
+    <span>Clusters {_esc(str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"))} / raw {_esc(str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}</span>
     {_oos_meta_span(report.extra.get("calib_oos"))}
   </div>
 
@@ -987,6 +988,14 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     )
     peak_meta = str(report.extra.get("peak_engine") or "path_max")
     eq_meta = str(report.extra.get("evidence_quality") or "n/a")
+    cluster_n = report.extra.get("cluster_n")
+    raw_n = report.extra.get("evidence_raw_n", report.n_evidence)
+    dedup_bit = " · dedup" if report.extra.get("cluster_dedup_applied") else ""
+    cluster_meta = (
+        f"Clusters {cluster_n} / raw {raw_n}{dedup_bit}"
+        if cluster_n is not None
+        else ""
+    )
     story.append(
         Paragraph(
             f"Forecast date {report.forecast_date} &nbsp;·&nbsp; "
@@ -994,7 +1003,8 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
             f"Bullish currency {bullish_meta} &nbsp;·&nbsp; "
             f"Analysis quote {report.pair} &nbsp;·&nbsp; "
             f"Peak engine {peak_meta} &nbsp;·&nbsp; "
-            f"Evidence {eq_meta}",
+            f"Evidence {eq_meta}"
+            + (f" &nbsp;·&nbsp; {cluster_meta}" if cluster_meta else ""),
             styles["Meta"],
         )
     )

@@ -114,7 +114,8 @@ streamlit run app.py
 # 或双击 scripts/open.command（macOS）/ scripts/open.bat（Windows）
 ```
 
-新闻证据为空时默认 `template_policy=off`（不静默填模板）；`prior_only` / `fallback_warn` 可显式启用。UI 结果页有「本次分析审计」。
+新闻证据为空时默认 `template_policy=off`（不静默填模板）；`prior_only` / `fallback_warn` 可显式启用。UI 结果页有「本次分析审计」。  
+同主题新闻默认 **事件聚类去重**（`docs/event_clustering.md`）：审计里看 `cluster_n` / `raw` / `dedup`。
 
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
@@ -165,6 +166,7 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 ## 相关文档
 
 - 证据人工标注（label_audit）+ Stage 3 标签学习：`docs/label_audit.md`
+- 事件聚类 / 同主题去重（ECDA）：`docs/event_clustering.md`
 - 校准日常闭环（overnight / **每日 launchd 03:00** → sync → Railway）：`docs/calibration_loop.md`（本机已可 `./scripts/install_daily_calibrate.sh`）
 - 长期分享 / Streamlit 公开设置：`docs/sharing.md`
 - **AI 检索员（脑+手迭代搜新闻）**：`docs/ai_research.md`

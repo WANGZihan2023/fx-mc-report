@@ -2183,6 +2183,10 @@ def main() -> None:
         note_bits.append("本次使用了模板/先验证据（非纯新闻驱动），已标记并降权或告警。")
     if eq == "news_empty_no_prior":
         note_bits.append("新闻未产出证据且 template_policy=off → S≈0，未静默填模板。")
+    if bool(counts.get("cluster_dedup_applied") or news_meta.get("cluster_dedup_applied")):
+        note_bits.append(
+            "同主题新闻已事件聚类去重（簇内仅最强代表计入 S），避免重复加权重。"
+        )
     ai_meta = news_meta.get("ai_research") or {}
     if isinstance(ai_meta, dict):
         if ai_meta.get("limitation"):
@@ -2268,6 +2272,9 @@ def main() -> None:
         f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"
         f"· 情景权重（调整后）：{weight_bits}  \n"
         f"· evidence_n={counts.get('evidence_n', 0)}　"
+        f"cluster_n={counts.get('cluster_n', news_meta.get('cluster_n', 0))}　"
+        f"raw={counts.get('evidence_raw_n', news_meta.get('evidence_raw_n', counts.get('evidence_n', 0)))}　"
+        f"dedup={bool(counts.get('cluster_dedup_applied') or news_meta.get('cluster_dedup_applied'))}　"
         f"fetched/kept/classified="
         f"{counts.get('fetched', 0)}/{counts.get('kept', 0)}/{counts.get('classified', 0)}　"
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"

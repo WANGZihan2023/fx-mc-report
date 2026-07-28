@@ -47,6 +47,10 @@ class EvidenceItem:
     statement_id: str = ""  # e.g. STMT-03 linking to step3 storage
     url: str = ""
     is_prior: bool = False  # template / prior — not news-driven
+    # Event clustering (same-theme dedupe before S)
+    cluster_id: str = ""  # e.g. EVT-01
+    cluster_size: int = 1
+    cluster_role: str = ""  # rep | dup | solo | ""
 
 
 @dataclass
@@ -429,16 +433,34 @@ def resolve_bucket_edges(weights: ModelWeights, spot: float) -> tuple[float, flo
 # Prior / template evidence is downweighted so it cannot silently dominate S.
 _PRIOR_SCORE_MULT = 0.35
 
+# Default: within-cluster keep_strongest (dup → 0). Set via evidence_score(..., cluster_dedup=...).
+_DEFAULT_CLUSTER_DEDUP = "keep_strongest"
 
-def evidence_score(items: list[EvidenceItem]) -> float:
-    """Sum signed contributions; skip unclassified; downweight prior templates."""
-    total = 0.0
-    for e in items:
-        if (e.category or "").strip().lower() == "unclassified":
-            continue
-        mult = _PRIOR_SCORE_MULT if e.is_prior else 1.0
-        total += mult * e.direction * e.strength * e.freshness * e.unpriced
-    return total
+
+def evidence_item_contrib(
+    e: EvidenceItem,
+    *,
+    cluster_dedup: str | None = _DEFAULT_CLUSTER_DEDUP,
+) -> float:
+    """Signed contribution of one item after prior + cluster multipliers."""
+    if (e.category or "").strip().lower() == "unclassified":
+        return 0.0
+    mult = _PRIOR_SCORE_MULT if e.is_prior else 1.0
+    raw = mult * e.direction * e.strength * e.freshness * e.unpriced
+    if not cluster_dedup or cluster_dedup == "off":
+        return raw
+    from fx_report.news.cluster import cluster_score_mult
+
+    return raw * cluster_score_mult(e, mode=cluster_dedup)  # type: ignore[arg-type]
+
+
+def evidence_score(
+    items: list[EvidenceItem],
+    *,
+    cluster_dedup: str | None = _DEFAULT_CLUSTER_DEDUP,
+) -> float:
+    """Sum signed contributions; skip unclassified; downweight priors; cluster-dedupe."""
+    return sum(evidence_item_contrib(e, cluster_dedup=cluster_dedup) for e in items)
 
 
 def apply_evidence_to_scenarios(
