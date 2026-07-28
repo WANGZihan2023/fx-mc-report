@@ -3,22 +3,22 @@
   "split": "chronological_asof",
   "train": {
     "n": 40.0,
-    "brier": 0.7499889062609375,
-    "logloss": 1.3511913778635445,
+    "brier": 0.7251352682932382,
+    "logloss": 1.3011523144401993,
     "hit_rate": 0.325,
-    "skill_brier": -0.058185405659171074,
-    "skill_logloss": -0.03670192212473089,
-    "baseline_brier": 0.70875,
-    "baseline_logloss": 1.303355717807742,
+    "skill_brier": -0.07626755961890619,
+    "skill_logloss": -0.04536926526692131,
+    "baseline_brier": 0.6737500000000001,
+    "baseline_logloss": 1.2446820063223947,
     "baseline_mode": "frequency",
     "baseline_probs": [
       0.0,
-      0.275,
-      0.4,
-      0.2,
-      0.125
+      0.25,
+      0.475,
+      0.125,
+      0.15
     ],
-    "reliability_ece": 0.18934358565641435,
+    "reliability_ece": 0.1282311967688032,
     "reliability_argmax": [
       {
         "bin_lo": 0.0,
@@ -30,23 +30,23 @@
       {
         "bin_lo": 0.2,
         "bin_hi": 0.4,
-        "n": 15.0,
-        "mean_p": 0.36384963615036386,
-        "hit_rate": 0.4666666666666667
+        "n": 20.0,
+        "mean_p": 0.3595121404878595,
+        "hit_rate": 0.4
       },
       {
         "bin_lo": 0.4,
         "bin_hi": 0.6000000000000001,
-        "n": 24.0,
-        "mean_p": 0.4758328575004758,
+        "n": 20.0,
+        "mean_p": 0.4659745340254659,
         "hit_rate": 0.25
       },
       {
         "bin_lo": 0.6000000000000001,
         "bin_hi": 0.8,
-        "n": 1.0,
-        "mean_p": 0.6114993885006115,
-        "hit_rate": 0.0
+        "n": 0.0,
+        "mean_p": NaN,
+        "hit_rate": NaN
       },
       {
         "bin_lo": 0.8,
@@ -66,47 +66,47 @@
       {
         "bucket": 1.0,
         "n": 40.0,
-        "mean_p": 0.4303558196441804,
-        "emp_rate": 0.275
+        "mean_p": 0.40118709881290116,
+        "emp_rate": 0.25
       },
       {
         "bucket": 2.0,
         "n": 40.0,
-        "mean_p": 0.2545747454252546,
-        "emp_rate": 0.4
+        "mean_p": 0.24977475022524978,
+        "emp_rate": 0.475
       },
       {
         "bucket": 3.0,
         "n": 40.0,
-        "mean_p": 0.1490998509001491,
-        "emp_rate": 0.2
+        "mean_p": 0.15868109131890867,
+        "emp_rate": 0.125
       },
       {
         "bucket": 4.0,
         "n": 40.0,
-        "mean_p": 0.16596858403141598,
-        "emp_rate": 0.125
+        "mean_p": 0.19035605964394037,
+        "emp_rate": 0.15
       }
     ]
   },
   "holdout": {
     "n": 40.0,
-    "brier": 0.851177783395582,
-    "logloss": 1.6721230417455533,
+    "brier": 0.8322439385132906,
+    "logloss": 1.602366625561047,
     "hit_rate": 0.25,
-    "skill_brier": -0.1580650527799512,
-    "skill_logloss": -0.21008954808655544,
-    "baseline_brier": 0.7349999737513173,
-    "baseline_logloss": 1.3818176054735658,
+    "skill_brier": -0.1284664548494352,
+    "skill_logloss": -0.18221645253402818,
+    "baseline_brier": 0.7374999362513901,
+    "baseline_logloss": 1.3553919183973846,
     "baseline_mode": "frequency",
     "baseline_probs": [
       9.99999000001e-07,
-      0.27499972500027503,
-      0.3999996000004001,
-      0.19999980000020004,
-      0.12499987500012501
+      0.24999975000025002,
+      0.47499952500047504,
+      0.12499987500012501,
+      0.14999985000015
     ],
-    "reliability_ece": 0.2295370204629797,
+    "reliability_ece": 0.20594969405030591,
     "reliability_argmax": [
       {
         "bin_lo": 0.0,
@@ -118,23 +118,23 @@
       {
         "bin_lo": 0.2,
         "bin_hi": 0.4,
-        "n": 5.0,
-        "mean_p": 0.3500996499003501,
-        "hit_rate": 0.2
+        "n": 8.0,
+        "mean_p": 0.347937152062848,
+        "hit_rate": 0.375
       },
       {
         "bin_lo": 0.4,
         "bin_hi": 0.6000000000000001,
-        "n": 34.0,
-        "mean_p": 0.49501421086814223,
-        "hit_rate": 0.2647058823529412
+        "n": 32.0,
+        "mean_p": 0.4694214055785944,
+        "hit_rate": 0.21875
       },
       {
         "bin_lo": 0.6000000000000001,
         "bin_hi": 0.8,
-        "n": 1.0,
-        "mean_p": 0.6004993995006005,
-        "hit_rate": 0.0
+        "n": 0.0,
+        "mean_p": NaN,
+        "hit_rate": NaN
       },
       {
         "bin_lo": 0.8,
@@ -154,25 +154,25 @@
       {
         "bucket": 1.0,
         "n": 40.0,
-        "mean_p": 0.4795370204629796,
+        "mean_p": 0.4451245548754451,
         "emp_rate": 0.25
       },
       {
         "bucket": 2.0,
         "n": 40.0,
-        "mean_p": 0.2676122323877676,
-        "emp_rate": 0.4
+        "mean_p": 0.26713098286901715,
+        "emp_rate": 0.375
       },
       {
         "bucket": 3.0,
         "n": 40.0,
-        "mean_p": 0.14083735916264084,
-        "emp_rate": 0.075
+        "mean_p": 0.1518185981814018,
+        "emp_rate": 0.1
       },
       {
         "bucket": 4.0,
         "n": 40.0,
-        "mean_p": 0.11201238798761201,
+        "mean_p": 0.13592486407513593,
         "emp_rate": 0.275
       }
     ]
@@ -180,8 +180,8 @@
   "note": "Holdout is the last ~25% of peak samples by asof. If holdout.n==0, split was skipped (too few rows). Metrics include brier/logloss/hit_rate plus skill_* vs frequency baseline and reliability_* (Goal E/J).",
   "source": "calibrate",
   "loss_name": "brier",
-  "calibrated_loss": 0.6988101691335672,
-  "baseline_loss": 0.7487873850384608,
+  "calibrated_loss": 0.7031434487456493,
+  "baseline_loss": 0.7404361491602108,
   "n_sims": 4000,
   "params_path": "output/calibrated_params_AUDUSD.json",
   "scoring": "gneiting_brier_log_skill"

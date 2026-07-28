@@ -1,13 +1,13 @@
 {
   "pair": "AUD/USD",
   "loss_name": "brier",
-  "loss": 0.6988101691335672,
-  "baseline_loss": 0.7487873850384608,
+  "loss": 0.7031434487456493,
+  "baseline_loss": 0.7404361491602108,
   "n_samples": 192,
   "n_sims": 4000,
   "n_iters": 40,
   "params": {
-    "score_to_mu_a": 0.02920489844563678,
+    "score_to_mu_a": 0.012,
     "score_to_sigma_b": 0.035,
     "evidence_logit_scale": 0.08,
     "scenario_temperature": 1.0,
@@ -24,31 +24,31 @@
     "scenarios": [
       {
         "name": "escalation",
-        "weight": 0.7708677805045173,
+        "weight": 0.6410556418369862,
         "mu_annual": -0.03333333333333334,
         "sigma_mult": 0.75,
-        "expected_jumps": 1.0,
-        "jump_mean": 0.006666666666666668,
+        "expected_jumps": 0.8333333333333334,
+        "jump_mean": 0.013333333333333332,
         "jump_std": 0.007,
         "narrative": "风险升高 / 避险或单边冲击 → AUD/USD 上尾加厚"
       },
       {
         "name": "baseline",
-        "weight": 0.22393815324714061,
+        "weight": 0.3573553400954462,
         "mu_annual": -0.09599867777635826,
         "sigma_mult": 1.0,
-        "expected_jumps": 2.0833333333333335,
+        "expected_jumps": 1.6666666666666667,
         "jump_mean": 0.011135339882950474,
         "jump_std": 0.004,
         "narrative": "中性胶着 → AUD/USD 峰值多落在中档"
       },
       {
         "name": "deescalation",
-        "weight": 0.005194066248342087,
-        "mu_annual": -0.004467409240286633,
-        "sigma_mult": 2.0,
-        "expected_jumps": 0.8333333333333334,
-        "jump_mean": -0.013333333333333332,
+        "weight": 0.001589018067567679,
+        "mu_annual": -0.03,
+        "sigma_mult": 1.25,
+        "expected_jumps": 1.6666666666666667,
+        "jump_mean": -0.005,
         "jump_std": 0.004,
         "narrative": "缓和 / 逆风消退 → AUD/USD 峰值受压"
       }
