@@ -954,6 +954,18 @@ def run_pipeline(
         for k in ("low_rel_skipped", "statements_news_n")
         if k in step3_meta
     }
+    for k in (
+        "historical_mode",
+        "historical_as_of",
+        "historical_lookback_days",
+        "providers_used",
+        "newsapi_enabled",
+        "newsapi_hits",
+        "historical_news_quality",
+        "limitation",
+    ):
+        if k in step3_meta and k not in news_meta:
+            news_meta[k] = step3_meta[k]
     news_meta["calibrated_params"] = cal_source
     say(
         f"  → 证据 {len(evidence)} 条｜mode={news_meta.get('mode')}｜"
