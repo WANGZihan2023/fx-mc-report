@@ -77,10 +77,12 @@ def _predict_probs(
     score: float = 0.0,
     peak_engine: str | None = None,
     variance_reduction: str = "none",
+    jump_model: str | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     mu_shift = weights.score_to_mu_a * score
     sigma_extra = 1.0 + weights.score_to_sigma_b * abs(score)
     engine = peak_engine or getattr(weights, "peak_engine", "path_max")
+    jm = jump_model if jump_model is not None else str(getattr(weights, "jump_model", "merton") or "merton")
     mc = run_mixture_monte_carlo(
         spot=spot,
         sigma_daily_base=sigma_daily,
@@ -93,7 +95,7 @@ def _predict_probs(
         sigma_mult_extra=sigma_extra,
         peak_engine=engine,
         variance_reduction=variance_reduction,
-        jump_model=str(getattr(weights, "jump_model", "merton") or "merton"),
+        jump_model=jm,
         jump_compensate=bool(getattr(weights, "jump_compensate", False)),
     )
     return np.array(list(mc.raw_probs.values()), dtype=np.float64), list(mc.raw_probs.keys())
@@ -124,6 +126,7 @@ def eval_split_metrics(
     baseline_mode: str = "frequency",
     baseline_probs: Sequence[float] | np.ndarray | None = None,
     variance_reduction: str = "none",
+    jump_model: str | None = None,
 ) -> dict[str, Any]:
     """
     Mean Brier / log-loss / argmax hit-rate on a dataframe slice, plus
@@ -160,6 +163,7 @@ def eval_split_metrics(
             score=0.0,
             peak_engine=peak_engine,
             variance_reduction=variance_reduction,
+            jump_model=jump_model,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -229,6 +233,7 @@ def run_backtest(
     peak_engine: str | None = None,
     holdout_frac: float = 0.25,
     variance_reduction: str = "none",
+    jump_model: str | None = None,
     write_oos: bool = True,
     verbose: bool = True,
 ) -> BacktestResult:
@@ -263,6 +268,9 @@ def run_backtest(
             weights, params_source = _resolve_weights(pair, calibrated_params_path=auto_cal)
 
     engine = peak_engine or getattr(weights, "peak_engine", "path_max")
+    jm = jump_model if jump_model is not None else str(getattr(weights, "jump_model", "merton") or "merton")
+    if jump_model is not None:
+        weights.jump_model = jm
     cuts_fb = weights.bucket_pct_cuts
 
     use = df
@@ -305,6 +313,7 @@ def run_backtest(
             score=0.0,
             peak_engine=engine,
             variance_reduction=variance_reduction,
+            jump_model=jm,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -377,6 +386,7 @@ def run_backtest(
         max_rows=oos_cap,
         baseline_mode="frequency",
         variance_reduction=variance_reduction,
+        jump_model=jm,
     )
     train_clim = train_m.get("baseline_probs")
     hold_m = eval_split_metrics(
@@ -389,6 +399,7 @@ def run_backtest(
         baseline_mode="frequency",
         baseline_probs=train_clim if train_clim else None,
         variance_reduction=variance_reduction,
+        jump_model=jm,
     )
 
     summary: dict[str, Any] = {
@@ -407,6 +418,8 @@ def run_backtest(
         "reliability_argmax": table_scores.get("reliability_argmax"),
         "reliability_buckets": table_scores.get("reliability_buckets"),
         "peak_engine": engine,
+        "jump_model": jm,
+        "variance_reduction": variance_reduction,
         "params_source": params_source,
         "samples_path": str(path),
         "train_oos": train_m,
@@ -435,6 +448,8 @@ def run_backtest(
                 "source": "backtest",
                 "n_sims": n_sims,
                 "peak_engine": engine,
+                "jump_model": jm,
+                "variance_reduction": variance_reduction,
                 "params_source": params_source,
             },
         )

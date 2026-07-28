@@ -147,6 +147,8 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             max_rows=args.max_rows,
             verbose=not args.quiet,
             variance_reduction=args.variance_reduction,
+            peak_engine=args.peak_engine,
+            jump_model=args.jump_model,
         )
     except Exception as exc:
         print(f"ERROR: {exc}")
@@ -169,6 +171,7 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
             seed=args.seed,
             peak_engine=args.peak_engine,
             variance_reduction=args.variance_reduction,
+            jump_model=args.jump_model,
             verbose=not args.quiet,
         )
     except Exception as exc:
@@ -216,6 +219,18 @@ def main() -> int:
         default="none",
         help="Variance reduction for MC maxima: none or antithetic",
     )
+    cal_p.add_argument(
+        "--peak-engine",
+        choices=["path_max", "brownian_bridge"],
+        default="path_max",
+        help="Peak estimator used during calibration and saved into params",
+    )
+    cal_p.add_argument(
+        "--jump-model",
+        choices=["merton", "none"],
+        default="merton",
+        help="Jump model (path_max): merton or none; saved into params",
+    )
     cal_p.add_argument("--seed", type=int, default=42)
     cal_p.add_argument("--quiet", action="store_true")
     cal_p.set_defaults(func=_cmd_calibrate)
@@ -243,6 +258,12 @@ def main() -> int:
         choices=["none", "antithetic"],
         default="none",
         help="Variance reduction for MC maxima: none or antithetic",
+    )
+    bt_p.add_argument(
+        "--jump-model",
+        choices=["merton", "none"],
+        default=None,
+        help="Override jump model (default: from calibrated params / merton)",
     )
     bt_p.add_argument("--quiet", action="store_true")
     bt_p.set_defaults(func=_cmd_backtest)

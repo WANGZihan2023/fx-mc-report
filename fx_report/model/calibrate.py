@@ -185,6 +185,18 @@ def apply_calibrated_params(base: ModelWeights, params: dict[str, Any]) -> Model
             pass
     if "jump_model" in params:
         base.jump_model = str(params["jump_model"] or "merton")
+    if "recommended_variance_reduction" in params:
+        try:
+            setattr(base, "recommended_variance_reduction", str(params["recommended_variance_reduction"]))
+        except Exception:
+            pass
+    # Also accept top-level auto_tune VR via params.calibration blob if present
+    cal_blob = params.get("calibration") if isinstance(params.get("calibration"), dict) else None
+    if cal_blob and cal_blob.get("recommended_variance_reduction"):
+        try:
+            setattr(base, "recommended_variance_reduction", str(cal_blob["recommended_variance_reduction"]))
+        except Exception:
+            pass
     if "jump_compensate" in params:
         base.jump_compensate = bool(params["jump_compensate"])
     if "vol_estimator" in params:
@@ -385,6 +397,9 @@ def _predict_probs(
     score_to_sigma_b: float,
     score: float = 0.0,
     variance_reduction: str = "none",
+    peak_engine: str = "path_max",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
 ) -> np.ndarray:
     mu_shift = score_to_mu_a * score
     sigma_extra = 1.0 + score_to_sigma_b * abs(score)
@@ -398,7 +413,10 @@ def _predict_probs(
         bucket_edges=edges,
         mu_annual_shift=mu_shift,
         sigma_mult_extra=sigma_extra,
+        peak_engine=peak_engine,
         variance_reduction=variance_reduction,
+        jump_model=jump_model,
+        jump_compensate=jump_compensate,
     )
     return np.array(list(mc.raw_probs.values()), dtype=np.float64)
 
@@ -413,6 +431,9 @@ def sample_loss(
     n_sims: int,
     seed: int,
     variance_reduction: str = "none",
+    peak_engine: str = "path_max",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
     loss: str = "brier",
     max_rows: int | None = None,
 ) -> float:
@@ -440,6 +461,9 @@ def sample_loss(
             score_to_sigma_b=score_to_sigma_b,
             score=0.0,
             variance_reduction=variance_reduction,
+            peak_engine=peak_engine,
+            jump_model=jump_model,
+            jump_compensate=jump_compensate,
         )
         p = np.clip(p, 1e-6, 1.0)
         p = p / p.sum()
@@ -486,6 +510,9 @@ def calibrate_from_samples(
     loss: str = "brier",
     max_rows: int = 80,
     variance_reduction: str = "none",
+    peak_engine: str = "path_max",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
     verbose: bool = True,
 ) -> CalibResult:
     """
@@ -495,6 +522,9 @@ def calibrate_from_samples(
     base = default_weights(spec)
     if not base.scenarios:
         base.scenarios = default_scenarios(spec.pair)
+    base.peak_engine = str(peak_engine or "path_max")
+    base.jump_model = str(jump_model or "merton")
+    base.jump_compensate = bool(jump_compensate)
     x0, names, narratives = vec_from_weights(base)
     bounds = _bounds(len(names))
     cuts = base.bucket_pct_cuts
@@ -516,6 +546,9 @@ def calibrate_from_samples(
             loss=loss,
             max_rows=max_rows,
             variance_reduction=variance_reduction,
+            peak_engine=base.peak_engine,
+            jump_model=base.jump_model,
+            jump_compensate=base.jump_compensate,
         )
 
     baseline = eval_x(x0)
@@ -633,6 +666,9 @@ def calibrate_pair(
     max_rows: int = 80,
     holdout_frac: float = 0.25,
     variance_reduction: str = "none",
+    peak_engine: str = "path_max",
+    jump_model: str = "merton",
+    jump_compensate: bool = False,
     verbose: bool = True,
 ) -> tuple[Path, CalibResult]:
     safe = pair.replace("/", "")
@@ -669,6 +705,9 @@ def calibrate_pair(
         loss=loss,
         max_rows=max_rows,
         variance_reduction=variance_reduction,
+        peak_engine=peak_engine,
+        jump_model=jump_model,
+        jump_compensate=jump_compensate,
         verbose=verbose,
     )
     out = save_calibrated_params(result, out_dir=out_dir)

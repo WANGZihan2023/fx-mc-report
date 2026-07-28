@@ -710,10 +710,18 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             help="开启后日度对数漂移减 λ(E[e^J]−1)Δt；默认关以保持旧行为",
         )
         _vr_opts = ["none", "antithetic"]
+        _vr_default = "none"
+        # Prefer Stage-1 auto_tune / recommended_variance_reduction when present on weights
+        _vr_cand = getattr(base, "recommended_variance_reduction", None)
+        if not _vr_cand and isinstance(getattr(base, "calibration", None), dict):
+            _vr_cand = base.calibration.get("recommended_variance_reduction")
+        if _vr_cand in _vr_opts:
+            _vr_default = str(_vr_cand)
+        _vr_idx = _vr_opts.index(_vr_default)
         variance_reduction = st.selectbox(
             "方差缩减 variance_reduction",
             _vr_opts,
-            index=0,
+            index=_vr_idx,
             help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
         )
         if peak_engine == "brownian_bridge":
