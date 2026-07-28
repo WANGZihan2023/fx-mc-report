@@ -64,6 +64,30 @@ PERSIST_KEYS = (
     "FX_API_TIMEOUT",
 )
 
+# Railway Variables checklist (names only — never log values).
+RAILWAY_VARIABLE_NAMES: tuple[str, ...] = (
+    "APP_PASSWORD",
+    "FX_REPORT_PASSWORD",
+    "FRED_API_KEY",
+    "NEWSAPI_KEY",
+    "FINNHUB_API_KEY",
+    "ALPHA_VANTAGE_API_KEY",
+    "TWELVE_DATA_API_KEY",
+    "TAVILY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "FMP_API_KEY",
+    "POLYGON_API_KEY",
+    "OPENEXCHANGERATES_APP_ID",
+    "BROKER_REST_BASE_URL",
+    "BROKER_REST_TOKEN",
+    "FX_PDF_ENGINE",
+)
+
 
 def is_cloud_runtime() -> bool:
     """True on Railway / Render / Fly / Streamlit Community Cloud (not the user's Mac)."""
@@ -107,17 +131,93 @@ def default_vault_root() -> Path:
     return MAC_DEFAULT_VAULT
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
+def parse_env_text(text: str) -> dict[str, str]:
+    """Parse .env body (upload / download). Skips blanks and comments."""
     out: dict[str, str] = {}
-    if not path.is_file():
-        return out
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in (text or "").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
         k, _, v = line.partition("=")
-        out[k.strip()] = v.strip().strip('"').strip("'")
+        key = k.strip()
+        if not key:
+            continue
+        val = v.strip().strip('"').strip("'")
+        if val:
+            out[key] = val
     return out
+
+
+def parse_env_bytes(data: bytes) -> dict[str, str]:
+    """Parse uploaded .env bytes (utf-8 / utf-8-sig)."""
+    if not data:
+        return {}
+    text = data.decode("utf-8-sig", errors="replace")
+    return parse_env_text(text)
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    return parse_env_text(path.read_text(encoding="utf-8"))
+
+
+def key_loaded_from_environ(key: str) -> bool:
+    """True if process env already has a non-empty value (e.g. Railway Variables)."""
+    return bool((os.environ.get(key) or "").strip())
+
+
+def configured_key_sources(cfg: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Map env_key → short Chinese source label for UI green checks.
+    Only includes keys that are non-empty in cfg.
+    """
+    cfg = cfg or load_config()
+    out: dict[str, str] = {}
+    interest = list(PROVIDERS) + [
+        "BROKER_REST_BASE_URL",
+        "GROQ_API_KEY",
+        "LLM_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+    ]
+    for k in interest:
+        if not is_set(cfg, k):
+            continue
+        if key_loaded_from_environ(k):
+            out[k] = "已从环境变量加载"
+        else:
+            out[k] = "已配置"
+    return out
+
+
+def railway_variables_checklist(*, only_set_in: dict[str, str] | None = None) -> str:
+    """
+    Human-readable Railway Variables checklist (names only).
+    If only_set_in is given, mark which names have non-empty values locally
+    without printing those values.
+    """
+    lines = [
+        "# Railway → Service → Variables（只列变量名，勿把 Key 贴进聊天/日志）",
+        "# 关掉网页再开还在 = 必须写到这里（一次）",
+        "",
+    ]
+    for name in RAILWAY_VARIABLE_NAMES:
+        if only_set_in is not None:
+            flag = "SET" if (only_set_in.get(name) or "").strip() else "—"
+            lines.append(f"{flag}\t{name}")
+        else:
+            lines.append(name)
+    lines += [
+        "",
+        "# 本机一键推送（有真实 Key 的 .env 时）：",
+        "#   ./scripts/push_env_to_railway.sh",
+    ]
+    return "\n".join(lines)
 
 
 def env_path() -> Path:

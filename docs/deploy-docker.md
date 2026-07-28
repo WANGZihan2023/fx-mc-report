@@ -47,7 +47,12 @@ git push
 4. **Settings → Networking → Generate Domain**（得到 `https://xxxx.up.railway.app`）  
 5. **Variables** 里按需添加（有就填，没有可空）：
 
-> **重要：** 在 Railway 网站上点「保存到本机 .env」**不会**写到你的 Mac，只写容器临时磁盘，**redeploy 后丢失**。云端请把 Key 配进 Variables；或本机 `streamlit run` 后再保存；或用页面「下载 .env」。
+> **重要（网页持久 = Railway Variables）：**
+> - 刷新 / 关掉再开 → Streamlit `session_state` 清空，页面里刚填的 Key **会消失**（正常）。
+> - 「写入服务器磁盘 / 保存」只写**容器临时盘**，**redeploy 后丢失**，也**不会**写到你 Mac。
+> - 「下载 .env」只得到本机文件；网站**不会**自动读 Mac 上的 `.env`。
+> - **一次配好**：Railway → Service → **Variables**（页面可点「生成 Railway 变量清单」）。本机有真实 Key 时：`./scripts/push_env_to_railway.sh`。
+> - **临时恢复**：网页「从本机 .env 上传并应用到本会话」。
 
 | 变量 | 说明 |
 |------|------|
@@ -58,6 +63,8 @@ git push
 | `LLM_BASE_URL` | DeepSeek 须 `https://api.deepseek.com/v1` |
 | `FRED_API_KEY` | 行情增强 |
 | `FX_PDF_ENGINE` | 默认已是 `weasyprint`，一般不用改 |
+
+Variables 配好后，应用启动会从 `os.environ` 读入；API 配置页显示「已从环境变量加载」，无需每次重填。
 
 6. 区域：若控制台可选 Region，优先 **Sydney** 或东南亚  
 7. 等 Deploy 变绿 → 打开公网域名 → 输访问密码 → 跑报告 → 下载 PDF  

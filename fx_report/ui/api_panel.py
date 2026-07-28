@@ -5,7 +5,7 @@ Streamlit：API 申请指引 + 表格填 Key（行情 / 搜索 / AI）。
 - 付费/增强：表格填写
 - AI：单独表格（Ollama / Groq / 自定义 OpenAI 兼容）
 填写后写入 session，并注入 os.environ，供 pipeline 立即使用。
-本机可落盘 vault + 仓库 .env；Railway/云端请用 Variables + 下载 .env。
+本机可落盘 vault + 仓库 .env；Railway/云端请用 Variables + 下载/上传 .env。
 """
 
 from __future__ import annotations
@@ -18,14 +18,18 @@ import streamlit as st
 from fx_report.config.api_config import (
     PROVIDERS,
     apply_runtime_overrides,
+    configured_key_sources,
     env_file_download_bytes,
     env_path,
     is_cloud_runtime,
     is_set,
+    key_loaded_from_environ,
     load_config,
     mask_secret,
     merge_nonempty,
+    parse_env_bytes,
     project_env_path,
+    railway_variables_checklist,
     save_keys_to_local,
     status_text,
     verify_env_file,
@@ -192,6 +196,18 @@ def _mask(v: str) -> str:
     return mask_secret(v) if (v or "").strip() else ""
 
 
+def _looks_like_mask_or_placeholder(v: str) -> bool:
+    """Editor may echo masked placeholder; treat as 'keep existing', not a new secret."""
+    s = (v or "").strip()
+    if not s:
+        return True
+    if s.startswith("••••") or "…" in s or s.startswith("(已配置"):
+        return True
+    if s in {"已配置", "已从环境变量加载", "(empty)"}:
+        return True
+    return False
+
+
 def _session_keys() -> dict[str, str]:
     return dict(st.session_state.get("api_keys_ui") or {})
 
@@ -228,7 +244,30 @@ def _seed_from_vault() -> dict[str, str]:
     for k, v in sess.items():
         if v:
             out[k] = v
+    apply_runtime_overrides(out)
     return out
+
+
+def _status_label(ek: str, value_map: dict[str, str], sources: dict[str, str]) -> str:
+    if sources.get(ek):
+        return f"✓ {sources[ek]}"
+    if (value_map.get(ek) or "").strip():
+        return "✓ 已配置"
+    return "否"
+
+
+def _editor_display_value(ek: str, value_map: dict[str, str]) -> str:
+    """
+    Do not put raw secrets into the editable cell when already configured.
+    Blank cell + merge_nonempty = keep existing; paste only to replace.
+    """
+    raw = (value_map.get(ek) or "").strip()
+    if not raw:
+        return ""
+    # Non-secret config (URL / model) stays editable in cleartext.
+    if ek in {"LLM_BASE_URL", "LLM_MODEL", "BROKER_REST_BASE_URL"}:
+        return raw
+    return ""
 
 
 def _editor_table(
@@ -237,8 +276,10 @@ def _editor_table(
     value_map: dict[str, str],
     *,
     editor_key: str,
+    sources: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Show editable table; return env_key -> value from editor."""
+    """Show editable table; return env_key -> *new* values only (masks/blanks skipped)."""
+    sources = sources or {}
     data = []
     for r in rows:
         ek = r[key_col]
@@ -249,8 +290,8 @@ def _editor_table(
                 "档位": r.get("tier", r.get("cost", "")),
                 "用途": r.get("why", ""),
                 "申请页": r.get("signup", r.get("url", "")) or None,
-                "API Key / 值": value_map.get(ek, ""),
-                "已配置": "是" if value_map.get(ek, "").strip() else "否",
+                "API Key / 值": _editor_display_value(ek, value_map),
+                "已配置": _status_label(ek, value_map, sources),
             }
         )
     df = pd.DataFrame(data)
@@ -263,7 +304,12 @@ def _editor_table(
             "申请页": st.column_config.LinkColumn("申请页", display_text="打开"),
             "API Key / 值": st.column_config.TextColumn(
                 "API Key / 值",
-                help="粘贴 Key；留空=不启用该源",
+                help="已配置请留空以保留；只在要更换时粘贴新 Key",
+                width="medium",
+            ),
+            "已配置": st.column_config.TextColumn(
+                "已配置",
+                help="来源：Railway Variables / 本机 .env / 本会话上传",
                 width="medium",
             ),
         },
@@ -272,8 +318,91 @@ def _editor_table(
     out: dict[str, str] = {}
     for _, row in edited.iterrows():
         ek = str(row["环境变量"])
-        out[ek] = str(row["API Key / 值"] or "").strip()
+        raw = str(row["API Key / 值"] or "").strip()
+        if _looks_like_mask_or_placeholder(raw):
+            continue
+        out[ek] = raw
     return out
+
+
+def _render_persistence_banner(cloud: bool) -> None:
+    if cloud:
+        st.error(
+            "### 关掉网页再开还要 Key？→ 必须写到 Railway Variables（一次）\n\n"
+            "当前是 **Railway / 云端网站**，不是你的 Mac。\n\n"
+            "- 「应用到本会话」/ 刷新 → **session 清空，Key 消失**（这是正常的）\n"
+            "- 「写入服务器磁盘」→ 只写**容器临时盘**，**redeploy 后丢失**\n"
+            "- 「下载 .env」→ 只得到本机文件；网站**不会**自动读你 Mac 上的文件\n\n"
+            "**持久方案（推荐）**：Railway 控制台 → Service → **Variables**，"
+            "按下方清单填一次同名变量 → 每次开机自动进 `os.environ`，页面显示「已从环境变量加载」。\n\n"
+            "**临时恢复**：用下方「从本机 .env 上传」把上次下载的文件贴回本会话。"
+        )
+    else:
+        st.info(
+            "本机：点「保存到本机 .env」写入 vault + 仓库 `.env`（gitignore）。"
+            "云端持久请用 Railway Variables；也可用「下载 .env」+ 网页「上传恢复」。"
+        )
+
+
+def _render_env_upload_and_railway(cloud: bool) -> None:
+    st.markdown("#### 恢复 / 持久化")
+    up = st.file_uploader(
+        "从本机 .env 上传并应用到本会话",
+        type=["env", "txt"],
+        help="选择你之前「下载 .env」存下的文件；Key 会进本会话（并可选写入服务器临时盘）。",
+        key="env_upload_restore",
+    )
+    c_up, c_rail = st.columns(2)
+    with c_up:
+        if up is not None and st.button(
+            "应用上传的 .env",
+            type="primary",
+            use_container_width=True,
+            key="btn_apply_env_upload",
+        ):
+            parsed = parse_env_bytes(up.getvalue())
+            # Never persist FX_API_ROOT from a Mac path onto Railway blindly.
+            parsed.pop("FX_API_ROOT", None)
+            if not parsed:
+                st.error("文件里没有非空 Key。")
+            else:
+                _set_session_keys(parsed)
+                if cloud:
+                    try:
+                        paths = save_keys_to_local(parsed)
+                        st.success(
+                            f"已加载 **{len(parsed)}** 个变量到本会话，并写入服务器临时盘"
+                            f"（{len(paths)} 个文件）。刷新仍可能丢；持久请用 Railway Variables。"
+                        )
+                    except OSError as exc:
+                        st.warning(f"已注入本会话，但服务器落盘失败：{exc}")
+                else:
+                    st.success(
+                        f"已加载 **{len(parsed)}** 个变量到本会话。可再点「保存到本机 .env」。"
+                    )
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {"环境变量": k, "状态": _mask(v)}
+                            for k, v in sorted(parsed.items())
+                        ]
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+    with c_rail:
+        if st.button(
+            "生成 Railway 变量清单", use_container_width=True, key="btn_railway_list"
+        ):
+            local_cfg = load_config()
+            sess = _session_keys()
+            probe = merge_nonempty(local_cfg, sess)
+            st.code(railway_variables_checklist(only_set_in=probe), language=None)
+            st.caption(
+                "清单只含**变量名**与本机是否已有值（SET/—），**不含** Key 内容。"
+                "本机有真实 `.env` 时可运行：`./scripts/push_env_to_railway.sh`"
+            )
 
 
 def render_api_settings_panel() -> dict[str, Any]:
@@ -283,37 +412,50 @@ def render_api_settings_panel() -> dict[str, Any]:
     """
     if "api_keys_ui" not in st.session_state:
         st.session_state["api_keys_ui"] = _seed_from_vault()
+    else:
+        # Re-merge process env on each run so Railway Variables stay visible
+        # even if a prior blank editor pass left session looking empty.
+        seeded = _seed_from_vault()
+        st.session_state["api_keys_ui"] = merge_nonempty(seeded, _session_keys())
 
     cloud = is_cloud_runtime()
     st.subheader("API 配置")
-    if cloud:
-        st.error(
-            "当前是 **Railway / 云端网站**，不是你的 Mac。"
-            "页面上的「保存」只会写到**服务器容器磁盘**，**不会**写到你电脑的 "
-            "`fx_data_apis/.env` 或仓库 `.env`；重新部署后容器文件会丢。"
-            "请把 Key 配到 **Railway → Variables**，或点下方 **下载 .env** 存到本机。"
-        )
+    _render_persistence_banner(cloud)
     st.caption(
         "免费按指引申请；付费/AI 有 Key 再填。空=跳过。"
         + (
-            "云端请用 Railway Variables；本会话 Key 刷新即丢。"
+            "云端请用 Railway Variables；本会话 Key 刷新即丢（可用上传 .env 恢复）。"
             if cloud
             else "「应用到本会话」刷新即丢；点「保存到本机 .env」才会写入 Mac 上的 vault + 仓库 .env（已 gitignore）。"
         )
     )
+
     vault_cfg = load_config()
-    disk_on = [k for k in PROVIDERS if is_set(vault_cfg, k)]
-    if not disk_on:
+    sources = configured_key_sources(vault_cfg)
+    # Prefer session for labels when session has the key but environ does not.
+    for k, v in _session_keys().items():
+        if (v or "").strip() and k not in sources:
+            sources[k] = "已配置（本会话）"
+
+    if sources:
+        st.success(
+            "已就绪："
+            + " · ".join(f"`{k}` {label}" for k, label in list(sources.items())[:12])
+            + (" …" if len(sources) > 12 else "")
+        )
+    else:
         if cloud:
             st.warning(
                 "服务器进程环境 / Variables 里目前没有行情/新闻 Key。"
-                "请在 Railway Variables 填写，或本机跑 Streamlit 后再保存到 Mac。"
+                "请在 Railway Variables 填写，或上传本机 `.env` 恢复本会话。"
             )
         else:
             st.warning(
                 "本机 `.env` / vault 里目前没有行情/新闻 Key。"
                 "填表后务必点 **保存到本机 .env**，否则刷新或重启 Streamlit 会全部丢失。"
             )
+
+    _render_env_upload_and_railway(cloud)
 
     tab_free, tab_paid, tab_ai, tab_status = st.tabs(
         ["① 免费申请指引", "② 付费/增强 Key 表", "③ AI API", "④ 当前状态"]
@@ -351,6 +493,9 @@ def render_api_settings_panel() -> dict[str, Any]:
                 st.code(g["steps"], language=None)
 
         st.markdown("#### 免费 Key 填写表（申请到后粘贴）")
+        st.caption(
+            "「已配置」列为 ✓ 时，**API Key / 值请留空**以保留；只在更换时粘贴新 Key。"
+        )
         free_rows = [
             {
                 "env_key": g["env_key"],
@@ -363,7 +508,11 @@ def render_api_settings_panel() -> dict[str, Any]:
             if g.get("env_key")
         ]
         free_vals = _editor_table(
-            free_rows, "env_key", _session_keys(), editor_key="free_keys_editor"
+            free_rows,
+            "env_key",
+            _session_keys(),
+            editor_key="free_keys_editor",
+            sources=sources,
         )
 
     with tab_paid:
@@ -371,8 +520,13 @@ def render_api_settings_panel() -> dict[str, Any]:
             "没有采购就**全部留空**——系统会继续用 ECB + 央行 RSS + 白名单公开页。"
             "公司若已买终端/数据商，把 Key 填进表即可增强。"
         )
+        st.caption("已配置的行请留空「API Key / 值」以保留。")
         paid_vals = _editor_table(
-            PAID_OR_OPTIONAL, "env_key", _session_keys(), editor_key="paid_keys_editor"
+            PAID_OR_OPTIONAL,
+            "env_key",
+            _session_keys(),
+            editor_key="paid_keys_editor",
+            sources=sources,
         )
 
     with tab_ai:
@@ -389,11 +543,14 @@ def render_api_settings_panel() -> dict[str, Any]:
             "推荐：DeepSeek + Tavily（或至少 NewsAPI）；缺搜索 Key 时 AI 检索员仍可用白名单 + Google News。"
         )
         keys = _session_keys()
-        # Prefer DeepSeek channel if vault already has DeepSeek base/key
         _default_channel = 0
-        if "deepseek.com" in (keys.get("LLM_BASE_URL") or "") or keys.get("DEEPSEEK_API_KEY"):
+        if "deepseek.com" in (keys.get("LLM_BASE_URL") or "") or keys.get(
+            "DEEPSEEK_API_KEY"
+        ):
             _default_channel = 2
-        elif keys.get("GROQ_API_KEY") or "groq.com" in (keys.get("LLM_BASE_URL") or ""):
+        elif keys.get("GROQ_API_KEY") or "groq.com" in (
+            keys.get("LLM_BASE_URL") or ""
+        ):
             _default_channel = 1
         channel = st.selectbox(
             "AI 通道",
@@ -411,51 +568,75 @@ def render_api_settings_panel() -> dict[str, Any]:
         if channel == "ollama":
             defaults = {
                 "LLM_API_KEY": keys.get("LLM_API_KEY") or "ollama",
-                "LLM_BASE_URL": keys.get("LLM_BASE_URL") or "http://127.0.0.1:11434/v1",
+                "LLM_BASE_URL": keys.get("LLM_BASE_URL")
+                or "http://127.0.0.1:11434/v1",
                 "LLM_MODEL": keys.get("LLM_MODEL") or "llama3.1:latest",
             }
         elif channel == "groq":
             defaults = {
-                "LLM_API_KEY": keys.get("GROQ_API_KEY") or keys.get("LLM_API_KEY") or "",
+                "LLM_API_KEY": keys.get("GROQ_API_KEY")
+                or keys.get("LLM_API_KEY")
+                or "",
                 "LLM_BASE_URL": "https://api.groq.com/openai/v1",
                 "LLM_MODEL": keys.get("LLM_MODEL") or "llama-3.1-8b-instant",
             }
         elif channel == "deepseek":
             defaults = {
                 "LLM_API_KEY": (
-                    keys.get("DEEPSEEK_API_KEY")
-                    or keys.get("LLM_API_KEY")
-                    or ""
+                    keys.get("DEEPSEEK_API_KEY") or keys.get("LLM_API_KEY") or ""
                 ),
                 "LLM_BASE_URL": "https://api.deepseek.com/v1",
                 "LLM_MODEL": keys.get("LLM_MODEL") or "deepseek-chat",
             }
         else:
             defaults = {
-                "LLM_API_KEY": keys.get("LLM_API_KEY") or keys.get("OPENAI_API_KEY") or "",
-                "LLM_BASE_URL": keys.get("LLM_BASE_URL") or "https://api.openai.com/v1",
+                "LLM_API_KEY": keys.get("LLM_API_KEY")
+                or keys.get("OPENAI_API_KEY")
+                or "",
+                "LLM_BASE_URL": keys.get("LLM_BASE_URL")
+                or "https://api.openai.com/v1",
                 "LLM_MODEL": keys.get("LLM_MODEL") or "gpt-4o-mini",
             }
+
+        ai_key_display = defaults["LLM_API_KEY"]
+        ai_key_configured = bool((ai_key_display or "").strip())
+        if ai_key_configured and channel != "ollama":
+            ai_key_display = ""
+        ai_status = ""
+        if ai_key_configured:
+            if (
+                key_loaded_from_environ("LLM_API_KEY")
+                or key_loaded_from_environ("GROQ_API_KEY")
+                or key_loaded_from_environ("DEEPSEEK_API_KEY")
+            ):
+                ai_status = "✓ 已从环境变量加载"
+            else:
+                ai_status = "✓ 已配置"
 
         ai_df = pd.DataFrame(
             [
                 {
                     "字段": "API Key",
                     "环境变量": "LLM_API_KEY",
-                    "说明": "Groq/DeepSeek/OpenAI/兼容网关；Ollama 填 ollama",
-                    "值": defaults["LLM_API_KEY"],
+                    "说明": "已配置请留空保留；Groq/DeepSeek/OpenAI；Ollama 填 ollama",
+                    "值": ai_key_display
+                    if channel != "ollama"
+                    else defaults["LLM_API_KEY"],
+                    "已配置": ai_status or "否",
                 },
                 {
                     "字段": "Base URL",
                     "环境变量": "LLM_BASE_URL",
                     "说明": "必须匹配通道（DeepSeek→api.deepseek.com/v1）",
                     "值": defaults["LLM_BASE_URL"],
+                    "已配置": "✓" if defaults["LLM_BASE_URL"] else "否",
                 },
                 {
                     "字段": "Model",
                     "环境变量": "LLM_MODEL",
                     "说明": "如 deepseek-chat / llama-3.1-8b-instant / gpt-4o-mini",
                     "值": defaults["LLM_MODEL"],
+                    "已配置": "✓" if defaults["LLM_MODEL"] else "否",
                 },
             ]
         )
@@ -463,29 +644,56 @@ def render_api_settings_panel() -> dict[str, Any]:
             ai_df,
             hide_index=True,
             use_container_width=True,
-            disabled=["字段", "环境变量", "说明"],
+            disabled=["字段", "环境变量", "说明", "已配置"],
             column_config={
                 "值": st.column_config.TextColumn("值", width="large"),
             },
             key="ai_api_editor",
         )
-        ai_vals = {
-            str(r["环境变量"]): str(r["值"] or "").strip() for _, r in ai_edited.iterrows()
-        }
-        if channel == "groq" and ai_vals.get("LLM_API_KEY"):
-            ai_vals["GROQ_API_KEY"] = ai_vals["LLM_API_KEY"]
-        if channel == "deepseek" and ai_vals.get("LLM_API_KEY"):
-            # So resolve_llm_config can infer DeepSeek even if Base URL was wiped
-            ai_vals["DEEPSEEK_API_KEY"] = ai_vals["LLM_API_KEY"]
+        ai_vals: dict[str, str] = {}
+        for _, r in ai_edited.iterrows():
+            ek = str(r["环境变量"])
+            raw = str(r["值"] or "").strip()
+            if ek == "LLM_API_KEY" and _looks_like_mask_or_placeholder(raw):
+                if defaults.get("LLM_API_KEY") and channel != "ollama":
+                    continue
+                if channel == "ollama":
+                    ai_vals[ek] = "ollama"
+                continue
+            if not raw and ek == "LLM_API_KEY" and defaults.get("LLM_API_KEY"):
+                continue
+            if raw:
+                ai_vals[ek] = raw
+        if channel == "groq" and (
+            ai_vals.get("LLM_API_KEY") or defaults.get("LLM_API_KEY")
+        ):
+            k = ai_vals.get("LLM_API_KEY") or defaults.get("LLM_API_KEY") or ""
+            if k:
+                ai_vals.setdefault("LLM_API_KEY", k)
+                ai_vals["GROQ_API_KEY"] = k
+            ai_vals.setdefault("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+        if channel == "deepseek" and (
+            ai_vals.get("LLM_API_KEY") or defaults.get("LLM_API_KEY")
+        ):
+            k = ai_vals.get("LLM_API_KEY") or defaults.get("LLM_API_KEY") or ""
+            if k:
+                ai_vals.setdefault("LLM_API_KEY", k)
+                ai_vals["DEEPSEEK_API_KEY"] = k
             ai_vals["LLM_BASE_URL"] = (
-                ai_vals.get("LLM_BASE_URL") or "https://api.deepseek.com/v1"
+                ai_vals.get("LLM_BASE_URL")
+                or defaults.get("LLM_BASE_URL")
+                or "https://api.deepseek.com/v1"
             )
             if "openai.com" in (ai_vals.get("LLM_BASE_URL") or ""):
                 ai_vals["LLM_BASE_URL"] = "https://api.deepseek.com/v1"
+        if channel == "ollama":
+            ai_vals.setdefault("LLM_API_KEY", defaults["LLM_API_KEY"])
+            ai_vals.setdefault("LLM_BASE_URL", defaults["LLM_BASE_URL"])
+            ai_vals.setdefault("LLM_MODEL", defaults["LLM_MODEL"])
 
         st.info(
             "Key **不会**写进报告正文，也不会自动上传。"
-            "若部署到公网 Streamlit，请改用服务端 Secrets，避免访客互抢额度。"
+            "若部署到公网 Streamlit，请改用服务端 Secrets / Railway Variables，避免访客互抢额度。"
         )
 
     with tab_status:
@@ -495,7 +703,20 @@ def render_api_settings_panel() -> dict[str, Any]:
             st.markdown("#### 本会话已填（脱敏）")
             st.dataframe(
                 pd.DataFrame(
-                    [{"环境变量": k, "值": _mask(v)} for k, v in sorted(sess.items()) if v]
+                    [
+                        {
+                            "环境变量": k,
+                            "值": _mask(v),
+                            "来源": sources.get(k)
+                            or (
+                                "已从环境变量加载"
+                                if key_loaded_from_environ(k)
+                                else "本会话"
+                            ),
+                        }
+                        for k, v in sorted(sess.items())
+                        if v
+                    ]
                 ),
                 hide_index=True,
                 use_container_width=True,
@@ -508,11 +729,9 @@ def render_api_settings_panel() -> dict[str, Any]:
     with c1:
         if st.button("应用到本会话", type="primary", use_container_width=True):
             _set_session_keys(merged)
-            st.success("已注入本会话环境，可直接跑流水线。注意：未点保存则刷新会丢。")
+            st.success("已注入本会话环境，可直接跑流水线。注意：未持久化则刷新会丢。")
     with c2:
-        save_label = (
-            "写入服务器磁盘（临时）" if cloud else "保存到本机 .env"
-        )
+        save_label = "写入服务器磁盘（临时）" if cloud else "保存到本机 .env"
         if st.button(save_label, use_container_width=True, disabled=False):
             nonempty = {k: v for k, v in merged.items() if (v or "").strip()}
             if not nonempty:
@@ -529,11 +748,16 @@ def render_api_settings_panel() -> dict[str, Any]:
                     for p in paths:
                         lines.append(f"- `{p}`")
                         verified = verify_env_file(p)
-                        nonempty_v = {k: m for k, m in verified.items() if m != "(empty)"}
+                        nonempty_v = {
+                            k: m for k, m in verified.items() if m != "(empty)"
+                        }
                         if nonempty_v:
                             lines.append(
                                 "  校验（脱敏）: "
-                                + ", ".join(f"{k}={m}" for k, m in list(nonempty_v.items())[:8])
+                                + ", ".join(
+                                    f"{k}={m}"
+                                    for k, m in list(nonempty_v.items())[:8]
+                                )
                             )
                     st.info("\n\n".join(lines))
                 except OSError as exc:
@@ -546,14 +770,21 @@ def render_api_settings_panel() -> dict[str, Any]:
                     for p in paths:
                         lines.append(f"- 绝对路径 `{p}`")
                         verified = verify_env_file(p)
-                        nonempty_v = {k: m for k, m in verified.items() if m != "(empty)"}
+                        nonempty_v = {
+                            k: m for k, m in verified.items() if m != "(empty)"
+                        }
                         if nonempty_v:
                             lines.append(
                                 "  回读校验: "
-                                + ", ".join(f"{k}={m}" for k, m in list(nonempty_v.items())[:12])
+                                + ", ".join(
+                                    f"{k}={m}"
+                                    for k, m in list(nonempty_v.items())[:12]
+                                )
                             )
                         else:
-                            lines.append("  回读校验: （文件存在但无私钥字段 — 请检查）")
+                            lines.append(
+                                "  回读校验: （文件存在但无私钥字段 — 请检查）"
+                            )
                     st.success("\n\n".join(lines))
                 except OSError as exc:
                     st.error(f"本机写入失败：{exc}")
@@ -567,7 +798,6 @@ def render_api_settings_panel() -> dict[str, Any]:
             + " 空白表单不会覆盖已有非空 Key。"
         )
 
-    # Always offer a Mac-side copy, especially useful on Railway.
     dl_keys = {k: v for k, v in merged.items() if (v or "").strip()}
     if dl_keys:
         st.download_button(
@@ -578,7 +808,8 @@ def render_api_settings_panel() -> dict[str, Any]:
             use_container_width=True,
             help=(
                 "把文件存到仓库根目录，或合并进 "
-                "/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env"
+                "/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env；"
+                "下次可在网页「上传 .env」恢复本会话"
             ),
         )
 

@@ -84,3 +84,31 @@ def test_write_env_omits_blank_keys(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert "FRED_API_KEY=x" in text
     assert "NEWSAPI_KEY=" not in text
+
+
+def test_parse_env_bytes_skips_empty_and_comments():
+    raw = b"# comment\nFRED_API_KEY=abc123\nNEWSAPI_KEY=\nexport TAVILY_API_KEY='tvly'\n"
+    parsed = ac.parse_env_bytes(raw)
+    assert parsed["FRED_API_KEY"] == "abc123"
+    assert parsed["TAVILY_API_KEY"] == "tvly"
+    assert "NEWSAPI_KEY" not in parsed
+
+
+def test_railway_checklist_names_only_no_values():
+    text = ac.railway_variables_checklist(
+        only_set_in={"FRED_API_KEY": "secret-should-not-appear", "NEWSAPI_KEY": ""}
+    )
+    assert "FRED_API_KEY" in text
+    assert "secret-should-not-appear" not in text
+    assert "SET\tFRED_API_KEY" in text
+    assert "—\tNEWSAPI_KEY" in text
+    assert "push_env_to_railway.sh" in text
+
+
+def test_configured_key_sources_from_environ(monkeypatch):
+    monkeypatch.setenv("FRED_API_KEY", "from-railway")
+    monkeypatch.delenv("NEWSAPI_KEY", raising=False)
+    cfg = {"FRED_API_KEY": "from-railway", "NEWSAPI_KEY": ""}
+    sources = ac.configured_key_sources(cfg)
+    assert sources["FRED_API_KEY"] == "已从环境变量加载"
+    assert "NEWSAPI_KEY" not in sources

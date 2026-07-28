@@ -130,9 +130,14 @@ streamlit run app.py
 2. 付费/增强 Key 表（空着跳过）
 3. AI API（Ollama / Groq / OpenAI 兼容）
 4. **本机** Streamlit：点「保存到本机 .env」写入 vault + 仓库 `.env`（gitignore）
-5. **Railway 公网站**：不要指望「保存到本机」——那只会写服务器临时盘；请用 **Variables**，或点「下载 .env」存到 Mac
+5. **Railway 公网站**：
+   - **关掉网页再开还在** → 必须把 Key 写到 **Railway → Variables**（一次）。页面「生成 Railway 变量清单」只列变量名。
+   - 本机已有 `.env` 时可：`./scripts/push_env_to_railway.sh`（不打印 Key）
+   - 临时恢复：点「下载 .env」存 Mac → 下次打开网页用「从本机 .env 上传」恢复本会话
+   - 「写入服务器磁盘」只写容器临时盘，**redeploy 后丢失**；Mac 上的 `.env` **不会**被网站自动读取
 
-Key 本机默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env` 与仓库 `.env`（`FX_API_ENV_PATH` / `FX_API_ROOT` 可覆盖）。
+Key 本机默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env` 与仓库 `.env`（`FX_API_ENV_PATH` / `FX_API_ROOT` 可覆盖）。  
+云端启动时从 `os.environ`（Railway Variables）加载，表格「已配置」显示「已从环境变量加载」。
 
 ## 输出
 
