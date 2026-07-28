@@ -8,6 +8,7 @@ output/
 .env
 .env.*
 !.env.example
+.fx_vault/
 
 # Copyrighted textbook / papers (local reference only — do not push)
 docs/refs/*.pdf

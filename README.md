@@ -129,9 +129,10 @@ streamlit run app.py
 1. 免费申请指引（FRED / NewsAPI / …）
 2. 付费/增强 Key 表（空着跳过）
 3. AI API（Ollama / Groq / OpenAI 兼容）
-4. 可「保存到本机 vault `.env`」（勿提交 git）
+4. **本机** Streamlit：点「保存到本机 .env」写入 vault + 仓库 `.env`（gitignore）
+5. **Railway 公网站**：不要指望「保存到本机」——那只会写服务器临时盘；请用 **Variables**，或点「下载 .env」存到 Mac
 
-Key 默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env`（可用环境变量 `FX_API_ENV_PATH` 覆盖）。
+Key 本机默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env` 与仓库 `.env`（`FX_API_ENV_PATH` / `FX_API_ROOT` 可覆盖）。
 
 ## 输出
 

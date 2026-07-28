@@ -47,6 +47,8 @@ git push
 4. **Settings → Networking → Generate Domain**（得到 `https://xxxx.up.railway.app`）  
 5. **Variables** 里按需添加（有就填，没有可空）：
 
+> **重要：** 在 Railway 网站上点「保存到本机 .env」**不会**写到你的 Mac，只写容器临时磁盘，**redeploy 后丢失**。云端请把 Key 配进 Variables；或本机 `streamlit run` 后再保存；或用页面「下载 .env」。
+
 | 变量 | 说明 |
 |------|------|
 | `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **产品共享访问密钥**；镜像默认 `uniocean`。平台 Variables 可覆盖。 |

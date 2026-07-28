@@ -5,7 +5,7 @@ Streamlit：API 申请指引 + 表格填 Key（行情 / 搜索 / AI）。
 - 付费/增强：表格填写
 - AI：单独表格（Ollama / Groq / 自定义 OpenAI 兼容）
 填写后写入 session，并注入 os.environ，供 pipeline 立即使用。
-可选「保存到本机 vault .env」（不进 git）。
+本机可落盘 vault + 仓库 .env；Railway/云端请用 Variables + 下载 .env。
 """
 
 from __future__ import annotations
@@ -18,12 +18,17 @@ import streamlit as st
 from fx_report.config.api_config import (
     PROVIDERS,
     apply_runtime_overrides,
+    env_file_download_bytes,
     env_path,
+    is_cloud_runtime,
     is_set,
     load_config,
+    mask_secret,
+    merge_nonempty,
     project_env_path,
     save_keys_to_local,
     status_text,
+    verify_env_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -171,20 +176,23 @@ PAID_OR_OPTIONAL: list[dict[str, str]] = [
 
 
 def _mask(v: str) -> str:
-    v = (v or "").strip()
-    if not v:
-        return ""
-    if len(v) <= 8:
-        return "••••"
-    return v[:4] + "…" + v[-4:]
+    return mask_secret(v) if (v or "").strip() else ""
 
 
 def _session_keys() -> dict[str, str]:
     return dict(st.session_state.get("api_keys_ui") or {})
 
 
-def _set_session_keys(keys: dict[str, str]) -> None:
-    cleaned = {k: (v or "").strip() for k, v in keys.items() if k}
+def _set_session_keys(keys: dict[str, str], *, wipe_empty: bool = False) -> None:
+    """
+    Update session + os.environ.
+    By default, blank form fields do NOT wipe already-filled keys (bug fix).
+    """
+    prev = _session_keys()
+    if wipe_empty:
+        cleaned = {k: (v or "").strip() for k, v in keys.items() if k and (v or "").strip()}
+    else:
+        cleaned = merge_nonempty(prev, keys)
     st.session_state["api_keys_ui"] = cleaned
     apply_runtime_overrides(cleaned)
 
@@ -262,18 +270,36 @@ def render_api_settings_panel() -> dict[str, Any]:
     if "api_keys_ui" not in st.session_state:
         st.session_state["api_keys_ui"] = _seed_from_vault()
 
+    cloud = is_cloud_runtime()
     st.subheader("API 配置")
+    if cloud:
+        st.error(
+            "当前是 **Railway / 云端网站**，不是你的 Mac。"
+            "页面上的「保存」只会写到**服务器容器磁盘**，**不会**写到你电脑的 "
+            "`fx_data_apis/.env` 或仓库 `.env`；重新部署后容器文件会丢。"
+            "请把 Key 配到 **Railway → Variables**，或点下方 **下载 .env** 存到本机。"
+        )
     st.caption(
         "免费按指引申请；付费/AI 有 Key 再填。空=跳过。"
-        "「应用到本会话」刷新即丢；点「保存 API 到本机 .env」才会落盘（已 gitignore，勿提交）。"
+        + (
+            "云端请用 Railway Variables；本会话 Key 刷新即丢。"
+            if cloud
+            else "「应用到本会话」刷新即丢；点「保存到本机 .env」才会写入 Mac 上的 vault + 仓库 .env（已 gitignore）。"
+        )
     )
     vault_cfg = load_config()
     disk_on = [k for k in PROVIDERS if is_set(vault_cfg, k)]
     if not disk_on:
-        st.warning(
-            "本机 `.env` / vault 里目前没有行情/新闻 Key。"
-            "填表后务必点 **保存 API 到本机 .env**，否则刷新或重启 Streamlit 会全部丢失。"
-        )
+        if cloud:
+            st.warning(
+                "服务器进程环境 / Variables 里目前没有行情/新闻 Key。"
+                "请在 Railway Variables 填写，或本机跑 Streamlit 后再保存到 Mac。"
+            )
+        else:
+            st.warning(
+                "本机 `.env` / vault 里目前没有行情/新闻 Key。"
+                "填表后务必点 **保存到本机 .env**，否则刷新或重启 Streamlit 会全部丢失。"
+            )
 
     tab_free, tab_paid, tab_ai, tab_status = st.tabs(
         ["① 免费申请指引", "② 付费/增强 Key 表", "③ AI API", "④ 当前状态"]
@@ -428,10 +454,8 @@ def render_api_settings_panel() -> dict[str, Any]:
                 use_container_width=True,
             )
 
-    merged = dict(_session_keys())
-    merged.update(free_vals)
-    merged.update(paid_vals)
-    merged.update(ai_vals)
+    # Merge editor output without letting blanks wipe already-filled keys.
+    merged = merge_nonempty(_session_keys(), {**free_vals, **paid_vals, **ai_vals})
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
@@ -439,21 +463,76 @@ def render_api_settings_panel() -> dict[str, Any]:
             _set_session_keys(merged)
             st.success("已注入本会话环境，可直接跑流水线。注意：未点保存则刷新会丢。")
     with c2:
-        if st.button("保存 API 到本机 .env", use_container_width=True):
+        save_label = (
+            "写入服务器磁盘（临时）" if cloud else "保存到本机 .env"
+        )
+        if st.button(save_label, use_container_width=True, disabled=False):
             nonempty = {k: v for k, v in merged.items() if (v or "").strip()}
             if not nonempty:
                 st.error("表格里没有非空 Key，无法保存。请先粘贴再点保存。")
-            else:
-                _set_session_keys(merged)
-                paths = save_keys_to_local(merged)
-                st.success(
-                    "已写入本机（gitignore，勿提交）：\n\n"
-                    + "\n".join(f"- `{p}`" for p in paths)
+            elif cloud:
+                st.warning(
+                    "云端写入**不会**到达你的 Mac。下面会写服务器临时盘并给出校验；"
+                    "请同时 **下载 .env**，或把同样的变量配进 Railway Variables。"
                 )
+                try:
+                    paths = save_keys_to_local(nonempty)
+                    _set_session_keys(nonempty)
+                    lines = ["已写入**服务器容器**（redeploy 会丢）："]
+                    for p in paths:
+                        lines.append(f"- `{p}`")
+                        verified = verify_env_file(p)
+                        nonempty_v = {k: m for k, m in verified.items() if m != "(empty)"}
+                        if nonempty_v:
+                            lines.append(
+                                "  校验（脱敏）: "
+                                + ", ".join(f"{k}={m}" for k, m in list(nonempty_v.items())[:8])
+                            )
+                    st.info("\n\n".join(lines))
+                except OSError as exc:
+                    st.error(f"服务器写入失败：{exc}")
+            else:
+                try:
+                    _set_session_keys(nonempty)
+                    paths = save_keys_to_local(nonempty)
+                    lines = ["已写入本机（gitignore，勿提交）："]
+                    for p in paths:
+                        lines.append(f"- 绝对路径 `{p}`")
+                        verified = verify_env_file(p)
+                        nonempty_v = {k: m for k, m in verified.items() if m != "(empty)"}
+                        if nonempty_v:
+                            lines.append(
+                                "  回读校验: "
+                                + ", ".join(f"{k}={m}" for k, m in list(nonempty_v.items())[:12])
+                            )
+                        else:
+                            lines.append("  回读校验: （文件存在但无私钥字段 — 请检查）")
+                    st.success("\n\n".join(lines))
+                except OSError as exc:
+                    st.error(f"本机写入失败：{exc}")
     with c3:
         st.caption(
-            f"落盘位置：vault `{env_path()}` 与仓库 `{project_env_path()}`。"
-            "只点「应用到本会话」不会写盘。"
+            (
+                "云端落盘仅限容器；持久化请用 Railway Variables。"
+                if cloud
+                else f"落盘：vault `{env_path()}` 与仓库 `{project_env_path()}`。"
+            )
+            + " 空白表单不会覆盖已有非空 Key。"
+        )
+
+    # Always offer a Mac-side copy, especially useful on Railway.
+    dl_keys = {k: v for k, v in merged.items() if (v or "").strip()}
+    if dl_keys:
+        st.download_button(
+            label="下载 .env 到我的电脑",
+            data=env_file_download_bytes(dl_keys),
+            file_name=".env",
+            mime="text/plain",
+            use_container_width=True,
+            help=(
+                "把文件存到仓库根目录，或合并进 "
+                "/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env"
+            ),
         )
 
     _set_session_keys(merged)
