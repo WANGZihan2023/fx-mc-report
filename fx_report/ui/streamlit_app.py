@@ -370,6 +370,32 @@ def render_spot_panel(spec: PairSpec, bullish: str, lookback_days: int) -> dict:
     return spot_row
 
 
+# Relative-cut number_input bounds (NOT the default cuts).
+_PCT_CUT_MIN = -20.0
+_PCT_CUT_MAX = 50.0
+
+
+def _default_pct_cuts(base: ModelWeights) -> list[float]:
+    return [float(x) for x in base.bucket_pct_cuts]
+
+
+def _apply_pct_cuts_to_session(
+    analysis_pair: str,
+    pct_key: str,
+    abs_key: str,
+    cuts: list[float],
+    spot: float | None,
+) -> None:
+    st.session_state[pct_key] = [float(x) for x in cuts]
+    for i, v in enumerate(cuts):
+        st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(v)
+    if spot is not None:
+        abs_edges = list(edges_from_spot(spot, tuple(cuts)))  # type: ignore[arg-type]
+        st.session_state[abs_key] = abs_edges
+        for i, e in enumerate(abs_edges):
+            st.session_state[f"abs_cut_{analysis_pair}_{i}"] = float(e)
+
+
 def render_bucket_editor(
     base: ModelWeights,
     spot: float | None,
@@ -379,11 +405,14 @@ def render_bucket_editor(
     Main-area bucket edges. 4 cut points → 5 Torchcast-style buckets.
     Returns (use_relative, pct_cuts, abs_edges).
     """
+    defaults = _default_pct_cuts(base)
     st.subheader("概率区间（自己设边界）")
     st.caption(
         "4 个边界 → 5 个区间（与 FX Analyse 一致）："
         "`< e1` · `e1–e2` · `e2–e3` · `e3–e4` · `≥ e4`。"
         "运行分析后，蒙特卡洛概率与 PDF 都用这套边界。"
+        f" 相对模式默认是 **+{defaults[0]:g} / +{defaults[1]:g} / +{defaults[2]:g} / +{defaults[3]:g}%**"
+        f"（相对现价）；**-20 只是输入下限**，不是默认值。"
     )
 
     mode_key = f"bucket_mode::{analysis_pair}"
@@ -392,7 +421,7 @@ def render_bucket_editor(
     seeded_key = f"abs_seeded_from_spot::{analysis_pair}"
 
     if pct_key not in st.session_state:
-        st.session_state[pct_key] = [float(x) for x in base.bucket_pct_cuts]
+        st.session_state[pct_key] = list(defaults)
 
     if abs_key not in st.session_state:
         if spot is not None:
@@ -414,7 +443,8 @@ def render_bucket_editor(
     for i, v in enumerate(st.session_state[pct_key]):
         wk = f"pct_cut_{analysis_pair}_{i}"
         if wk not in st.session_state:
-            st.session_state[wk] = float(v)
+            # Keep widget seeds inside number_input bounds (avoid silent clamp to -20).
+            st.session_state[wk] = float(min(_PCT_CUT_MAX, max(_PCT_CUT_MIN, float(v))))
     for i, v in enumerate(st.session_state[abs_key]):
         wk = f"abs_cut_{analysis_pair}_{i}"
         if wk not in st.session_state:
@@ -436,6 +466,27 @@ def render_bucket_editor(
     )
     use_rel = mode == "相对现价"
 
+    # Heal sessions stuck at the relative-input floor after abs→pct overflow clamp.
+    pct_widget_vals = [
+        float(st.session_state.get(f"pct_cut_{analysis_pair}_{i}", defaults[i]))
+        for i in range(4)
+    ]
+    if use_rel and all(abs(v - _PCT_CUT_MIN) < 1e-9 for v in pct_widget_vals):
+        _apply_pct_cuts_to_session(analysis_pair, pct_key, abs_key, defaults, spot)
+        st.warning(
+            "相对涨幅曾全部落在下限 **-20%**（常见原因：绝对价位与当前分析现价口径不一致，"
+            "换算后的相对%超出输入框范围被钳住）。已恢复默认 "
+            f"**+{defaults[0]:g}/+{defaults[1]:g}/+{defaults[2]:g}/+{defaults[3]:g}%**。"
+        )
+
+    reset = st.button(
+        f"恢复默认相对涨幅 +{defaults[0]:g}/+{defaults[1]:g}/+{defaults[2]:g}/+{defaults[3]:g}%",
+        key=f"reset_pct_cuts::{analysis_pair}",
+        help="-20 不是默认；点此重置四个相对边界。",
+    )
+    if reset:
+        _apply_pct_cuts_to_session(analysis_pair, pct_key, abs_key, defaults, spot)
+
     cols = st.columns(4)
     if use_rel:
         pcts: list[float] = []
@@ -445,16 +496,24 @@ def render_bucket_editor(
                     float(
                         st.number_input(
                             f"相对涨幅 {i + 1}（相对现价 +%）",
-                            min_value=-20.0,
-                            max_value=50.0,
+                            min_value=_PCT_CUT_MIN,
+                            max_value=_PCT_CUT_MAX,
                             step=0.5,
                             key=f"pct_cut_{analysis_pair}_{i}",
-                            help="填上涨百分比，不是汇率本身。例：现价 1.43、填 2 → 边界 ≈ 1.4586。",
+                            help=(
+                                "填相对现价的上涨百分比，不是汇率。例：现价 1.43、填 2 → 边界≈1.4586。"
+                                f"可调范围 {_PCT_CUT_MIN:g}%～{_PCT_CUT_MAX:g}%；"
+                                f"默认 +{defaults[0]:g}/+{defaults[1]:g}/+{defaults[2]:g}/+{defaults[3]:g}。"
+                            ),
                         )
                     )
                 )
         st.caption(
-            "填的是相对现价的上涨百分比；例如现价 1.43、填 2 → 边界≈1.4586；不是直接填汇率。"
+            f"填的是相对现价的上涨百分比（默认 +{defaults[0]:g}/+{defaults[1]:g}/"
+            f"+{defaults[2]:g}/+{defaults[3]:g}）；"
+            f"输入框允许 {_PCT_CUT_MIN:g}%～{_PCT_CUT_MAX:g}%——"
+            f"**看到 -20 多半是下限，不是默认档位**。"
+            " 例：现价 1.43、填 2 → 边界≈1.4586。"
         )
         pct_cuts = tuple(sorted(pcts))  # type: ignore[assignment]
         st.session_state[pct_key] = list(pct_cuts)
@@ -487,12 +546,22 @@ def render_bucket_editor(
         abs_edges = tuple(sorted(abss))  # type: ignore[assignment]
         st.session_state[abs_key] = list(abs_edges)
         if spot is not None and spot > 0:
-            pct_cuts = tuple(  # type: ignore[assignment]
-                sorted((e / spot - 1.0) * 100.0 for e in abs_edges)
-            )
+            raw_pcts = [(e / spot - 1.0) * 100.0 for e in abs_edges]
+            pct_cuts = tuple(sorted(raw_pcts))  # type: ignore[assignment]
             st.session_state[pct_key] = list(pct_cuts)
-            for i, p in enumerate(pct_cuts):
-                st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(p)
+            # Do NOT push out-of-range % into relative widgets — Streamlit would
+            # clamp them all to min_value (-20) and poison the next relative view.
+            if all(_PCT_CUT_MIN <= p <= _PCT_CUT_MAX for p in raw_pcts):
+                for i, p in enumerate(pct_cuts):
+                    st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(p)
+            else:
+                lo, hi = min(raw_pcts), max(raw_pcts)
+                st.warning(
+                    f"当前绝对边界相对现价约 {lo:+.1f}%～{hi:+.1f}%，"
+                    f"超出相对模式可编辑范围（{_PCT_CUT_MIN:g}%～{_PCT_CUT_MAX:g}%）。"
+                    "请继续用「绝对价位」，或点上方「恢复默认相对涨幅」后再切回相对模式。"
+                    "（勿把 AUD/USD 价位填进 USD/AUD 分析口径。）"
+                )
         else:
             pct_cuts = tuple(float(x) for x in st.session_state[pct_key])  # type: ignore[assignment]
 
