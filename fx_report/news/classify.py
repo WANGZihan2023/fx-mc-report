@@ -283,6 +283,23 @@ def classify_headline(
     )
 
 
+def rules_direction_guess(
+    text: str,
+    pair: PairSpec | str,
+) -> tuple[int | None, str]:
+    """
+    Keyword-only direction/category guess (for HITL rules-vs-LLM conflict checks).
+    Returns (direction or None, category). Does not invent headlines.
+    """
+    spec = get_pair(pair) if isinstance(pair, str) else pair
+    blob = (text or "").strip()
+    if not blob:
+        return None, "other"
+    category = _category(blob)
+    direction = _direction_for_pair(spec, category, blob)
+    return direction, category
+
+
 def pair_relevance(text: str, pair: str) -> float:
     """Higher = more relevant to this pair; used to rank / filter before classification."""
     t = text.lower()

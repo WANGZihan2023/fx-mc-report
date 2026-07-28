@@ -54,6 +54,7 @@ from fx_report.model.weights import (
 
 ClassifyMode = Literal["hybrid", "llm", "rules"]
 TemplatePolicy = Literal["off", "prior_only", "fallback_warn"]
+HumanReviewMode = Literal["off", "pause", "auto_skip"]
 
 # Prior templates: mark + downweight so they cannot pass as news-driven.
 _PRIOR_STRENGTH_MULT = 0.5
@@ -174,6 +175,217 @@ class PipelineResult:
         paths["html"] = tc_paths["html"]
         paths["pdf"] = tc_paths["pdf"]
         return paths
+
+
+@dataclass
+class PipelineCheckpoint:
+    """
+    Phase A 产物：抓取+分类+聚类完成，赋权/MC/报告之前可暂停等人审。
+    可序列化进 Streamlit session_state，刷新后尽量恢复。
+    """
+
+    pair: str
+    bullish_currency: str
+    stage_log: list[str]
+    info_needs: list[InfoNeed]
+    market: MarketSnapshot
+    statements: list[StoredStatement]
+    headlines: list[Headline]
+    evidence: list[EvidenceItem]
+    news_meta: dict[str, Any]
+    weights: ModelWeights
+    pending_reviews: list[Any]  # PendingReview（避免循环 import 用 Any）
+    variance_reduction: str = "none"
+    as_of_date: str | None = None
+    display_pair: str = ""
+    ticker: str | None = None
+    invert: bool = False
+    cal_source: str = "default"
+
+    def to_session_dict(self) -> dict[str, Any]:
+        from fx_report.model.human_review import PendingReview
+
+        return {
+            "pair": self.pair,
+            "bullish_currency": self.bullish_currency,
+            "stage_log": list(self.stage_log),
+            "info_needs": [n.to_dict() for n in self.info_needs],
+            "market": self.market.to_dict(),
+            "statements": [s.to_dict() for s in self.statements],
+            "headlines": [h.to_dict() for h in self.headlines],
+            "evidence": [asdict(e) for e in self.evidence],
+            "news_meta": dict(self.news_meta),
+            "weights": self.weights.to_dict(),
+            "pending_reviews": [
+                p.to_dict() if hasattr(p, "to_dict") else dict(p)
+                for p in self.pending_reviews
+            ],
+            "variance_reduction": self.variance_reduction,
+            "as_of_date": self.as_of_date,
+            "display_pair": self.display_pair or self.pair,
+            "ticker": self.ticker,
+            "invert": bool(self.invert),
+            "cal_source": self.cal_source,
+            "_schema": "PipelineCheckpoint.v1",
+        }
+
+    @classmethod
+    def from_session_dict(cls, raw: dict[str, Any]) -> "PipelineCheckpoint":
+        from fx_report.model.human_review import PendingReview
+        from fx_report.model.weights import ScenarioSpec
+
+        market_d = dict(raw.get("market") or {})
+        market = MarketSnapshot(
+            asof=str(market_d.get("asof") or ""),
+            pair=str(market_d.get("pair") or raw.get("pair") or ""),
+            spot=float(market_d.get("spot") or 0.0),
+            provider_raw=float(market_d.get("provider_raw") or market_d.get("spot") or 0.0),
+            sigma_daily=float(market_d.get("sigma_daily") or 0.01),
+            sigma_annual=float(market_d.get("sigma_annual") or 0.16),
+            mean_daily_return=float(market_d.get("mean_daily_return") or 0.0),
+            n_returns=int(market_d.get("n_returns") or 0),
+            lookback_days=int(market_d.get("lookback_days") or 60),
+            history_start=str(market_d.get("history_start") or ""),
+            history_end=str(market_d.get("history_end") or ""),
+            source=str(market_d.get("source") or ""),
+            brent=market_d.get("brent"),
+            dxy_proxy=market_d.get("dxy_proxy"),
+            notes=list(market_d.get("notes") or []),
+            ret_1d=market_d.get("ret_1d"),
+            ret_5d=market_d.get("ret_5d"),
+            ret_20d=market_d.get("ret_20d"),
+            sigma_20d_ann=market_d.get("sigma_20d_ann"),
+            sigma_60d_ann=market_d.get("sigma_60d_ann"),
+            history_ticker=str(market_d.get("history_ticker") or ""),
+            spot_ticker=str(market_d.get("spot_ticker") or ""),
+            used_proxy=bool(market_d.get("used_proxy", False)),
+            cnh_cny_basis=market_d.get("cnh_cny_basis"),
+        )
+        info_needs = [
+            InfoNeed(
+                id=str(n.get("id") or ""),
+                need=str(n.get("need") or ""),
+                why=str(n.get("why") or ""),
+                sources=str(n.get("sources") or ""),
+                driver=str(n.get("driver") or ""),
+            )
+            for n in (raw.get("info_needs") or [])
+        ]
+        statements = [
+            StoredStatement(
+                id=str(s.get("id") or ""),
+                statement=str(s.get("statement") or ""),
+                source=str(s.get("source") or ""),
+                url=str(s.get("url") or ""),
+                provider=str(s.get("provider") or ""),
+                published=s.get("published"),
+                related_drivers=list(s.get("related_drivers") or []),
+                raw=dict(s.get("raw") or {}),
+                cluster_id=str(s.get("cluster_id") or ""),
+            )
+            for s in (raw.get("statements") or [])
+        ]
+        headlines: list[Headline] = []
+        for h in raw.get("headlines") or []:
+            pub = h.get("published")
+            pub_dt: datetime | None = None
+            if pub:
+                try:
+                    pub_dt = datetime.fromisoformat(str(pub).replace("Z", "+00:00"))
+                except Exception:
+                    pub_dt = None
+            headlines.append(
+                Headline(
+                    title=str(h.get("title") or ""),
+                    summary=str(h.get("summary") or ""),
+                    source=str(h.get("source") or ""),
+                    url=str(h.get("url") or ""),
+                    published=pub_dt,
+                    provider=str(h.get("provider") or ""),
+                )
+            )
+        evidence: list[EvidenceItem] = []
+        for row in raw.get("evidence") or []:
+            evidence.append(
+                EvidenceItem(
+                    id=str(row.get("id") or ""),
+                    title=str(row.get("title") or ""),
+                    direction=int(row.get("direction") or 0),
+                    strength=float(row.get("strength") or 0.0),
+                    freshness=float(row.get("freshness") if row.get("freshness") is not None else 1.0),
+                    unpriced=float(row.get("unpriced") if row.get("unpriced") is not None else 1.0),
+                    category=str(row.get("category") or "other"),
+                    note=str(row.get("note") or ""),
+                    strength_label=str(row.get("strength_label") or ""),
+                    strength_breakdown=dict(row.get("strength_breakdown") or {}),
+                    source_tier=str(row.get("source_tier") or ""),
+                    surprise=str(row.get("surprise") or ""),
+                    scope=str(row.get("scope") or ""),
+                    statement_id=str(row.get("statement_id") or ""),
+                    url=str(row.get("url") or ""),
+                    is_prior=bool(row.get("is_prior", False)),
+                    cluster_id=str(row.get("cluster_id") or ""),
+                    cluster_size=int(row.get("cluster_size") or 1),
+                    cluster_role=str(row.get("cluster_role") or ""),
+                )
+            )
+        wraw = dict(raw.get("weights") or {})
+        scenarios = [
+            ScenarioSpec(
+                name=str(s.get("name") or ""),
+                weight=float(s.get("weight") or 0.0),
+                mu_annual=float(s.get("mu_annual") or 0.0),
+                sigma_mult=float(s.get("sigma_mult") or 1.0),
+                expected_jumps=float(s.get("expected_jumps") or 0.0),
+                jump_mean=float(s.get("jump_mean") or 0.0),
+                jump_std=float(s.get("jump_std") or 0.0),
+                narrative=str(s.get("narrative") or ""),
+            )
+            for s in (wraw.get("scenarios") or [])
+        ]
+        weights = ModelWeights(
+            n_sims=int(wraw.get("n_sims") or 100_000),
+            seed=int(wraw.get("seed") or 42),
+            trading_days=int(wraw.get("trading_days") or 66),
+            vol_lookback_days=int(wraw.get("vol_lookback_days") or 60),
+            bucket_edges=tuple(wraw.get("bucket_edges") or (1.40, 1.43, 1.46, 1.49)),  # type: ignore[arg-type]
+            use_relative_buckets=bool(wraw.get("use_relative_buckets", True)),
+            bucket_pct_cuts=tuple(wraw.get("bucket_pct_cuts") or (0.0, 2.0, 4.0, 6.0)),  # type: ignore[arg-type]
+            score_to_mu_a=float(wraw.get("score_to_mu_a") or 0.012),
+            score_to_sigma_b=float(wraw.get("score_to_sigma_b") or 0.035),
+            scenario_temperature=float(wraw.get("scenario_temperature") or 1.0),
+            max_scenario_shift=float(wraw.get("max_scenario_shift") or 0.18),
+            evidence_logit_scale=float(wraw.get("evidence_logit_scale") or 0.08),
+            peak_engine=str(wraw.get("peak_engine") or "path_max"),
+            jump_model=str(wraw.get("jump_model") or "merton"),
+            jump_compensate=bool(wraw.get("jump_compensate", False)),
+            vol_estimator=str(wraw.get("vol_estimator") or "window"),
+            ewma_lambda=float(wraw.get("ewma_lambda") or 0.94),
+            drift_mode=str(wraw.get("drift_mode") or "scenario"),
+            carry_mu_annual=float(wraw.get("carry_mu_annual") or 0.0),
+            scenarios=scenarios,
+            evidence=list(evidence),
+        )
+        pending = [PendingReview.from_dict(p) for p in (raw.get("pending_reviews") or [])]
+        return cls(
+            pair=str(raw.get("pair") or market.pair),
+            bullish_currency=str(raw.get("bullish_currency") or ""),
+            stage_log=list(raw.get("stage_log") or []),
+            info_needs=info_needs,
+            market=market,
+            statements=statements,
+            headlines=headlines,
+            evidence=evidence,
+            news_meta=dict(raw.get("news_meta") or {}),
+            weights=weights,
+            pending_reviews=pending,
+            variance_reduction=str(raw.get("variance_reduction") or "none"),
+            as_of_date=raw.get("as_of_date"),
+            display_pair=str(raw.get("display_pair") or raw.get("pair") or ""),
+            ticker=raw.get("ticker"),
+            invert=bool(raw.get("invert", False)),
+            cal_source=str(raw.get("cal_source") or "default"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -837,7 +1049,11 @@ def run_pipeline(
     calibrated_params_label: str | None = None,
     use_label_learned_strength: bool = False,
     as_of_date: date | datetime | str | None = None,
-) -> PipelineResult:
+    human_review_mode: HumanReviewMode = "auto_skip",
+    max_uncertain: int = 5,
+    review_overrides: dict[str, Any] | None = None,
+    _phase_a_only: bool = False,
+) -> PipelineResult | PipelineCheckpoint:
     """跑完整七步；可选写入 output/。
 
     `model_weights`：UI 传入时，在默认权重上覆盖分档切点 / 映射 / 情景 / 模板证据等，
@@ -846,6 +1062,14 @@ def run_pipeline(
     `calibrated_params_path`：可选 Stage-1 JSON，覆盖 score_to_* / 情景先验等。
     `template_policy`：off（默认，无静默模板）/ prior_only / fallback_warn。
     `use_label_learned_strength`：若 label_audit 标注 ≥N 条，用类别强度倍率缩放证据。
+
+    人机协同（不确定证据）：
+      human_review_mode:
+        off        — 不检测，直接赋权
+        auto_skip  — 检测并记入日志/meta，保留模型方向继续（CLI 默认）
+        pause      — 有 pending 且无 overrides 时返回 PipelineCheckpoint
+      review_overrides: {evidence_id|statement_id → up|down|neutral|skip}
+      `_phase_a_only`：Phase A 专用；返回 checkpoint（不跑 MC）。
     """
     log: list[str] = []
 
@@ -880,12 +1104,10 @@ def run_pipeline(
     cal_source = "default"
     if calibrated_params_label:
         cal_source = str(calibrated_params_label)
-    # Prefer explicit path; else output/ then bundled fx_report/data/calibrated/
     cal_path: Path | None = None
     if calibrated_params_path:
         cal_path = Path(calibrated_params_path)
     elif model_weights is None:
-        # CLI / default path: auto-load bundled or local overnight refresh
         from fx_report.model.calibrate import resolve_calibrated_params_path
 
         cal_path = resolve_calibrated_params_path(spec.pair)
@@ -1033,7 +1255,6 @@ def run_pipeline(
         f"fallback_templates={news_meta.get('fallback_templates')}"
     )
 
-    # Optional Stage-3: scale strength from accumulated human labels
     label_learn_meta: dict[str, Any] = {
         "requested": bool(use_label_learned_strength),
         "applied": False,
@@ -1067,6 +1288,182 @@ def run_pipeline(
         else:
             say(f"  → 标签学习强度未启用：{learned.message}")
     news_meta["label_learn"] = label_learn_meta
+
+    # 4b · 不确定证据（人机协同，赋权前）
+    from fx_report.model.human_review import (
+        detect_uncertain_evidence,
+        direction_zh,
+    )
+
+    pending: list[Any] = []
+    if human_review_mode != "off":
+        pending = detect_uncertain_evidence(
+            evidence,
+            pair=spec.pair,
+            max_items=int(max_uncertain),
+        )
+    news_meta["pending_reviews"] = [p.to_dict() for p in pending]
+    news_meta["human_review"] = {
+        "mode": human_review_mode,
+        "n_pending": len(pending),
+        "auto_skipped": False,
+        "n_overridden": 0,
+    }
+    if pending:
+        say(f"  → 不确定证据 {len(pending)} 条（上限 {max_uncertain}）")
+        for p in pending:
+            say(
+                f"    · {p.evidence_id}: {', '.join(p.reasons_zh)}｜"
+                f"模型={direction_zh(p.model_direction)}｜{p.title[:56]}"
+            )
+    as_of_s: str | None = None
+    if as_of_date is not None:
+        if isinstance(as_of_date, datetime):
+            as_of_s = as_of_date.date().isoformat()
+        elif isinstance(as_of_date, date):
+            as_of_s = as_of_date.isoformat()
+        else:
+            as_of_s = str(as_of_date).split("T", 1)[0].split(" ", 1)[0]
+
+    checkpoint = PipelineCheckpoint(
+        pair=spec.pair,
+        bullish_currency=bullish,
+        stage_log=list(log),
+        info_needs=info_needs,
+        market=market,
+        statements=statements,
+        headlines=headlines,
+        evidence=list(evidence),
+        news_meta=dict(news_meta),
+        weights=base,
+        pending_reviews=pending,
+        variance_reduction=str(variance_reduction or "none"),
+        as_of_date=as_of_s,
+        display_pair=display_spec.pair,
+        ticker=ticker,
+        invert=bool(invert),
+        cal_source=cal_source,
+    )
+
+    if _phase_a_only:
+        say("  → Phase A 完成（等待人工确认 / 或继续 Phase B）")
+        return checkpoint
+
+    if human_review_mode == "pause" and pending and not review_overrides:
+        say("  → 已暂停：请在界面确认方向后再继续（或传入 review_overrides）")
+        return checkpoint
+
+    if human_review_mode == "auto_skip" and pending and not review_overrides:
+        news_meta["human_review"]["auto_skipped"] = True
+        checkpoint.news_meta = dict(news_meta)
+        say("  → 不确定证据已自动跳过（保留模型方向继续赋权）")
+
+    return run_pipeline_phase_b(
+        checkpoint,
+        review_overrides=review_overrides,
+        out_dir=out_dir,
+        verbose=verbose,
+    )
+
+
+def run_pipeline_phase_a(
+    pair: str = "USD/AUD",
+    **kwargs: Any,
+) -> PipelineCheckpoint:
+    """Phase A：抓取 + 分类 + 聚类 → 返回 pending_reviews（不赋权/MC）。"""
+    kwargs = dict(kwargs)
+    kwargs["_phase_a_only"] = True
+    kwargs.setdefault("human_review_mode", "pause")
+    kwargs.setdefault("out_dir", None)
+    out = run_pipeline(pair, **kwargs)
+    assert isinstance(out, PipelineCheckpoint)
+    return out
+
+
+def run_pipeline_phase_b(
+    checkpoint: PipelineCheckpoint | dict[str, Any],
+    *,
+    review_overrides: dict[str, Any] | None = None,
+    out_dir: str | Path | None = "output",
+    verbose: bool = True,
+    save_label_audit: bool = True,
+) -> PipelineResult:
+    """Phase B：应用人工选择 → 赋权 → MC → 报告。"""
+    from fx_report.model.human_review import (
+        apply_review_overrides,
+        reviews_to_label_rows,
+    )
+    from fx_report.model.label_audit import (
+        agree_rate_stats,
+        label_audit_path,
+        save_label_audit as _save_label_audit,
+        save_spotcheck_stats,
+    )
+    import pandas as pd
+
+    if isinstance(checkpoint, dict):
+        cp = PipelineCheckpoint.from_session_dict(checkpoint)
+    else:
+        cp = checkpoint
+
+    log = list(cp.stage_log)
+
+    def say(msg: str) -> None:
+        log.append(msg)
+        if verbose:
+            print(msg)
+
+    evidence = list(cp.evidence)
+    news_meta = dict(cp.news_meta)
+    base = cp.weights
+    market = cp.market
+    info_needs = cp.info_needs
+    statements = cp.statements
+    headlines = cp.headlines
+    bullish = cp.bullish_currency
+    pending = list(cp.pending_reviews)
+    cal_source = cp.cal_source
+    variance_reduction = cp.variance_reduction
+    as_of_date = cp.as_of_date
+
+    hr = dict(news_meta.get("human_review") or {})
+    choices = dict(review_overrides or {})
+    if choices:
+        evidence, ov_meta = apply_review_overrides(evidence, choices)
+        hr.update(ov_meta)
+        hr["applied_overrides"] = True
+        say(
+            f"  → 人工覆盖方向 {ov_meta.get('n_overridden', 0)} 条"
+            f"（跳过 {ov_meta.get('n_skipped', 0)}）"
+        )
+        news_meta["human_review"] = hr
+        if save_label_audit and pending:
+            try:
+                rows = reviews_to_label_rows(pending, choices, pair=cp.pair)
+                df = pd.DataFrame(rows)
+                labeled = df[df["human_direction"].astype(str).str.len() > 0]
+                if not labeled.empty:
+                    path = label_audit_path(cp.pair)
+                    if path.exists():
+                        try:
+                            old = pd.read_csv(path)
+                            keep = old[
+                                ~old["statement_id"]
+                                .astype(str)
+                                .isin(labeled["statement_id"].astype(str))
+                            ]
+                            labeled = pd.concat([keep, labeled], ignore_index=True)
+                        except Exception:
+                            pass
+                    _save_label_audit(labeled, path)
+                    stats = agree_rate_stats(labeled)
+                    save_spotcheck_stats(stats, cp.pair)
+                    say(f"  → 已写入 label_audit：{path.name}")
+            except Exception as exc:
+                say(f"  → label_audit 保存失败（忽略）：{exc}")
+    elif pending:
+        hr["auto_skipped"] = True
+        news_meta["human_review"] = hr
 
     # 5
     say("【5/7】对每条信息赋予权重")
@@ -1110,10 +1507,13 @@ def run_pipeline(
         as_of_date=as_of_date,
     )
     diagnostics["calibrated_params"] = cal_source
+    diagnostics["human_review"] = news_meta.get("human_review")
+    diagnostics["pending_reviews"] = news_meta.get("pending_reviews")
     torchcast.extra["calibrated_params"] = cal_source
+    torchcast.extra["human_review"] = news_meta.get("human_review")
 
     result = PipelineResult(
-        pair=spec.pair,
+        pair=cp.pair,
         stage_log=log,
         info_needs=info_needs,
         market=market,

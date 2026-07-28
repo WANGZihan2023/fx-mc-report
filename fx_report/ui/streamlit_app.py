@@ -36,7 +36,13 @@ from fx_report.market.pairs import (
     make_custom_pair,
     resolve_pair_for_bullish,
 )
-from fx_report.pipeline import run_pipeline, step2_assess_info_needs
+from fx_report.pipeline import (
+    PipelineCheckpoint,
+    run_pipeline,
+    run_pipeline_phase_a,
+    run_pipeline_phase_b,
+    step2_assess_info_needs,
+)
 from fx_report.report.text import rubric_markdown
 from fx_report.model.calibrate import (
     BUNDLED_CALIBRATED_DIR,
@@ -90,6 +96,242 @@ st.set_page_config(
 def _app_password() -> str:
     """Product shared gate: APP_PASSWORD / FX_REPORT_PASSWORD, else default uniocean."""
     return app_password_expected()
+
+
+def _store_pipeline_result(result) -> None:
+    """Persist PipelineResult fields into session_state for the results panel."""
+    st.session_state["last_report"] = result.report_md
+    st.session_state["last_report_html"] = result.report_html
+    st.session_state["last_pdf_bytes"] = None
+    try:
+        from fx_report.report.torchcast import write_pdf
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            pdf_path = write_pdf(result.torchcast, Path(td) / "report.pdf")
+            st.session_state["last_pdf_bytes"] = pdf_path.read_bytes()
+    except Exception as e:
+        st.session_state["last_pdf_error"] = str(e)
+    st.session_state["last_diag"] = result.diagnostics
+    st.session_state["last_probs"] = result.probs
+    st.session_state["last_edges"] = list(result.edges)
+    st.session_state["last_headlines"] = result.diagnostics.get("headlines", [])
+    st.session_state["last_news_meta"] = result.news_meta
+    st.session_state["last_info_needs"] = [n.to_dict() for n in result.info_needs]
+    st.session_state["last_statements"] = [s.to_dict() for s in result.statements]
+    st.session_state["last_auto_evidence"] = [
+        {
+            "id": w.evidence.id,
+            "statement_id": w.evidence.statement_id or w.evidence.id,
+            "title": w.evidence.title,
+            "dir": w.evidence.direction,
+            "direction": w.evidence.direction,
+            "label": w.evidence.strength_label,
+            "strength": w.evidence.strength,
+            "freshness": w.evidence.freshness,
+            "unpriced": w.evidence.unpriced,
+            "category": w.evidence.category,
+            "url": getattr(w.evidence, "url", "") or "",
+            "is_prior": bool(getattr(w.evidence, "is_prior", False)),
+            "contrib": w.weight_contrib,
+        }
+        for w in result.weighted
+    ]
+    st.session_state["last_base_scenarios"] = [
+        {
+            "name": s.name,
+            "weight": s.weight,
+            "mu_annual": s.mu_annual,
+            "sigma_mult": s.sigma_mult,
+            "expected_jumps": s.expected_jumps,
+            "jump_mean": s.jump_mean,
+            "jump_std": s.jump_std,
+            "narrative": s.narrative,
+        }
+        for s in result.weights.scenarios
+    ]
+    st.session_state["last_weight_mapping"] = {
+        "score_to_mu_a": float(result.weights.score_to_mu_a),
+        "score_to_sigma_b": float(result.weights.score_to_sigma_b),
+        "evidence_logit_scale": float(result.weights.evidence_logit_scale),
+        "scenario_temperature": float(result.weights.scenario_temperature),
+        "max_scenario_shift": float(result.weights.max_scenario_shift),
+        "n_sims": int(result.weights.n_sims),
+        "trading_days": int(result.weights.trading_days),
+        "seed": int(result.weights.seed),
+        "peak_engine": str(getattr(result.weights, "peak_engine", "path_max")),
+        "jump_model": str(getattr(result.weights, "jump_model", "merton")),
+        "jump_compensate": bool(getattr(result.weights, "jump_compensate", False)),
+        "variance_reduction": str(getattr(result.mc, "variance_reduction", "none")),
+    }
+    st.session_state["label_audit_use_demo"] = False
+    st.session_state.pop("label_edits", None)
+    st.session_state.pop("label_edit_fp", None)
+    st.session_state.pop("last_label_agree_stats", None)
+    st.session_state.pop("human_label_recomputed", None)
+    try:
+        from fx_report.model.backtest import evidence_to_label_audit
+
+        audit_df = evidence_to_label_audit(st.session_state["last_auto_evidence"])
+        st.session_state["last_label_audit_csv"] = audit_df.to_csv(index=False)
+    except Exception:
+        st.session_state["last_label_audit_csv"] = None
+    st.session_state["last_stage_log"] = result.stage_log
+    st.session_state["last_source"] = result.market.source
+    # Clear HITL mid-flight once finished
+    st.session_state.pop("hitl_checkpoint", None)
+    st.session_state.pop("hitl_choices", None)
+
+
+def render_hitl_uncertain_form() -> bool:
+    """
+    Blocking section before final results when Phase A left pending reviews.
+    Returns True if Phase B just completed (caller should not return early).
+    """
+    from fx_report.model.human_review import direction_zh
+
+    raw_cp = st.session_state.get("hitl_checkpoint")
+    if not raw_cp:
+        return False
+
+    try:
+        cp = (
+            PipelineCheckpoint.from_session_dict(raw_cp)
+            if isinstance(raw_cp, dict)
+            else raw_cp
+        )
+    except Exception as exc:
+        st.error(f"无法恢复待确认检查点：{exc}")
+        if st.button("丢弃检查点并重新运行", key="hitl_drop_cp"):
+            st.session_state.pop("hitl_checkpoint", None)
+            st.rerun()
+        return False
+
+    pending = list(cp.pending_reviews or [])
+    if not pending:
+        st.session_state.pop("hitl_checkpoint", None)
+        return False
+
+    st.markdown("---")
+    st.subheader("人工确认不确定证据")
+    st.caption(
+        f"分析口径 **{cp.pair}**｜看涨 **{cp.bullish_currency}**｜"
+        f"共 {len(pending)} 条待确认（赋权与蒙特卡洛前）。"
+        "刷新页面会尽量从会话恢复此表单。"
+    )
+    st.info(
+        "请为每条选择 **利多 / 利空 / 中性 / 跳过**。"
+        "「跳过」保留模型原方向。提交后继续计算证据分 S 与报告。"
+    )
+
+    if "hitl_choices" not in st.session_state:
+        st.session_state["hitl_choices"] = {}
+
+    choice_opts = ["利多", "利空", "中性", "跳过"]
+    choice_map = {"利多": "up", "利空": "down", "中性": "neutral", "跳过": "skip"}
+    rev_map = {v: k for k, v in choice_map.items()}
+
+    with st.form("hitl_uncertain_form", clear_on_submit=False):
+        picks: dict[str, str] = {}
+        for i, p in enumerate(pending):
+            eid = p.evidence_id if hasattr(p, "evidence_id") else p.get("evidence_id")
+            title = p.title if hasattr(p, "title") else p.get("title", "")
+            snippet = p.snippet if hasattr(p, "snippet") else p.get("snippet", title)
+            reasons_zh = (
+                p.reasons_zh if hasattr(p, "reasons_zh") else p.get("reasons_zh") or []
+            )
+            model_dir = (
+                p.model_direction if hasattr(p, "model_direction") else p.get("model_direction", 0)
+            )
+            model_cat = (
+                p.model_category if hasattr(p, "model_category") else p.get("model_category", "")
+            )
+            strength_label = (
+                p.strength_label if hasattr(p, "strength_label") else p.get("strength_label", "")
+            )
+            url = p.url if hasattr(p, "url") else p.get("url", "")
+            cluster_id = p.cluster_id if hasattr(p, "cluster_id") else p.get("cluster_id", "")
+            rules_dir = (
+                p.rules_direction
+                if hasattr(p, "rules_direction")
+                else p.get("rules_direction")
+            )
+
+            st.markdown(f"**{i + 1}. `{eid}`** · {title[:120]}")
+            st.caption(snippet[:240] if snippet else "（无摘要）")
+            bits = [
+                f"模型猜测：{direction_zh(int(model_dir))}（{model_cat or '—'}）",
+                f"强弱：{strength_label or '—'}",
+            ]
+            if cluster_id:
+                bits.append(f"簇：{cluster_id}")
+            if rules_dir is not None:
+                bits.append(f"规则方向：{direction_zh(int(rules_dir))}")
+            if reasons_zh:
+                bits.append("原因：" + "；".join(reasons_zh))
+            st.caption(" · ".join(bits))
+            if url:
+                st.caption(f"[原文链接]({url})")
+
+            prev = st.session_state["hitl_choices"].get(eid, "skip")
+            default_label = rev_map.get(prev, "跳过")
+            default_idx = choice_opts.index(default_label) if default_label in choice_opts else 3
+            pick_label = st.radio(
+                f"你的判断（{eid}）",
+                choice_opts,
+                index=default_idx,
+                horizontal=True,
+                key=f"hitl_radio_{eid}",
+            )
+            picks[str(eid)] = choice_map[pick_label]
+            st.markdown("---")
+
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            submitted = st.form_submit_button("确认并继续生成报告", type="primary")
+        with c2:
+            skip_all = st.form_submit_button("全部跳过并继续")
+        with c3:
+            cancel = st.form_submit_button("取消本次分析")
+
+    if cancel:
+        st.session_state.pop("hitl_checkpoint", None)
+        st.session_state.pop("hitl_choices", None)
+        st.warning("已取消。可重新点「运行分析」。")
+        return False
+
+    if submitted or skip_all:
+        if skip_all:
+            overrides = {str(p.evidence_id if hasattr(p, "evidence_id") else p.get("evidence_id")): "skip" for p in pending}
+        else:
+            overrides = picks
+            st.session_state["hitl_choices"] = dict(picks)
+        with st.spinner("已收到人工判断，继续赋权与蒙特卡洛…"):
+            try:
+                result = run_pipeline_phase_b(
+                    cp,
+                    review_overrides=overrides,
+                    out_dir="output",
+                    verbose=False,
+                )
+            except Exception as exc:
+                st.error(f"Phase B 失败：{exc}")
+                return False
+        if result.market.notes:
+            st.caption("｜".join(result.market.notes[:3]))
+        st.session_state[_spot_cache_key(result.market.pair)] = {
+            "ok": True,
+            "pair": result.market.pair,
+            "spot": float(result.market.spot),
+            "source": result.market.source,
+            "asof": result.market.asof,
+            "notes": list(result.market.notes[:3]),
+            "error": None,
+        }
+        _store_pipeline_result(result)
+        st.success("人工确认已应用，报告已生成。")
+        st.rerun()
+    return True
 
 
 def _require_password() -> bool:
@@ -748,6 +990,14 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
                 "按类别拟合强度倍率并应用到本次证据；不足则提示「标注不足」。"
             ),
         )
+        pause_uncertain = st.checkbox(
+            "不确定证据先人工确认",
+            value=True,
+            help=(
+                "赋权/报告前：若出现低置信度、规则与LLM冲突、簇内方向冲突或类别不清，"
+                "暂停并请你选利多/利空/中性/跳过（最多 3–5 条）。关闭则自动跳过。"
+            ),
+        )
 
     # ③ 蒙特卡洛（分档切点在主区设置）
     with st.sidebar.expander("③ 蒙特卡洛", expanded=False):
@@ -1028,6 +1278,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "classify_mode": classify_mode,
         "fetch_fulltext": fetch_fulltext,
         "use_label_learned_strength": use_label_learned,
+        "pause_uncertain": bool(pause_uncertain),
         "variance_reduction": str(variance_reduction),
         "llm_key": "",
         "llm_base": "",
@@ -1554,6 +1805,8 @@ def main() -> None:
         st.session_state.pop("last_report", None)
         st.session_state.pop("scenario_edits", None)
         st.session_state.pop("evidence_edits", None)
+        st.session_state.pop("hitl_checkpoint", None)
+        st.session_state.pop("hitl_choices", None)
 
     bullish_ok = bullish in (display_spec.base, display_spec.quote)
     analysis_spec = (
@@ -1980,6 +2233,13 @@ def main() -> None:
         end = date.today() + timedelta(days=92)
         run = False
 
+    # HITL: restore pending reviews across refresh (blocking section before results)
+    if st.session_state.get("hitl_checkpoint"):
+        render_hitl_uncertain_form()
+        # While waiting for human, do not show a stale finished report underneath
+        if st.session_state.get("hitl_checkpoint"):
+            return
+
     if run:
         if not bullish_ok:
             st.warning("未选择看涨货币，无法运行分析。")
@@ -1987,7 +2247,7 @@ def main() -> None:
         if not spot_row or not spot_row.get("ok"):
             st.error("现价获取失败，无法运行分析。请先刷新现价。")
             return
-        with st.spinner("流水线运行中…"):
+        with st.spinner("流水线运行中（抓取与判定）…"):
             key = (api_opts.get("llm_key") or "").strip()
             if not key:
                 try:
@@ -2013,8 +2273,7 @@ def main() -> None:
                 st.warning("未配置 LLM，步骤4改用关键词规则。")
                 mode_cls = "rules"
 
-            result = run_pipeline(
-                display_spec.pair,
+            pipe_kwargs = dict(
                 ticker=None if display_spec.pair in list_pairs() else display_spec.symbol_code,
                 invert=display_spec.invert,
                 sims=weights.n_sims,
@@ -2022,29 +2281,64 @@ def main() -> None:
                 seed=weights.seed,
                 lookback=weights.vol_lookback_days,
                 variance_reduction=str(news_opts.get("variance_reduction") or "none"),
-                mode=mode_cls,  # type: ignore[arg-type]
+                mode=mode_cls,
                 max_news=news_opts["max_news_ev"],
                 keep_templates=news_opts["keep_templates"],
-                template_policy=news_opts.get("template_policy") or "off",  # type: ignore[arg-type]
+                template_policy=news_opts.get("template_policy") or "off",
                 no_news=not news_opts["use_news"],
                 no_fulltext=not bool(news_opts.get("fetch_fulltext", True)),
                 ai_research=bool(news_opts.get("ai_research", True)),
                 llm_cfg=llm_cfg,
-                out_dir="output",
                 verbose=False,
                 bullish_currency=bullish,
                 model_weights=weights,
-                calibrated_params_path=None,  # already merged into sidebar weights
+                calibrated_params_path=None,
                 calibrated_params_label=cal_label,
                 use_label_learned_strength=bool(
                     news_opts.get("use_label_learned_strength")
                 ),
+                max_uncertain=5,
             )
+
+            pause = bool(news_opts.get("pause_uncertain", True))
+            if pause:
+                checkpoint = run_pipeline_phase_a(
+                    display_spec.pair,
+                    out_dir=None,
+                    human_review_mode="pause",
+                    **pipe_kwargs,
+                )
+                if checkpoint.pending_reviews:
+                    st.session_state["hitl_checkpoint"] = checkpoint.to_session_dict()
+                    st.session_state["hitl_choices"] = {
+                        str(getattr(p, "evidence_id", "")): "skip"
+                        for p in checkpoint.pending_reviews
+                    }
+                    st.session_state.pop("last_report", None)
+                    st.info(
+                        f"发现 {len(checkpoint.pending_reviews)} 条不确定证据，"
+                        "请先确认方向后再生成报告。"
+                    )
+                    st.rerun()
+                result = run_pipeline_phase_b(
+                    checkpoint,
+                    review_overrides=None,
+                    out_dir="output",
+                    verbose=False,
+                )
+            else:
+                result = run_pipeline(
+                    display_spec.pair,
+                    out_dir="output",
+                    human_review_mode="auto_skip",
+                    **pipe_kwargs,
+                )
+                if isinstance(result, PipelineCheckpoint):
+                    result = run_pipeline_phase_b(result, out_dir="output", verbose=False)
 
             if result.market.notes:
                 st.caption("｜".join(result.market.notes[:3]))
 
-            # Keep spot cache in sync with pipeline market print
             st.session_state[_spot_cache_key(analysis_spec.pair)] = {
                 "ok": True,
                 "pair": result.market.pair,
@@ -2054,87 +2348,8 @@ def main() -> None:
                 "notes": list(result.market.notes[:3]),
                 "error": None,
             }
+            _store_pipeline_result(result)
 
-            st.session_state["last_report"] = result.report_md
-            st.session_state["last_report_html"] = result.report_html
-            st.session_state["last_pdf_bytes"] = None
-            try:
-                from fx_report.report.torchcast import write_pdf
-                import tempfile
-
-                with tempfile.TemporaryDirectory() as td:
-                    pdf_path = write_pdf(result.torchcast, Path(td) / "report.pdf")
-                    st.session_state["last_pdf_bytes"] = pdf_path.read_bytes()
-            except Exception as e:
-                st.session_state["last_pdf_error"] = str(e)
-            st.session_state["last_diag"] = result.diagnostics
-            st.session_state["last_probs"] = result.probs
-            st.session_state["last_edges"] = list(result.edges)
-            st.session_state["last_headlines"] = result.diagnostics.get("headlines", [])
-            st.session_state["last_news_meta"] = result.news_meta
-            st.session_state["last_info_needs"] = [n.to_dict() for n in result.info_needs]
-            st.session_state["last_statements"] = [s.to_dict() for s in result.statements]
-            st.session_state["last_auto_evidence"] = [
-                {
-                    "id": w.evidence.id,
-                    "statement_id": w.evidence.statement_id or w.evidence.id,
-                    "title": w.evidence.title,
-                    "dir": w.evidence.direction,
-                    "direction": w.evidence.direction,
-                    "label": w.evidence.strength_label,
-                    "strength": w.evidence.strength,
-                    "freshness": w.evidence.freshness,
-                    "unpriced": w.evidence.unpriced,
-                    "category": w.evidence.category,
-                    "url": getattr(w.evidence, "url", "") or "",
-                    "is_prior": bool(getattr(w.evidence, "is_prior", False)),
-                    "contrib": w.weight_contrib,
-                }
-                for w in result.weighted
-            ]
-            # Base priors (pre-evidence) + mapping for human-label recompute
-            st.session_state["last_base_scenarios"] = [
-                {
-                    "name": s.name,
-                    "weight": s.weight,
-                    "mu_annual": s.mu_annual,
-                    "sigma_mult": s.sigma_mult,
-                    "expected_jumps": s.expected_jumps,
-                    "jump_mean": s.jump_mean,
-                    "jump_std": s.jump_std,
-                    "narrative": s.narrative,
-                }
-                for s in result.weights.scenarios
-            ]
-            st.session_state["last_weight_mapping"] = {
-                "score_to_mu_a": float(result.weights.score_to_mu_a),
-                "score_to_sigma_b": float(result.weights.score_to_sigma_b),
-                "evidence_logit_scale": float(result.weights.evidence_logit_scale),
-                "scenario_temperature": float(result.weights.scenario_temperature),
-                "max_scenario_shift": float(result.weights.max_scenario_shift),
-                "n_sims": int(result.weights.n_sims),
-                "trading_days": int(result.weights.trading_days),
-                "seed": int(result.weights.seed),
-                "peak_engine": str(getattr(result.weights, "peak_engine", "path_max")),
-                "jump_model": str(getattr(result.weights, "jump_model", "merton")),
-                "jump_compensate": bool(getattr(result.weights, "jump_compensate", False)),
-                "variance_reduction": str(getattr(result.mc, "variance_reduction", "none")),
-            }
-            st.session_state["label_audit_use_demo"] = False
-            st.session_state.pop("label_edits", None)
-            st.session_state.pop("label_edit_fp", None)
-            st.session_state.pop("last_label_agree_stats", None)
-            st.session_state.pop("human_label_recomputed", None)
-            # label_audit template (human columns empty)
-            try:
-                from fx_report.model.backtest import evidence_to_label_audit
-
-                audit_df = evidence_to_label_audit(st.session_state["last_auto_evidence"])
-                st.session_state["last_label_audit_csv"] = audit_df.to_csv(index=False)
-            except Exception:
-                st.session_state["last_label_audit_csv"] = None
-            st.session_state["last_stage_log"] = result.stage_log
-            st.session_state["last_source"] = result.market.source
 
     if "last_report" not in st.session_state:
         return

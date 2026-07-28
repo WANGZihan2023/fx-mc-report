@@ -77,6 +77,17 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Stage 3：若 label_audit 标注≥N 条，用类别强度倍率缩放证据",
     )
+    p.add_argument(
+        "--auto-skip-uncertain",
+        action="store_true",
+        help="不确定证据不弹窗：记入日志后保留模型方向继续（CLI 默认行为；显式声明）",
+    )
+    p.add_argument(
+        "--max-uncertain",
+        type=int,
+        default=5,
+        help="赋权前最多列出几条不确定证据（默认 5）",
+    )
     p.add_argument("--api-status", action="store_true")
     p.add_argument("--quiet", action="store_true")
 
@@ -109,6 +120,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         bullish_currency=args.bullish,
         calibrated_params_path=args.calibrated_params,
         use_label_learned_strength=bool(args.use_label_learned_strength),
+        human_review_mode="auto_skip",
+        max_uncertain=int(getattr(args, "max_uncertain", 5) or 5),
     )
     return 0
 

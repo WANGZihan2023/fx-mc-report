@@ -115,7 +115,8 @@ streamlit run app.py
 ```
 
 新闻证据为空时默认 `template_policy=off`（不静默填模板）；`prior_only` / `fallback_warn` 可显式启用。UI 结果页有「本次分析审计」。  
-同主题新闻默认 **事件聚类去重**（`docs/event_clustering.md`）：审计里看 `cluster_n` / `raw` / `dedup`；异常时看 `cluster_warnings`。
+同主题新闻默认 **事件聚类去重**（`docs/event_clustering.md`）：审计里看 `cluster_n` / `raw` / `dedup`；异常时看 `cluster_warnings`。  
+**不确定证据人机协同**（`docs/human_review.md`）：UI 赋权前可暂停选利多/利空/中性/跳过；CLI 只记日志并 `--auto-skip-uncertain` 继续。
 
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
