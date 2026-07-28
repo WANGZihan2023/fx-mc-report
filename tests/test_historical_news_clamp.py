@@ -81,6 +81,10 @@ def test_fetch_historical_clamps_lookback_60_and_keeps_hits(monkeypatch):
         lambda limit=12: [],
     )
     monkeypatch.setattr(
+        "fx_report.news.gdelt.fetch_gdelt_doc",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
         "fx_report.news.fetch.load_config",
         lambda: {"NEWSAPI_KEY": "test-key-not-secret"},
     )
@@ -104,7 +108,10 @@ def test_fetch_historical_clamps_lookback_60_and_keeps_hits(monkeypatch):
     assert meta["newsapi_hits"] == 1
     assert meta["historical_news_quality"] == "date_filtered"
     assert meta["historical_lookback_days"] == 60
-    assert meta["historical_lookback_days_effective"] == 14
+    # GDELT ~90d window can keep the full requested lookback; NewsAPI is still clamped.
+    assert meta["historical_lookback_days_effective"] == 60
+    assert meta["newsapi_from"] == "2026-06-29"
+    assert meta["gdelt_from"] == "2026-05-14"
     assert len(headlines) == 1
 
 
@@ -267,6 +274,7 @@ def test_historical_surfaces_newsapi_error_in_limitation(monkeypatch):
 
     monkeypatch.setattr("fx_report.news.fetch.fetch_newsapi", fake_fetch_newsapi)
     monkeypatch.setattr("fx_report.news.fetch.fetch_inbox_headlines", lambda limit=12: [])
+    monkeypatch.setattr("fx_report.news.gdelt.fetch_gdelt_doc", lambda *a, **k: [])
     monkeypatch.setattr(
         "fx_report.news.fetch.load_config",
         lambda: {"NEWSAPI_KEY": "test-key-not-secret"},
@@ -315,6 +323,10 @@ def test_pipeline_evidence_n_positive_for_clamped_as_of_20260713(monkeypatch):
     monkeypatch.setattr(
         "fx_report.news.fetch.fetch_inbox_headlines",
         lambda limit=12: [],
+    )
+    monkeypatch.setattr(
+        "fx_report.news.gdelt.fetch_gdelt_doc",
+        lambda *a, **k: [],
     )
     monkeypatch.setattr(
         "fx_report.news.fetch.load_config",

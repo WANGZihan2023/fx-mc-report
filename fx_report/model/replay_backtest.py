@@ -219,7 +219,8 @@ def run_replay_backtest(
         "mean_skill_brier": float(table["skill_brier"].mean()),
         "historical_news_quality_counts": table["historical_news_quality"].value_counts().to_dict(),
         "note": (
-            "价格历史按 as_of 真冻结；历史新闻仅使用可日期过滤来源（如 NewsAPI）与本地 inbox。"
+            "价格历史按 as_of 真冻结；历史新闻仅使用可日期过滤来源"
+            "（NewsAPI、GDELT DOC）与本地 inbox。"
             "若 quality=limited，表示该时点新闻证据并非完整历史信息集。"
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),

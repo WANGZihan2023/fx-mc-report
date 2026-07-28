@@ -52,7 +52,7 @@ class Headline:
     source: str
     url: str
     published: datetime | None
-    provider: str  # official_rss | newsapi | finnhub | inbox
+    provider: str  # official_rss | newsapi | gdelt | finnhub | inbox
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -691,7 +691,8 @@ def _dedupe_sort(headlines: list[Headline], max_items: int) -> list[Headline]:
             "ai_research": 2,
             "inbox": 3,
             "newsapi": 4,
-            "finnhub": 5,
+            "gdelt": 5,
+            "finnhub": 6,
         }.get(h.provider, 9)
         ts = h.published.timestamp() if h.published else 0.0
         return (rank, -ts)
@@ -735,8 +736,9 @@ def fetch_historical_headlines_for_pair(
     Historical headline fetch with honest limitations.
 
     Only providers with real date constraints are used:
-      - NewsAPI everything with from/to
-      - local inbox files whose mtime <= as_of
+      - NewsAPI everything with from/to (free/dev ~last month)
+      - GDELT DOC 2.0 ArtList with startdatetime/enddatetime (~last 3 months, free)
+      - local inbox files whose mtime/published <= as_of
 
     We intentionally do NOT reuse current RSS / Google News RSS / Finnhub category
     feeds here because they do not provide trustworthy historical search by date.
@@ -744,7 +746,16 @@ def fetch_historical_headlines_for_pair(
     NewsAPI `from` is clamped into the plan searchable window (~last month from
     *today*). Replay often passes vol lookback=60; without clamping, the request
     fails silently and evidence_n stays 0 even when a shorter window has hits.
+    GDELT is similarly clamped into its ~3-month DOC window.
     """
+    # Lazy import avoids circular dependency (gdelt imports Headline from here).
+    from fx_report.news.gdelt import (
+        GDELT_MAX_HISTORY_DAYS,
+        clamp_gdelt_from_date,
+        fetch_gdelt_doc,
+        gdelt_query_for_pair,
+    )
+
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
     as_of = _coerce_date(as_of_date)
@@ -757,17 +768,23 @@ def fetch_historical_headlines_for_pair(
         as_of,
         today=today,
     )
+    gdelt_start, gdelt_from_clamped = clamp_gdelt_from_date(
+        requested_start,
+        as_of,
+        today=today,
+    )
     queries = PAIR_NEWSAPI_QUERIES.get(spec.pair) or [spec.pair.replace("/", " ")]
 
     headlines: list[Headline] = []
     inbox_all = fetch_inbox_headlines(limit=max_items * 2)
-    headlines.extend(
-        [
-            h
-            for h in inbox_all
-            if h.published is not None and h.published.date() <= as_of
-        ]
-    )
+    inbox_dated = [
+        h
+        for h in inbox_all
+        if h.published is not None and h.published.date() <= as_of
+    ]
+    headlines.extend(inbox_dated)
+    inbox_dated_hits = len(inbox_dated)
+
     newsapi_hits = 0
     newsapi_skipped_outside_window = newsapi_start is None
     newsapi_errors: list[str] = []
@@ -803,18 +820,61 @@ def fetch_historical_headlines_for_pair(
             if isinstance(status, int):
                 newsapi_http_status = status
 
-    effective_lookback = (
-        (as_of - newsapi_start).days if newsapi_start is not None else 0
+    gdelt_hits = 0
+    gdelt_skipped_outside_window = gdelt_start is None
+    gdelt_errors: list[str] = []
+    gdelt_http_status: int | None = None
+    gdelt_query = gdelt_query_for_pair(spec.pair)
+    if gdelt_start is not None:
+        gdelt_meta: dict[str, Any] = {}
+        gdelt_batch = fetch_gdelt_doc(
+            gdelt_query,
+            start_date=gdelt_start,
+            end_date=as_of,
+            limit=max_items,
+            timeout=timeout_s(cfg),
+            call_meta=gdelt_meta,
+        )
+        headlines.extend(gdelt_batch)
+        gdelt_hits = len(gdelt_batch)
+        err = gdelt_meta.get("error")
+        if err:
+            gdelt_errors.append(str(err))
+        status = gdelt_meta.get("http_status")
+        if isinstance(status, int):
+            gdelt_http_status = status
+
+    # Prefer the widest date-filtered lookback actually used (NewsAPI or GDELT).
+    effective_candidates: list[int] = []
+    if newsapi_start is not None:
+        effective_candidates.append((as_of - newsapi_start).days)
+    if gdelt_start is not None:
+        effective_candidates.append((as_of - gdelt_start).days)
+    effective_lookback = max(effective_candidates) if effective_candidates else 0
+
+    source_bits: list[str] = []
+    if newsapi_hits > 0:
+        source_bits.append(f"NewsAPI({newsapi_hits})")
+    if gdelt_hits > 0:
+        source_bits.append(f"GDELT({gdelt_hits})")
+    if inbox_dated_hits > 0:
+        source_bits.append(f"inbox({inbox_dated_hits})")
+    sources_note = (
+        "来源命中: " + "+".join(source_bits)
+        if source_bits
+        else "来源命中: 无"
     )
+
     limitation = (
-        "历史新闻仅使用可日期过滤来源（NewsAPI）和本地 inbox 截止文件。"
+        "历史新闻仅使用可日期过滤来源（NewsAPI、GDELT DOC）和本地 inbox 截止文件。"
         "当前 RSS / Google News RSS / Finnhub category / AI researcher 未用于历史回放，"
         "以避免把实时流误当成历史检索。"
+        f" {sources_note}。"
     )
     if newsapi_skipped_outside_window:
         limitation += (
             f" as_of={as_of.isoformat()} 早于 NewsAPI 可检索窗口"
-            f"（约近 {NEWSAPI_MAX_HISTORY_DAYS} 天），无法日期过滤检索。"
+            f"（约近 {NEWSAPI_MAX_HISTORY_DAYS} 天），NewsAPI 无法日期过滤检索。"
         )
     elif from_clamped:
         limitation += (
@@ -825,8 +885,33 @@ def fetch_historical_headlines_for_pair(
         )
     if newsapi_hits == 0 and newsapi_errors:
         limitation += f" NewsAPI 请求失败：{newsapi_errors[0][:180]}"
-    elif newsapi_hits == 0 and is_set(cfg, "NEWSAPI_KEY") and not newsapi_skipped_outside_window:
+    elif (
+        newsapi_hits == 0
+        and is_set(cfg, "NEWSAPI_KEY")
+        and not newsapi_skipped_outside_window
+    ):
         limitation += " NewsAPI 在可检索窗口内返回 0 条（可能配额耗尽或该窗口无匹配）。"
+    elif newsapi_hits == 0 and not is_set(cfg, "NEWSAPI_KEY"):
+        limitation += " NewsAPI 未配置（无 KEY），已跳过。"
+
+    if gdelt_skipped_outside_window:
+        limitation += (
+            f" as_of={as_of.isoformat()} 早于 GDELT DOC 可检索窗口"
+            f"（约近 {GDELT_MAX_HISTORY_DAYS} 天），GDELT 无法日期过滤检索。"
+        )
+    elif gdelt_from_clamped:
+        limitation += (
+            f" 已将 GDELT from 从 {requested_start.isoformat()} 钳制到"
+            f" {gdelt_start.isoformat()}（DOC 约近 {GDELT_MAX_HISTORY_DAYS} 天）。"
+        )
+    if gdelt_hits == 0 and gdelt_errors:
+        limitation += f" GDELT 请求失败：{gdelt_errors[0][:180]}"
+    elif gdelt_hits == 0 and not gdelt_skipped_outside_window:
+        limitation += " GDELT 在可检索窗口内返回 0 条（可能限流或该窗口无匹配）。"
+
+    date_filtered = (
+        newsapi_hits > 0 or gdelt_hits > 0 or inbox_dated_hits > 0
+    )
 
     meta: dict[str, Any] = {
         "historical_mode": True,
@@ -843,7 +928,17 @@ def fetch_historical_headlines_for_pair(
         "newsapi_error": newsapi_errors[0] if newsapi_errors else None,
         "newsapi_http_status": newsapi_http_status,
         "newsapi_from_cache": bool(newsapi_from_cache),
-        "historical_news_quality": "date_filtered" if newsapi_hits > 0 else "limited",
+        "gdelt_enabled": True,
+        "gdelt_hits": gdelt_hits,
+        "gdelt_from": gdelt_start.isoformat() if gdelt_start is not None else None,
+        "gdelt_from_requested": requested_start.isoformat(),
+        "gdelt_from_clamped": bool(gdelt_from_clamped),
+        "gdelt_outside_window": bool(gdelt_skipped_outside_window),
+        "gdelt_error": gdelt_errors[0] if gdelt_errors else None,
+        "gdelt_http_status": gdelt_http_status,
+        "gdelt_query": gdelt_query,
+        "inbox_dated_hits": inbox_dated_hits,
+        "historical_news_quality": "date_filtered" if date_filtered else "limited",
         "limitation": limitation,
     }
     return _dedupe_sort(headlines, max_items), meta
@@ -860,6 +955,7 @@ def fetch_status_summary() -> str:
         "market=ECB/Frankfurter(+FRED/Twelve/Alpha)",
         "news=Fed/RBA/ECB/BOE RSS + Google News RSS (free)",
         f"NewsAPI={'ON' if is_set(cfg, 'NEWSAPI_KEY') else 'off'}",
+        "GDELT=ON(free)",
         f"Finnhub={'ON' if is_set(cfg, 'FINNHUB_API_KEY') else 'off'}",
         f"inbox={len(inbox_files(cfg))}",
         f"vault={paths['root'].name}",

@@ -59,17 +59,20 @@ python run_cli.py replay-backtest \
 
 - 历史回放**不使用**当前 RSS 流、Google News RSS、Finnhub category feed
 - 历史回放**不使用** AI researcher 的实时搜索 / 白名单网页
-- 仅使用：
-  - `NewsAPI everything` 的 `from/to` 日期过滤
-  - 本地 `inbox` 中 `mtime <= as_of` 的文件
+- 仅使用（按尝试顺序）：
+  1. 本地 `inbox` 中 `published/mtime <= as_of` 的文件
+  2. `NewsAPI everything` 的 `from/to` 日期过滤（需 KEY；开发者档约近 29 天）
+  3. **GDELT DOC 2.0 ArtList** 的 `startdatetime/enddatetime`（**免费无 KEY**；约近 90 天）
 
 质量字段：
 
 - `historical_news_quality=date_filtered`
-  - 至少使用了真实日期过滤的 NewsAPI 历史检索
+  - 至少有一处日期约束命中：NewsAPI **或** GDELT **或** 带日期的 inbox
 - `historical_news_quality=limited`
-  - 没有可用的日期过滤新闻源，或只有本地 inbox
+  - 上述来源均无命中（或窗口外 / 限流失败且无 inbox）
   - 这代表证据链**不是完整历史新闻快照**
+
+`limitation` / meta 会写明各源命中数与错误（含 NewsAPI/GDELT 429），不会静默吞掉失败。
 
 更严格的验收口径：
 
@@ -86,7 +89,8 @@ python run_cli.py replay-backtest \
 
 即使 `historical_news_quality=date_filtered`，也仍不是“完美当日信息集”，原因包括：
 
-- NewsAPI 可检索范围、收录源和排序并不等于真实市场终端
+- NewsAPI / GDELT 可检索范围、收录源和排序并不等于真实市场终端
+- GDELT `seendate` 是监测见到时间，不一定等于原文精确发布时间
 - 某些历史文章正文可能现在不可访问
 - LLM 证据判定仍是今天的模型在读历史文本
 - 模板证据 / prior 策略若启用，仍会按当前配置参与
@@ -101,7 +105,7 @@ python run_cli.py replay-backtest \
 
 ## UI
 
-Streamlit 中新增了 `历史时点回放` 小节：
+Streamlit 中新增了 `历史时点回放` 卡片：
 
 - 只建议跑 2-5 个日期的小样本
 - 若新闻保真度有限，会弹出警告
@@ -110,7 +114,7 @@ Streamlit 中新增了 `历史时点回放` 小节：
 另外新增 `历史冻结回放总览`：
 
 - 自动汇总 `output/` 下已有 replay JSON
-- 展示 pair / window / hit_rate / mean_brier / mean_skill_brier
+- 展示 pair / n / hit_rate / mean_brier / mean_skill_brier
 - 同时展示 `evidence_mean`、`evidence_max`、`date_filtered` / `limited` 次数
 - `历史新闻是否工作=yes` 的判定标准：
   - 至少一个时点 `historical_news_quality=date_filtered`
@@ -119,10 +123,13 @@ Streamlit 中新增了 `历史时点回放` 小节：
 ## 建议用法
 
 1. 先用小样本（2-3 个日期）做 smoke
-2. 先看 `历史冻结回放总览` 或 `python run_cli.py replay-summary --out output`
-3. 如果结果仍是 `历史新闻是否工作=no`，不要把“回放能跑通”误当成“历史新闻已接通”
-4. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
-5. 如果需要更高新闻保真度，后续可接入真正支持历史归档检索的供应商
+2. 无 NewsAPI KEY 时可先跑：`python scripts/smoke_gdelt_historical.py`
+3. 先看 `历史冻结回放总览` 或 `python run_cli.py replay-summary --out output`
+4. 如果结果仍是 `历史新闻是否工作=no`，不要把“回放能跑通”误当成“历史新闻已接通”
+5. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
+6. 可选：每日把 RSS 归档进 inbox，减轻对在线源的依赖：
+   `python scripts/daily_inbox_snapshot.py --dry-run`
+7. 如果需要更高新闻保真度，后续可再接入更长归档供应商
 
 ## 引擎 A vs C 自动对比
 
@@ -138,7 +145,7 @@ python run_cli.py replay-engine-compare --pair USD/AUD
 
 - 扫描近窗（约 `today-25` → `today-(days+1)`），步长 `--step 3`
 - 候选条件：`evidence_n>0` **或** `historical_news_quality=date_filtered`
-- 最多 `--max-dates 3`（控 NewsAPI 配额；命中 429 提前停）
+- 最多 `--max-dates 3`（控 NewsAPI 配额；命中 429 提前停；GDELT 可作无 KEY 补充）
 - 每个候选各跑一次引擎 **A**（`path_max+merton+antithetic`）与 **C**（`brownian_bridge+none+antithetic`）
 - 小样本默认：`--sims 800 --days 20 --lookback 14 --mode rules`
 - 输出：`output/engine_compare/A_{asof}.json`、`C_{asof}.json`、`summary.json`，并打印中文汇总表
