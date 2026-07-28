@@ -456,6 +456,7 @@ def step4_evaluate_impact(
         "cluster_dup_n": 0,
         "cluster_dedup_applied": False,
         "cluster_dedup_mode": "off",
+        "cluster_warnings": [],
     }
 
     auto: list[EvidenceItem] = []
@@ -524,7 +525,12 @@ def step4_evaluate_impact(
             e.direction = 0
 
     # ECDA-style event clustering: same-theme headlines → one cluster before S
-    cluster_meta = assign_event_clusters(evidence, enabled=bool(cluster_events))
+    # Pass quality/limitation so empty-news / 429 land in cluster_warnings (same ZH style).
+    cluster_meta = assign_event_clusters(
+        evidence,
+        enabled=bool(cluster_events),
+        news_meta=meta,
+    )
     if statements:
         propagate_cluster_to_statements(evidence, statements)
     meta.update(cluster_meta.to_dict())
@@ -539,6 +545,7 @@ def step4_evaluate_impact(
     meta["evidence_raw_n"] = cluster_meta.evidence_raw_n
     meta["prior_n"] = sum(1 for e in evidence if e.is_prior)
     meta["news_n"] = sum(1 for e in evidence if not e.is_prior)
+    meta["cluster_warnings"] = list(cluster_meta.cluster_warnings or [])
     return evidence, meta
 
 
@@ -762,7 +769,9 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
         "cluster_dup_n": news_meta.get("cluster_dup_n", 0),
         "cluster_dedup_applied": bool(news_meta.get("cluster_dedup_applied")),
         "cluster_dedup_mode": news_meta.get("cluster_dedup_mode", "off"),
+        "cluster_warnings": list(news_meta.get("cluster_warnings") or []),
     }
+    diag["cluster_warnings"] = list(news_meta.get("cluster_warnings") or [])
     if bullish_currency:
         diag["bullish_currency"] = bullish_currency
     # Push audit fields into torchcast HTML/PDF meta
@@ -772,6 +781,7 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
     tc.extra["cluster_n"] = news_meta.get("cluster_n", 0)
     tc.extra["evidence_raw_n"] = news_meta.get("evidence_raw_n", news_meta.get("evidence_n", 0))
     tc.extra["cluster_dedup_applied"] = bool(news_meta.get("cluster_dedup_applied"))
+    tc.extra["cluster_warnings"] = list(news_meta.get("cluster_warnings") or [])
     # OOS / calib trust line when bundled or local summary exists
     try:
         from fx_report.model.calibrate import load_calib_oos_summary

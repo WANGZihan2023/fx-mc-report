@@ -2187,6 +2187,15 @@ def main() -> None:
         note_bits.append(
             "同主题新闻已事件聚类去重（簇内仅最强代表计入 S），避免重复加权重。"
         )
+    cluster_warnings = list(
+        diag.get("cluster_warnings")
+        or counts.get("cluster_warnings")
+        or news_meta.get("cluster_warnings")
+        or []
+    )
+    for w in cluster_warnings:
+        if w and w not in note_bits:
+            note_bits.append(str(w))
     ai_meta = news_meta.get("ai_research") or {}
     if isinstance(ai_meta, dict):
         if ai_meta.get("limitation"):
@@ -2280,6 +2289,11 @@ def main() -> None:
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"
         f"· {note}"
     )
+    if cluster_warnings:
+        st.warning(
+            "**聚类/证据告警**\n\n"
+            + "\n\n".join(f"· {w}" for w in cluster_warnings)
+        )
     # Thin References / evidence tip (LLM alone does not invent URLs)
     try:
         from fx_report.config.api_config import has_news_api, load_config

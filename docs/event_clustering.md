@@ -27,6 +27,20 @@
 - 去重只影响权重聚合，不删除证据卡片。
 - 不同类别（如 geopolitics vs china_iron）默认不合并，降低误伤。
 
+## 异常告警（`cluster_warnings`）
+
+聚类后自动检测并写入 `news_meta` / `diag["cluster_warnings"]`（中文），**不编造证据**：
+
+| 现象 | 触发条件（摘要） |
+|---|---|
+| 可能过度合并 | 同簇内方向冲突（±），或紧类别不一致 |
+| 可能漏合 | 标题 Jaccard 贴近阈值但未合簇；或 Jaccard≥阈值但被类别阻隔 |
+| 去重过重 | `dup/raw ≥ 0.5`（且 raw≥3） |
+| 去重后无有效证据 | raw>0 但 keep_strongest 下无计入 S 的条 |
+| 新闻为空 / 429 | 与 fetch `limitation` 同风格的附带说明 |
+
+展示：`pipeline` 审计字段 → Streamlit「本次分析审计」+ `st.warning` → 报告 meta 一行 `⚠N告警`。
+
 ## UI
 
-结果页 **「本次分析审计」**：`evidence_n` / `cluster_n` / `raw` / `dedup=True|False`；若发生去重会有中文说明。
+结果页 **「本次分析审计」**：`evidence_n` / `cluster_n` / `raw` / `dedup=True|False`；若发生去重会有中文说明；有 `cluster_warnings` 时额外黄色告警框。

@@ -791,7 +791,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>Analysis quote {_esc(report.pair)}</span>
     <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
     <span>Evidence {_esc(str(report.extra.get("evidence_quality") or "n/a"))}</span>
-    <span>Clusters {_esc(str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"))} / raw {_esc(str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}</span>
+    <span>Clusters {_esc(str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"))} / raw {_esc(str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}{(" · ⚠" + str(len(report.extra.get("cluster_warnings") or [])) + "告警") if (report.extra.get("cluster_warnings") or []) else ""}</span>
     {_oos_meta_span(report.extra.get("calib_oos"))}
   </div>
 
@@ -991,8 +991,10 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     cluster_n = report.extra.get("cluster_n")
     raw_n = report.extra.get("evidence_raw_n", report.n_evidence)
     dedup_bit = " · dedup" if report.extra.get("cluster_dedup_applied") else ""
+    warn_list = list(report.extra.get("cluster_warnings") or [])
+    warn_bit = f" · ⚠{len(warn_list)}告警" if warn_list else ""
     cluster_meta = (
-        f"Clusters {cluster_n} / raw {raw_n}{dedup_bit}"
+        f"Clusters {cluster_n} / raw {raw_n}{dedup_bit}{warn_bit}"
         if cluster_n is not None
         else ""
     )
