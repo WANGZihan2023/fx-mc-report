@@ -67,3 +67,20 @@ def test_session_save_keeps_values_but_clears_secret_widgets(monkeypatch):
     assert at.session_state["api_keys_ui"]["LLM_API_KEY"] == "llm-session"
     assert at.text_input(key="free_keys__FRED_API_KEY").value == ""
     assert at.text_input(key="ai_api_key_input").value == ""
+
+
+def test_persist_requires_admin_unlock(monkeypatch):
+    monkeypatch.setenv("ADMIN_SAVE_TOKEN", "save-admin-token")
+
+    at = _build_app()
+    at.run()
+
+    assert at.button(key="btn_persist_server").disabled is True
+
+    at.text_input(key="free_keys__FRED_API_KEY").set_value("fred-new")
+    at.text_input(key="admin_save_token_input").set_value("save-admin-token")
+    at.button(key="btn_unlock_admin_save").click()
+    at.run()
+
+    assert at.session_state["admin_save_unlocked"] is True
+    assert at.button(key="btn_persist_server").disabled is False

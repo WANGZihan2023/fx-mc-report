@@ -16,6 +16,9 @@ import pandas as pd
 import streamlit as st
 
 from fx_report.config.api_config import (
+    ADMIN_SAVE_TOKEN_ENV,
+    admin_save_token_accepted,
+    admin_save_token_configured,
     PROVIDERS,
     apply_runtime_overrides,
     configured_key_sources,
@@ -29,7 +32,7 @@ from fx_report.config.api_config import (
     merge_nonempty,
     parse_env_bytes,
     persist_keys_to_railway_variables,
-    persistence_keys_only,
+    railway_persistence_keys_only,
     project_env_path,
     railway_direct_persist_hint,
     railway_variables_env_block,
@@ -214,6 +217,19 @@ def _looks_like_mask_or_placeholder(v: str) -> bool:
 
 def _session_keys() -> dict[str, str]:
     return dict(st.session_state.get("api_keys_ui") or {})
+
+
+def _persist_candidates() -> dict[str, str]:
+    return dict(st.session_state.get("api_persist_candidates") or {})
+
+
+def _remember_persist_candidates(keys: dict[str, str] | None) -> None:
+    if not keys:
+        return
+    st.session_state["api_persist_candidates"] = merge_nonempty(
+        _persist_candidates(),
+        railway_persistence_keys_only(keys),
+    )
 
 
 def _set_session_keys(keys: dict[str, str], *, wipe_empty: bool = False) -> None:
@@ -413,6 +429,9 @@ def _render_env_upload_and_railway(
     free_rows: list[dict[str, str]],
     paid_rows: list[dict[str, str]],
 ) -> None:
+    if "admin_save_unlocked" not in st.session_state:
+        st.session_state["admin_save_unlocked"] = False
+
     st.markdown("#### 仅本次会话")
     up = st.file_uploader(
         "从本机 .env 上传并应用到本会话",
@@ -436,6 +455,7 @@ def _render_env_upload_and_railway(
             if not parsed:
                 st.error("文件里没有非空 Key。")
             else:
+                _remember_persist_candidates(parsed)
                 _set_session_keys(parsed)
                 _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
                 _clear_secret_inputs(paid_rows, "env_key", section_key="paid_keys")
@@ -479,8 +499,10 @@ def _render_env_upload_and_railway(
 
     st.markdown("#### 保存到服务器 / 持久化")
     direct_ok, direct_hint = railway_direct_persist_hint()
-    persistable = persistence_keys_only(merged)
+    persistable = _persist_candidates()
     loaded_from_env = _env_loaded_from_server_env(sources)
+    admin_ready = admin_save_token_configured()
+    admin_unlocked = bool(st.session_state.get("admin_save_unlocked"))
     if cloud and loaded_from_env:
         st.success(
             "已永久保存到 Railway Variables：当前启动已从服务器环境变量加载 "
@@ -494,6 +516,35 @@ def _render_env_upload_and_railway(
     else:
         st.info("本机可直接保存到 `.env`；若要同步到 Railway，也可用下面的一键/复制流程。")
 
+    st.markdown("#### 管理员持久化权限")
+    if admin_ready:
+        token = st.text_input(
+            "管理员保存口令",
+            type="password",
+            key="admin_save_token_input",
+            placeholder="输入后才可保存并持久化到 Railway Variables",
+            help="这是单独的管理员口令，不等于页面访问密码。",
+        )
+        if st.button("解锁持久化权限", use_container_width=True, key="btn_unlock_admin_save"):
+            ok = admin_save_token_accepted(token)
+            st.session_state["admin_save_unlocked"] = ok
+            if ok:
+                st.success("已解锁管理员持久化权限。现在可执行“保存并持久化到 Railway Variables”。")
+            else:
+                st.error("管理员保存口令错误。")
+            st.rerun()
+        if admin_unlocked:
+            st.success("当前会话已解锁管理员持久化权限。")
+        else:
+            st.caption("普通访客仍可“仅本次会话”使用；只有管理员可做持久化保存。")
+    else:
+        st.warning(
+            f"当前服务端还没有设置 `{ADMIN_SAVE_TOKEN_ENV}`，因此网页端持久化入口不会开启。"
+        )
+        st.caption(
+            "先在 Railway → Service → Variables 新增管理员保存口令；设置后 redeploy，再回到这里解锁。"
+        )
+
     if direct_ok:
         st.caption(f"可尝试一键持久化：{direct_hint}。若失败，会保留可复制的 Railway Variables 块。")
     else:
@@ -502,13 +553,14 @@ def _render_env_upload_and_railway(
     p1, p2 = st.columns(2)
     with p1:
         if st.button(
-            "保存并持久化",
+            "保存并持久化到 Railway Variables",
             type="primary",
             use_container_width=True,
             key="btn_persist_server",
+            disabled=not admin_unlocked,
         ):
             if not persistable:
-                st.error("没有可持久化的非空变量。请先填写后再保存。")
+                st.error("没有可持久化的新值。请先粘贴新 Key / 新配置后再保存。")
             elif direct_ok:
                 result = persist_keys_to_railway_variables(persistable)
                 _set_session_keys(persistable)
@@ -547,6 +599,7 @@ def _render_env_upload_and_railway(
                 file_name="railway-variables.env",
                 mime="text/plain",
                 use_container_width=True,
+                disabled=not admin_unlocked,
                 help="用于本机一条命令推送到 Railway Variables，或留作下次恢复。",
             )
         else:
@@ -890,6 +943,7 @@ def render_api_settings_panel() -> dict[str, Any]:
 
     # Merge editor output without letting blanks wipe already-filled keys.
     merged = merge_nonempty(_session_keys(), {**free_vals, **paid_vals, **ai_vals})
+    _remember_persist_candidates({**free_vals, **paid_vals, **ai_vals})
 
     _render_env_upload_and_railway(
         cloud,
@@ -981,18 +1035,17 @@ def render_api_settings_panel() -> dict[str, Any]:
             + " 空白表单不会覆盖已有非空 Key。"
         )
 
-    dl_keys = {k: v for k, v in merged.items() if (v or "").strip()}
+    dl_keys = _persist_candidates()
     if dl_keys:
         st.download_button(
-            label="下载 .env 到我的电脑",
+            label="下载本次填写的 .env",
             data=env_file_download_bytes(dl_keys),
             file_name=".env",
             mime="text/plain",
             use_container_width=True,
             help=(
-                "把文件存到仓库根目录，或合并进 "
-                "/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env；"
-                "下次可在网页「上传 .env」恢复本会话"
+                "只包含本次填写/上传的新值，不会导出服务器里原有的 Key；"
+                "下次可在网页「上传 .env」恢复本会话。"
             ),
         )
 

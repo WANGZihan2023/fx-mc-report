@@ -39,6 +39,8 @@ MARKET_KEYS = (
     "BROKER_REST_TOKEN",
 )
 
+ADMIN_SAVE_TOKEN_ENV = "ADMIN_SAVE_TOKEN"
+
 NEWS_KEYS = ("NEWSAPI_KEY", "FINNHUB_API_KEY")
 SEARCH_KEYS = ("TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "NEWSAPI_KEY")
 
@@ -67,10 +69,8 @@ PERSIST_KEYS = (
     "FX_API_TIMEOUT",
 )
 
-# Railway Variables checklist (names only — never log values).
+# Railway Variables checklist for API / LLM persistence (names only — never log values).
 RAILWAY_VARIABLE_NAMES: tuple[str, ...] = (
-    "APP_PASSWORD",
-    "FX_REPORT_PASSWORD",
     "FRED_API_KEY",
     "NEWSAPI_KEY",
     "FINNHUB_API_KEY",
@@ -81,6 +81,7 @@ RAILWAY_VARIABLE_NAMES: tuple[str, ...] = (
     "GROQ_API_KEY",
     "DEEPSEEK_API_KEY",
     "LLM_API_KEY",
+    "OPENAI_API_KEY",
     "LLM_BASE_URL",
     "LLM_MODEL",
     "FMP_API_KEY",
@@ -88,7 +89,6 @@ RAILWAY_VARIABLE_NAMES: tuple[str, ...] = (
     "OPENEXCHANGERATES_APP_ID",
     "BROKER_REST_BASE_URL",
     "BROKER_REST_TOKEN",
-    "FX_PDF_ENGINE",
 )
 
 
@@ -180,6 +180,16 @@ def key_loaded_from_environ(key: str) -> bool:
     return bool((os.environ.get(key) or "").strip())
 
 
+def admin_save_token_configured() -> bool:
+    return bool((os.environ.get(ADMIN_SAVE_TOKEN_ENV) or "").strip())
+
+
+def admin_save_token_accepted(token: str | None) -> bool:
+    expected = (os.environ.get(ADMIN_SAVE_TOKEN_ENV) or "").strip()
+    entered = (token or "").strip()
+    return bool(expected and entered and entered == expected)
+
+
 def configured_key_sources(cfg: dict[str, str] | None = None) -> dict[str, str]:
     """
     Map env_key → short Chinese source label for UI green checks.
@@ -213,7 +223,8 @@ def railway_variables_checklist(*, only_set_in: dict[str, str] | None = None) ->
     without printing those values.
     """
     lines = [
-        "# Railway → Service → Variables（只列变量名，勿把 Key 贴进聊天/日志）",
+        "# Railway → Service → Variables（API / LLM 持久化白名单）",
+        "# 只列变量名，勿把 Key 贴进聊天/日志",
         "# 关掉网页再开还在 = 必须写到这里（一次）",
         "",
     ]
@@ -249,9 +260,23 @@ def persistence_keys_only(keys: dict[str, str] | None) -> dict[str, str]:
     return out
 
 
+def railway_persistence_keys_only(keys: dict[str, str] | None) -> dict[str, str]:
+    """Strict whitelist for Railway Variables writes / export blocks."""
+    if not keys:
+        return {}
+    allowed = set(RAILWAY_VARIABLE_NAMES)
+    out: dict[str, str] = {}
+    for k, v in keys.items():
+        key = (k or "").strip()
+        val = (v or "").strip()
+        if key in allowed and val:
+            out[key] = val
+    return out
+
+
 def railway_variables_env_block(keys: dict[str, str] | None) -> str:
     """Real KEY=VALUE block for Railway Variables copy/paste and `.env` download."""
-    picked = persistence_keys_only(keys)
+    picked = railway_persistence_keys_only(keys)
     lines = [
         "# Railway Variables / .env",
         "# Paste into Railway -> Service -> Variables",
@@ -282,7 +307,7 @@ def persist_keys_to_railway_variables(keys: dict[str, str] | None) -> RailwayPer
     Push non-empty keys into Railway Variables via Railway CLI.
     Never prints secret values; success means real server-side persistence.
     """
-    picked = persistence_keys_only(keys)
+    picked = railway_persistence_keys_only(keys)
     if not picked:
         return RailwayPersistResult(
             ok=False,

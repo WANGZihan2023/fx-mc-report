@@ -133,6 +133,31 @@ def test_persistence_keys_only_filters_local_only_fields():
     }
 
 
+def test_railway_persistence_keys_only_strict_whitelist():
+    picked = ac.railway_persistence_keys_only(
+        {
+            "FRED_API_KEY": "fred",
+            "OPENAI_API_KEY": "openai-key",
+            "APP_PASSWORD": "should-not-persist-here",
+            "FX_API_ROOT": "/tmp/local-only",
+            "FX_PDF_ENGINE": "weasyprint",
+            "UNKNOWN_KEY": "nope",
+        }
+    )
+    assert picked == {
+        "FRED_API_KEY": "fred",
+        "OPENAI_API_KEY": "openai-key",
+    }
+
+
+def test_admin_save_token_accepted(monkeypatch):
+    monkeypatch.setenv(ac.ADMIN_SAVE_TOKEN_ENV, "railway-admin-save")
+    assert ac.admin_save_token_configured() is True
+    assert ac.admin_save_token_accepted("railway-admin-save") is True
+    assert ac.admin_save_token_accepted("wrong-token") is False
+    assert ac.admin_save_token_accepted("") is False
+
+
 def test_railway_variables_env_block_contains_real_values():
     block = ac.railway_variables_env_block(
         {"NEWSAPI_KEY": "news-123", "FX_API_ROOT": "/tmp/skip", "LLM_MODEL": "llama"}

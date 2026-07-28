@@ -133,13 +133,17 @@ streamlit run app.py
    - `仅本次会话`：立刻生效，但刷新会丢
    - `保存到本机 .env`：写入 vault + 仓库 `.env`（gitignore）
 5. **Railway 公网站**：
-   - `保存并持久化`：优先尝试直接写 **Railway Variables**
+   - 一次性先在 Railway Variables 里设置 `ADMIN_SAVE_TOKEN`
+   - 普通访客可继续 `仅本次会话` 使用，不必拿管理员口令
+   - 管理员在网页输入 **管理员保存口令** 后，才可点 `保存并持久化到 Railway Variables`
+   - `保存并持久化到 Railway Variables`：只会处理 API / LLM 相关白名单变量，优先尝试直接写 **Railway Variables**
    - 若页面检测到当前宿主无法直写 Variables，会自动退回成最省事的兜底：
      - 直接生成可复制的 **Railway Variables `KEY=VALUE` 块**
      - 可下载 `railway-variables.env`
      - 本机一条命令推送：`./scripts/push_env_to_railway.sh railway-variables.env`
    - `仅本次会话`：只对当前网页进程生效，刷新会丢
    - `写入服务器临时磁盘`：只写容器临时盘，**redeploy 后丢失**
+   - 为避免泄露，网页导出的持久化块 / `.env` 只包含**本次新填写或上传**的值，不会回显服务器里已有 secrets
    - 启动时若已从服务器环境变量读到 Key，页面会显示 **已永久保存到 Railway Variables**
    - 临时恢复：点「下载 .env」存 Mac → 下次打开网页用「从本机 .env 上传」恢复本会话
 
