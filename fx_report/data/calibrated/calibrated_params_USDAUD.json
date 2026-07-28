@@ -1,8 +1,8 @@
 {
   "pair": "USD/AUD",
   "loss_name": "brier",
-  "loss": 0.7429033772387733,
-  "baseline_loss": 0.7783921944512078,
+  "loss": 0.7517055391214201,
+  "baseline_loss": 0.7881295931508802,
   "n_samples": 192,
   "n_sims": 4000,
   "n_iters": 40,
@@ -24,31 +24,31 @@
     "scenarios": [
       {
         "name": "escalation",
-        "weight": 0.5748819357792653,
+        "weight": 0.6224204286728767,
         "mu_annual": 0.14166666666666664,
         "sigma_mult": 0.5,
-        "expected_jumps": 1.8174865357172065,
+        "expected_jumps": 1.6666666666666667,
         "jump_mean": -0.0024435415877981327,
         "jump_std": 0.007,
         "narrative": "风险升高 / 避险或单边冲击 → USD/AUD 上尾加厚"
       },
       {
         "name": "baseline",
-        "weight": 0.3473162546144357,
+        "weight": 0.37603674533474896,
         "mu_annual": 0.08158144210871637,
         "sigma_mult": 1.1127929655869542,
-        "expected_jumps": 1.74080093769434,
+        "expected_jumps": 0.8333333333333334,
         "jump_mean": -0.007939516434084939,
         "jump_std": 0.004,
         "narrative": "中性胶着 → USD/AUD 峰值多落在中档"
       },
       {
         "name": "deescalation",
-        "weight": 0.07780180960629905,
+        "weight": 0.001542825992374501,
         "mu_annual": -0.05813881942699736,
         "sigma_mult": 0.5,
         "expected_jumps": 2.5,
-        "jump_mean": 0.01584643087359067,
+        "jump_mean": 0.02,
         "jump_std": 0.004,
         "narrative": "缓和 / 逆风消退 → USD/AUD 峰值受压"
       }
@@ -63,25 +63,6 @@
     "calibration": {
       "baseline": "S=0",
       "version": 1
-    },
-    "recommended_variance_reduction": "antithetic"
-  },
-  "auto_tune": {
-    "date": "20260728",
-    "combo": "A",
-    "peak_engine": "path_max",
-    "jump_model": "merton",
-    "variance_reduction": "antithetic",
-    "selection": "max holdout_skill_brier; tie lower holdout_brier then higher hit",
-    "grid_note": "Combos A/B/C backtest max_rows=40 n_sims=2000; both pairs chose A",
-    "calib": {
-      "n_sims": 4000,
-      "n_iters": 40,
-      "max_rows": 200,
-      "loss": "brier"
-    },
-    "holdout_skill_brier": -0.0035359968884027815,
-    "holdout_brier": 0.740107653448453,
-    "holdout_hit": 0.3
+    }
   }
 }

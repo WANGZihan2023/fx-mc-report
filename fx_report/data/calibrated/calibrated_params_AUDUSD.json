@@ -1,8 +1,8 @@
 {
   "pair": "AUD/USD",
   "loss_name": "brier",
-  "loss": 0.7016961071611671,
-  "baseline_loss": 0.7392019894957197,
+  "loss": 0.7105138398407974,
+  "baseline_loss": 0.7555669343126881,
   "n_samples": 192,
   "n_sims": 4000,
   "n_iters": 40,
@@ -24,31 +24,31 @@
     "scenarios": [
       {
         "name": "escalation",
-        "weight": 0.5436402633075931,
-        "mu_annual": 0.024999999999999994,
-        "sigma_mult": 0.75,
-        "expected_jumps": 0.8333333333333334,
-        "jump_mean": 0.0,
+        "weight": 0.04304395131354204,
+        "mu_annual": 0.2,
+        "sigma_mult": 0.5,
+        "expected_jumps": 1.25,
+        "jump_mean": -0.013333333333333332,
         "jump_std": 0.007,
         "narrative": "风险升高 / 避险或单边冲击 → AUD/USD 上尾加厚"
       },
       {
         "name": "baseline",
-        "weight": 0.4292934817355883,
+        "weight": 0.09239517525841698,
         "mu_annual": -0.09599867777635826,
         "sigma_mult": 1.0,
-        "expected_jumps": 1.1394407245840277,
+        "expected_jumps": 0.8333333333333334,
         "jump_mean": 0.011135339882950474,
         "jump_std": 0.004,
         "narrative": "中性胶着 → AUD/USD 峰值多落在中档"
       },
       {
         "name": "deescalation",
-        "weight": 0.02706625495681869,
+        "weight": 0.864560873428041,
         "mu_annual": -0.004467409240286633,
-        "sigma_mult": 0.5,
+        "sigma_mult": 0.75,
         "expected_jumps": 0.0,
-        "jump_mean": -0.005,
+        "jump_mean": -0.006666666666666666,
         "jump_std": 0.004,
         "narrative": "缓和 / 逆风消退 → AUD/USD 峰值受压"
       }
@@ -63,25 +63,6 @@
     "calibration": {
       "baseline": "S=0",
       "version": 1
-    },
-    "recommended_variance_reduction": "antithetic"
-  },
-  "auto_tune": {
-    "date": "20260728",
-    "combo": "A",
-    "peak_engine": "path_max",
-    "jump_model": "merton",
-    "variance_reduction": "antithetic",
-    "selection": "max holdout_skill_brier; tie lower holdout_brier then higher hit",
-    "grid_note": "Combos A/B/C backtest max_rows=40 n_sims=2000; both pairs chose A",
-    "calib": {
-      "n_sims": 4000,
-      "n_iters": 40,
-      "max_rows": 200,
-      "loss": "brier"
-    },
-    "holdout_skill_brier": -0.14113558462321873,
-    "holdout_brier": 0.8415874209138167,
-    "holdout_hit": 0.25
+    }
   }
 }
