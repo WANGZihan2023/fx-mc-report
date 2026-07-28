@@ -327,6 +327,7 @@ class PipelineCheckpoint:
                     cluster_id=str(row.get("cluster_id") or ""),
                     cluster_size=int(row.get("cluster_size") or 1),
                     cluster_role=str(row.get("cluster_role") or ""),
+                    summary=str(row.get("summary") or ""),
                 )
             )
         wraw = dict(raw.get("weights") or {})
@@ -587,6 +588,7 @@ def _mark_prior_templates(
                 cluster_id=e.cluster_id,
                 cluster_size=e.cluster_size,
                 cluster_role=e.cluster_role,
+                summary=str(e.summary or ""),
             )
         )
     return out
@@ -669,6 +671,8 @@ def step4_evaluate_impact(
         "cluster_dedup_applied": False,
         "cluster_dedup_mode": "off",
         "cluster_warnings": [],
+        "summary_meta": {},
+        "drift_meta": {},
     }
 
     auto: list[EvidenceItem] = []
@@ -736,6 +740,16 @@ def step4_evaluate_impact(
             e.strength = min(e.strength, 0.25)
             e.direction = 0
 
+    # ECDA-style summarization: short auditable blurb before cluster / HITL / S
+    from fx_report.news.summarize import apply_evidence_summaries
+
+    summary_meta = apply_evidence_summaries(
+        evidence,
+        headlines=headlines,
+        prefer_llm=False,  # offline-safe default; LLM only if explicitly enabled later
+    )
+    meta["summary_meta"] = summary_meta
+
     # ECDA-style event clustering: same-theme headlines → one cluster before S
     # Pass quality/limitation so empty-news / 429 land in cluster_warnings (same ZH style).
     cluster_meta = assign_event_clusters(
@@ -753,11 +767,26 @@ def step4_evaluate_impact(
     else:
         meta["cluster_dedup_mode"] = "off"
 
+    # Light drift monitor: category/direction mix vs rolling baseline → audit warn
+    from fx_report.news.drift import check_evidence_drift
+
+    drift_report = check_evidence_drift(
+        evidence,
+        pair=spec.pair,
+        out_dir="output",
+        update_baseline=True,
+    )
+    meta["drift_meta"] = drift_report.to_dict()
+    warn_list = list(cluster_meta.cluster_warnings or [])
+    for w in drift_report.warnings:
+        if w not in warn_list:
+            warn_list.append(w)
+
     meta["evidence_n"] = len(evidence)
     meta["evidence_raw_n"] = cluster_meta.evidence_raw_n
     meta["prior_n"] = sum(1 for e in evidence if e.is_prior)
     meta["news_n"] = sum(1 for e in evidence if not e.is_prior)
-    meta["cluster_warnings"] = list(cluster_meta.cluster_warnings or [])
+    meta["cluster_warnings"] = warn_list
     return evidence, meta
 
 
@@ -982,8 +1011,12 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
         "cluster_dedup_applied": bool(news_meta.get("cluster_dedup_applied")),
         "cluster_dedup_mode": news_meta.get("cluster_dedup_mode", "off"),
         "cluster_warnings": list(news_meta.get("cluster_warnings") or []),
+        "summary_meta": dict(news_meta.get("summary_meta") or {}),
+        "drift_meta": dict(news_meta.get("drift_meta") or {}),
     }
     diag["cluster_warnings"] = list(news_meta.get("cluster_warnings") or [])
+    diag["summary_meta"] = dict(news_meta.get("summary_meta") or {})
+    diag["drift_meta"] = dict(news_meta.get("drift_meta") or {})
     if bullish_currency:
         diag["bullish_currency"] = bullish_currency
     # Push audit fields into torchcast HTML/PDF meta

@@ -1,11 +1,17 @@
 """
-人机协同：不确定证据检测 + 人工方向覆盖（赋权/报告前暂停）。
+人机协同 + Active Learning 优先排序：不确定证据检测与人工方向覆盖。
 
 不确定触发（可叠加）：
   - low_confidence：强度偏弱（SLIGHT / strength≤阈值）
   - rules_llm_conflict：LLM 结论与关键词规则方向冲突
   - cluster_direction_conflict：同事件簇内方向冲突
   - unclear_category：类别为 unclassified / other
+  - near_neutral_margin：方向中性但强度不弱（边界样本）
+
+Active Learning 选点（赋权前 top-N）：
+  1) 不确定度打分（原因权重 + 弱强度 bump + 多原因叠加）
+  2) 簇多样性：同簇后续候选降权，避免 HITL 全挤在同一 EVT-*
+  3) 代表优先：同簇内优先问 rep / 高 |direction|
 
 人工选项：利多(up) / 利空(down) / 中性(neutral) / 跳过(skip)
 不发明证据；仅对已有条目打标与覆盖方向。
@@ -25,6 +31,7 @@ REASON_CODES: tuple[str, ...] = (
     "rules_llm_conflict",
     "cluster_direction_conflict",
     "unclear_category",
+    "near_neutral_margin",
 )
 
 REASON_ZH: dict[str, str] = {
@@ -32,6 +39,7 @@ REASON_ZH: dict[str, str] = {
     "rules_llm_conflict": "规则与 LLM 方向冲突",
     "cluster_direction_conflict": "同簇内方向冲突",
     "unclear_category": "类别不清（未分类/其他）",
+    "near_neutral_margin": "方向中性但强度不弱（边界样本）",
 }
 
 CHOICE_ZH: dict[str, str] = {
@@ -50,6 +58,9 @@ CHOICE_TO_DIR: dict[str, int | None] = {
 
 DEFAULT_MAX_UNCERTAIN = 5
 DEFAULT_LOW_STRENGTH = 1.0  # strength_label SLIGHT 上界
+DEFAULT_NEUTRAL_STRENGTH = 1.2  # near_neutral_margin 下限
+# Diversity: multiply remaining same-cluster scores by this after each pick
+DEFAULT_CLUSTER_DIVERSITY = 0.35
 
 
 def direction_label(direction: int) -> str:
@@ -85,6 +96,8 @@ class PendingReview:
     strength_label: str = ""
     rules_direction: int | None = None
     from_llm: bool = False
+    priority_rank: int = 0  # 1-based AL rank after diversity selection
+    al_score: float = 0.0  # final score used for pick (post-diversity)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +125,8 @@ class PendingReview:
                 else None
             ),
             from_llm=bool(raw.get("from_llm", False)),
+            priority_rank=int(raw.get("priority_rank") or 0),
+            al_score=float(raw.get("al_score") or raw.get("uncertainty_score") or 0.0),
         )
 
 
@@ -156,41 +171,63 @@ def _score_uncertainty(
     *,
     strength: float,
     low_strength_threshold: float,
+    direction: int = 0,
+    cluster_role: str = "",
 ) -> float:
-    """Higher = more uncertain; used to pick top-N."""
+    """Higher = more uncertain / higher AL value; used to pick top-N."""
     base = 0.0
     weights = {
         "rules_llm_conflict": 3.0,
         "cluster_direction_conflict": 2.5,
         "unclear_category": 2.0,
+        "near_neutral_margin": 1.8,
         "low_confidence": 1.5,
     }
     for r in reasons:
         base += weights.get(r, 1.0)
+    # Multi-reason stack bonus (information gain proxy)
+    if len(reasons) >= 2:
+        base += 0.4 * (len(reasons) - 1)
     # Weaker strength → bump
     if strength <= low_strength_threshold:
         base += max(0.0, (low_strength_threshold - float(strength)) * 0.5)
+    # Prefer asking the cluster representative when conflict exists
+    role = (cluster_role or "").lower()
+    if "cluster_direction_conflict" in reasons and role in {"rep", "solo", ""}:
+        base += 0.35
+    elif "cluster_direction_conflict" in reasons and role == "dup":
+        base -= 0.15
+    # Soft margin: decisive direction with many reasons still ranks high via abs
+    base += 0.05 * abs(int(direction))
     return base
 
 
-def detect_uncertain_evidence(
+def _build_snippet(e: EvidenceItem) -> str:
+    """Prefer compressed summary blurb; fall back to title + note."""
+    summary = (e.summary or "").strip()
+    if summary:
+        return summary[:280]
+    title = (e.title or "").strip()
+    snippet = title[:220]
+    note = (e.note or "").strip()
+    if note and note not in snippet:
+        snippet = f"{snippet} — {note[:120]}" if snippet else note[:220]
+    return snippet[:280]
+
+
+def _collect_candidates(
     evidence: Sequence[EvidenceItem],
     *,
-    pair: str | Any | None = None,
-    max_items: int = DEFAULT_MAX_UNCERTAIN,
-    low_strength_threshold: float = DEFAULT_LOW_STRENGTH,
-    include_priors: bool = False,
+    pair: str | Any | None,
+    low_strength_threshold: float,
+    neutral_strength_threshold: float,
+    include_priors: bool,
 ) -> list[PendingReview]:
-    """
-    Scan evidence after classify+cluster; return top-N most uncertain items.
-    Does not invent rows — only flags existing EvidenceItem.
-    """
-    cap = max(0, int(max_items))
-    if cap == 0 or not evidence:
-        return []
-
     conflict_cids = _conflict_cluster_ids(evidence)
     candidates: list[PendingReview] = []
+    role_by_id = {
+        str(e.id or ""): (e.cluster_role or "") for e in evidence
+    }
 
     for e in evidence:
         if e.is_prior and not include_priors:
@@ -211,6 +248,11 @@ def detect_uncertain_evidence(
         cid = (e.cluster_id or "").strip()
         if cid and cid in conflict_cids:
             reasons.append("cluster_direction_conflict")
+
+        # Boundary: model says neutral but strength is not trivial
+        if int(e.direction) == 0 and float(e.strength) >= float(neutral_strength_threshold):
+            if cat not in {"unclassified", ""}:  # unclassified already covered
+                reasons.append("near_neutral_margin")
 
         if from_llm and pair is not None:
             rules_dir, _rules_cat = _rules_guess(e.title or "", pair)
@@ -233,20 +275,20 @@ def detect_uncertain_evidence(
                 uniq.append(r)
 
         score = _score_uncertainty(
-            uniq, strength=float(e.strength), low_strength_threshold=low_strength_threshold
+            uniq,
+            strength=float(e.strength),
+            low_strength_threshold=low_strength_threshold,
+            direction=int(e.direction),
+            cluster_role=role_by_id.get(str(e.id or ""), e.cluster_role or ""),
         )
         title = (e.title or "").strip()
-        snippet = title[:220]
-        note = (e.note or "").strip()
-        if note and note not in snippet:
-            snippet = f"{snippet} — {note[:120]}" if snippet else note[:220]
 
         candidates.append(
             PendingReview(
                 evidence_id=str(e.id or ""),
                 statement_id=str(e.statement_id or e.id or ""),
                 title=title[:180],
-                snippet=snippet[:280],
+                snippet=_build_snippet(e),
                 url=str(e.url or ""),
                 model_direction=int(e.direction),
                 model_direction_label=direction_label(int(e.direction)),
@@ -259,11 +301,105 @@ def detect_uncertain_evidence(
                 strength_label=str(e.strength_label or ""),
                 rules_direction=rules_dir,
                 from_llm=from_llm,
+                al_score=score,
             )
         )
+    return candidates
 
-    candidates.sort(key=lambda p: (-p.uncertainty_score, -abs(p.model_direction), p.evidence_id))
-    return candidates[:cap]
+
+def prioritize_for_hitl(
+    candidates: Sequence[PendingReview],
+    *,
+    max_items: int = DEFAULT_MAX_UNCERTAIN,
+    cluster_diversity: float = DEFAULT_CLUSTER_DIVERSITY,
+) -> list[PendingReview]:
+    """
+    Active-learning selection: greedy top-N with cluster diversity.
+
+    After picking an item from cluster C, remaining candidates in C are
+    multiplied by `cluster_diversity` (<1) so the queue spreads across themes.
+    """
+    cap = max(0, int(max_items))
+    if cap == 0 or not candidates:
+        return []
+
+    remaining = [
+        PendingReview(
+            evidence_id=c.evidence_id,
+            statement_id=c.statement_id,
+            title=c.title,
+            snippet=c.snippet,
+            url=c.url,
+            model_direction=c.model_direction,
+            model_direction_label=c.model_direction_label,
+            model_category=c.model_category,
+            reasons=list(c.reasons),
+            reasons_zh=list(c.reasons_zh),
+            uncertainty_score=c.uncertainty_score,
+            cluster_id=c.cluster_id,
+            strength=c.strength,
+            strength_label=c.strength_label,
+            rules_direction=c.rules_direction,
+            from_llm=c.from_llm,
+            al_score=float(c.uncertainty_score),
+        )
+        for c in candidates
+    ]
+    picked: list[PendingReview] = []
+    div = max(0.0, min(1.0, float(cluster_diversity)))
+
+    while remaining and len(picked) < cap:
+        remaining.sort(
+            key=lambda p: (
+                -p.al_score,
+                -abs(p.model_direction),
+                -p.uncertainty_score,
+                p.evidence_id,
+            )
+        )
+        best = remaining.pop(0)
+        best.priority_rank = len(picked) + 1
+        picked.append(best)
+        cid = (best.cluster_id or "").strip()
+        if not cid or div >= 1.0:
+            continue
+        for p in remaining:
+            if (p.cluster_id or "").strip() == cid:
+                p.al_score = float(p.al_score) * div
+
+    return picked
+
+
+def detect_uncertain_evidence(
+    evidence: Sequence[EvidenceItem],
+    *,
+    pair: str | Any | None = None,
+    max_items: int = DEFAULT_MAX_UNCERTAIN,
+    low_strength_threshold: float = DEFAULT_LOW_STRENGTH,
+    neutral_strength_threshold: float = DEFAULT_NEUTRAL_STRENGTH,
+    include_priors: bool = False,
+    cluster_diversity: float = DEFAULT_CLUSTER_DIVERSITY,
+) -> list[PendingReview]:
+    """
+    Scan evidence after classify+cluster; return top-N AL-prioritized items.
+    Does not invent rows — only flags existing EvidenceItem.
+    """
+    candidates = _collect_candidates(
+        evidence,
+        pair=pair,
+        low_strength_threshold=low_strength_threshold,
+        neutral_strength_threshold=neutral_strength_threshold,
+        include_priors=include_priors,
+    )
+    return prioritize_for_hitl(
+        candidates,
+        max_items=max_items,
+        cluster_diversity=cluster_diversity,
+    )
+
+
+# Back-compat alias used in docs / active-learning wording
+active_learning_prioritize = detect_uncertain_evidence
 
 
 def normalize_review_choice(raw: Any) -> ReviewChoice | "":
@@ -335,6 +471,7 @@ def apply_review_overrides(
             cluster_id=e.cluster_id,
             cluster_size=int(e.cluster_size or 1),
             cluster_role=e.cluster_role,
+            summary=str(e.summary or ""),
         )
         sid = str(e.statement_id or e.id or "")
         eid = str(e.id or "")
@@ -397,6 +534,8 @@ def reviews_to_label_rows(
                 "agree": compute_agree(model, human) if human else "",
                 "pair": pair,
                 "hitl_reasons": "|".join(p.reasons),
+                "al_score": p.al_score or p.uncertainty_score,
+                "priority_rank": p.priority_rank,
             }
         )
     return rows

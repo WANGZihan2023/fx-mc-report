@@ -320,6 +320,10 @@ def evidence_dicts_to_items(rows: Sequence[dict[str, Any]]) -> list[Any]:
                 statement_id=str(row.get("statement_id") or row.get("id") or ""),
                 url=str(row.get("url") or ""),
                 is_prior=bool(row.get("is_prior", False)),
+                cluster_id=str(row.get("cluster_id") or ""),
+                cluster_size=int(row.get("cluster_size") or 1),
+                cluster_role=str(row.get("cluster_role") or ""),
+                summary=str(row.get("summary") or ""),
             )
         )
     return items

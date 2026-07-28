@@ -404,8 +404,13 @@ def parse_order_text(
             still.append("分档切点（需手动补全）")
 
     notes.append(
-        "峰值引擎 / 是否使用校准参数 / 不确定证据人工确认：单子通常不含，请手动选择。"
+        " / ".join(ORDER_PDF_ALWAYS_MANUAL) + "：单子通常不含，请手动选择。"
     )
+
+    # Engine / calib / HITL are never inferred from the PDF
+    for lab in ORDER_PDF_ALWAYS_MANUAL:
+        if lab not in still:
+            still.append(lab)
 
     ok = bool(pair or bullish or barrier or strike or bucket_mode)
     if not ok:
@@ -413,6 +418,7 @@ def parse_order_text(
             ok=False,
             error="未能从单子识别货币对或价位，请手动填写开始设置。",
             text_preview=raw[:400],
+            still_needed=list(still),
             notes=notes,
         )
 

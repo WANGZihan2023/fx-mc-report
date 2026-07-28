@@ -41,6 +41,8 @@
 
 展示：`pipeline` 审计字段 → Streamlit「本次分析审计」+ `st.warning` → 报告 meta 一行 `⚠N告警`。
 
+相关 ECDA 扩展（Active Learning / 漂移 / 摘要）：`docs/ecda_active_learning.md`。
+
 ## UI
 
-结果页 **「本次分析审计」**：`evidence_n` / `cluster_n` / `raw` / `dedup=True|False`；若发生去重会有中文说明；有 `cluster_warnings` 时额外黄色告警框。
+结果页 **「本次分析审计」**：`evidence_n` / `cluster_n` / `raw` / `dedup=True|False`；若发生去重会有中文说明；有 `cluster_warnings`（含漂移告警）时额外黄色告警框。

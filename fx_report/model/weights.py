@@ -51,6 +51,8 @@ class EvidenceItem:
     cluster_id: str = ""  # e.g. EVT-01
     cluster_size: int = 1
     cluster_role: str = ""  # rep | dup | solo | ""
+    # Short auditable blurb (extractive/LLM) before HITL / weighting
+    summary: str = ""
 
 
 @dataclass

@@ -269,10 +269,18 @@ def render_hitl_uncertain_form() -> bool:
 
             st.markdown(f"**{i + 1}. `{eid}`** · {title[:120]}")
             st.caption(snippet[:240] if snippet else "（无摘要）")
+            al_rank = (
+                p.priority_rank if hasattr(p, "priority_rank") else p.get("priority_rank", 0)
+            )
+            al_score = p.al_score if hasattr(p, "al_score") else p.get("al_score", 0)
             bits = [
                 f"模型猜测：{direction_zh(int(model_dir))}（{model_cat or '—'}）",
                 f"强弱：{strength_label or '—'}",
             ]
+            if al_rank:
+                bits.append(f"AL优先#{int(al_rank)}")
+            if al_score:
+                bits.append(f"不确定度={float(al_score):.2f}")
             if cluster_id:
                 bits.append(f"簇：{cluster_id}")
             if rules_dir is not None:

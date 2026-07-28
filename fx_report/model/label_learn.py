@@ -307,6 +307,10 @@ def apply_label_learned_strength(
                 statement_id=e.statement_id,
                 url=e.url,
                 is_prior=e.is_prior,
+                cluster_id=getattr(e, "cluster_id", "") or "",
+                cluster_size=int(getattr(e, "cluster_size", 1) or 1),
+                cluster_role=getattr(e, "cluster_role", "") or "",
+                summary=str(getattr(e, "summary", "") or ""),
             )
         )
     meta["applied"] = True
