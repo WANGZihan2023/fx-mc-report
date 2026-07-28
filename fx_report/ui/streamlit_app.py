@@ -8,7 +8,6 @@ Multi-pair FX peak-bucket forecaster — Streamlit UI（精简折叠版）。
 from __future__ import annotations
 
 import json
-import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -17,6 +16,16 @@ import streamlit as st
 
 from fx_report.config.api_config import status_text
 from fx_report.ui.api_panel import render_api_settings_panel
+from fx_report.ui.ux_helpers import (
+    PCT_CUT_MAX,
+    PCT_CUT_MIN,
+    app_password_expected,
+    bb_jump_compensate_warning,
+    password_accepted,
+    pct_cuts_in_bounds,
+    seed_pct_widget_value,
+    should_heal_floor_clamp,
+)
 from fx_report.news.fetch import fetch_status_summary
 from fx_report.market.fetch_data import fetch_market
 from fx_report.market.pairs import (
@@ -76,16 +85,9 @@ st.set_page_config(
 )
 
 
-_DEFAULT_APP_PASSWORD = "uniocean"
-
-
 def _app_password() -> str:
     """Product shared gate: APP_PASSWORD / FX_REPORT_PASSWORD, else default uniocean."""
-    for key in ("APP_PASSWORD", "FX_REPORT_PASSWORD"):
-        val = (os.environ.get(key) or "").strip()
-        if val:
-            return val
-    return _DEFAULT_APP_PASSWORD
+    return app_password_expected()
 
 
 def _require_password() -> bool:
@@ -97,10 +99,10 @@ def _require_password() -> bool:
     st.caption("请输入访问密码（可用环境变量 APP_PASSWORD / FX_REPORT_PASSWORD 覆盖默认）。")
     entered = st.text_input("访问密码", type="password", key="auth_password_input")
     if st.button("进入", type="primary", key="auth_submit"):
-        if entered == expected:
+        if password_accepted(entered, expected):
             st.session_state["_auth_ok"] = True
             st.rerun()
-        st.error("密码错误")
+        st.error("密码错误" if (entered or "").strip() else "请输入密码")
     return False
 
 
@@ -371,8 +373,8 @@ def render_spot_panel(spec: PairSpec, bullish: str, lookback_days: int) -> dict:
 
 
 # Relative-cut number_input bounds (NOT the default cuts).
-_PCT_CUT_MIN = -20.0
-_PCT_CUT_MAX = 50.0
+_PCT_CUT_MIN = PCT_CUT_MIN
+_PCT_CUT_MAX = PCT_CUT_MAX
 
 
 def _default_pct_cuts(base: ModelWeights) -> list[float]:
@@ -440,11 +442,15 @@ def render_bucket_editor(
         for i, e in enumerate(st.session_state[abs_key]):
             st.session_state[f"abs_cut_{analysis_pair}_{i}"] = float(e)
 
+    oob_seed_flag = f"_pct_seed_oob::{analysis_pair}"
     for i, v in enumerate(st.session_state[pct_key]):
         wk = f"pct_cut_{analysis_pair}_{i}"
         if wk not in st.session_state:
             # Keep widget seeds inside number_input bounds (avoid silent clamp to -20).
-            st.session_state[wk] = float(min(_PCT_CUT_MAX, max(_PCT_CUT_MIN, float(v))))
+            clamped, oob = seed_pct_widget_value(float(v))
+            st.session_state[wk] = clamped
+            if oob:
+                st.session_state[oob_seed_flag] = True
     for i, v in enumerate(st.session_state[abs_key]):
         wk = f"abs_cut_{analysis_pair}_{i}"
         if wk not in st.session_state:
@@ -466,12 +472,14 @@ def render_bucket_editor(
     )
     use_rel = mode == "相对现价"
 
-    # Heal sessions stuck at the relative-input floor after abs→pct overflow clamp.
+    # Heal only when widgets were seeded from out-of-range abs→pct (not intentional -20).
     pct_widget_vals = [
         float(st.session_state.get(f"pct_cut_{analysis_pair}_{i}", defaults[i]))
         for i in range(4)
     ]
-    if use_rel and all(abs(v - _PCT_CUT_MIN) < 1e-9 for v in pct_widget_vals):
+    seeded_oob = bool(st.session_state.get(oob_seed_flag))
+    if use_rel and should_heal_floor_clamp(pct_widget_vals, seeded_from_oob=seeded_oob):
+        st.session_state.pop(oob_seed_flag, None)
         _apply_pct_cuts_to_session(analysis_pair, pct_key, abs_key, defaults, spot)
         st.warning(
             "相对涨幅曾全部落在下限 **-20%**（常见原因：绝对价位与当前分析现价口径不一致，"
@@ -485,6 +493,7 @@ def render_bucket_editor(
         help="-20 不是默认；点此重置四个相对边界。",
     )
     if reset:
+        st.session_state.pop(oob_seed_flag, None)
         _apply_pct_cuts_to_session(analysis_pair, pct_key, abs_key, defaults, spot)
 
     cols = st.columns(4)
@@ -551,10 +560,14 @@ def render_bucket_editor(
             st.session_state[pct_key] = list(pct_cuts)
             # Do NOT push out-of-range % into relative widgets — Streamlit would
             # clamp them all to min_value (-20) and poison the next relative view.
-            if all(_PCT_CUT_MIN <= p <= _PCT_CUT_MAX for p in raw_pcts):
+            if pct_cuts_in_bounds(raw_pcts):
+                st.session_state.pop(oob_seed_flag, None)
                 for i, p in enumerate(pct_cuts):
                     st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(p)
             else:
+                # Mark so switching back to relative can one-shot heal if widgets
+                # were ever seeded from these OOB percentages.
+                st.session_state[oob_seed_flag] = True
                 lo, hi = min(raw_pcts), max(raw_pcts)
                 st.warning(
                     f"当前绝对边界相对现价约 {lo:+.1f}%～{hi:+.1f}%，"
@@ -705,6 +718,11 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
                     "若情景 E[jumps]>0，跳跃会被忽略；"
                     "需要跳跃加厚峰值尾部时请改用 path_max。"
                 )
+            _jc_warn = bb_jump_compensate_warning(
+                peak_engine=peak_engine, jump_compensate=bool(jump_compensate)
+            )
+            if _jc_warn:
+                st.warning(_jc_warn)
         st.caption(
             "切换引擎/跳跃后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine / jump_model。"
         )

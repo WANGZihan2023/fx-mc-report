@@ -93,6 +93,8 @@ def _predict_probs(
         sigma_mult_extra=sigma_extra,
         peak_engine=engine,
         variance_reduction=variance_reduction,
+        jump_model=str(getattr(weights, "jump_model", "merton") or "merton"),
+        jump_compensate=bool(getattr(weights, "jump_compensate", False)),
     )
     return np.array(list(mc.raw_probs.values()), dtype=np.float64), list(mc.raw_probs.keys())
 
@@ -506,6 +508,8 @@ def compare_peak_engines(
         max_shift=weights.max_scenario_shift,
     )
 
+    jump_model = str(getattr(weights, "jump_model", "merton") or "merton")
+    jump_compensate = bool(getattr(weights, "jump_compensate", False))
     results: dict[str, dict[str, float]] = {}
     for engine in ("path_max", "brownian_bridge"):
         mc = run_mixture_monte_carlo(
@@ -520,6 +524,8 @@ def compare_peak_engines(
             sigma_mult_extra=sigma_extra,
             peak_engine=engine,
             variance_reduction=variance_reduction,
+            jump_model=jump_model,
+            jump_compensate=jump_compensate,
         )
         results[engine] = dict(mc.raw_probs)
 
