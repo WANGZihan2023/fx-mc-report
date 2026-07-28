@@ -1195,8 +1195,9 @@ def render_label_audit_section(
                 st.rerun()
         with c2:
             st.info(
-                "要看**真实**新闻证据：侧栏「API / AI Key」或 Railway Variables 填写 "
-                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（无 Key 也会试央行 + Google News RSS），"
+                "要看**真实**新闻证据 / 更多 References：侧栏「API / AI Key」填写 "
+                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（无 Key 也会试央行 + Google News RSS）。"
+                "DeepSeek/LLM 只做证据判定，不会凭空增加链接。"
                 "保存后重新运行分析。"
             )
         with st.expander("Railway / 环境变量检查清单", expanded=True):
@@ -1533,11 +1534,11 @@ def main() -> None:
             f"""
 **仍需你在 Railway / 本机完成：**
 
-- {'✅' if news_ok else '☐'} 填 `NEWSAPI_KEY` / `FINNHUB_API_KEY`（及可选 LLM Key）
+- {'✅' if news_ok else '☐'} 填 `NEWSAPI_KEY` / `FINNHUB_API_KEY`（**决定 References 条数**；LLM/DeepSeek 可选，只做判定）
 - ✅ 访问口令已启用（默认 `uniocean`；可用 `APP_PASSWORD` 覆盖）
 - {'✅' if n_lab >= MIN_LABELS_FOR_LEARN else '☐'} 实盘标注 ≥{MIN_LABELS_FOR_LEARN} 条（当前 **{n_lab}**）
 
-无 Key 时仍会试央行 RSS + Google News；标注够后可勾「使用标签学习到的强度」。
+无 Key 时仍会试央行 RSS + Google News；只填 DeepSeek **不会**自动多出参考链接。标注够后可勾「使用标签学习到的强度」。
 详见 `docs/deploy-docker.md` / `docs/label_audit.md`。
 """.strip()
         )
@@ -2073,6 +2074,22 @@ def main() -> None:
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"
         f"· {note}"
     )
+    # Thin References / evidence tip (LLM alone does not invent URLs)
+    try:
+        from fx_report.config.api_config import has_news_api, load_config
+        from fx_report.model.label_audit import thin_refs_message
+
+        _stmt_n = len((diag.get("statements") or []) or [])
+        _thin = thin_refs_message(
+            evidence_n=int(counts.get("evidence_n") or 0),
+            fetched=int(counts.get("fetched") or 0),
+            news_keys_present=has_news_api(load_config()),
+            statements_n=_stmt_n or None,
+        )
+        if _thin:
+            st.warning(_thin)
+    except Exception:
+        pass
     st.markdown(
         "**↓ 证据人工标注在下方**"
         "（紧随本审计面板；完整报告 / PDF 在更下面。"

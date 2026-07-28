@@ -117,6 +117,13 @@ def resolve_llm_config(
     ).rstrip("/")
     mdl = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") or ""
 
+    deepseek_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    groq_key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    # Key was filled as DeepSeek (dedicated env or same value synced from UI)
+    key_is_deepseek = bool(deepseek_key) and (not key or key == deepseek_key)
+    key_is_groq = bool(groq_key) and (not key or key == groq_key) and not openai_key
+
     # Auto local free path: Ollama with llama3.1
     if allow_ollama_auto and not key and not base:
         if ollama_available():
@@ -133,16 +140,27 @@ def resolve_llm_config(
     if not key:
         return None
 
+    model_looks_deepseek = "deepseek" in (mdl or "").lower()
+
     if not base:
-        if os.environ.get("GROQ_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        # Prefer provider inferred from which dedicated key was set — do NOT
+        # send a DeepSeek key to api.openai.com (common UI misconfig).
+        if key_is_groq:
             base = "https://api.groq.com/openai/v1"
             mdl = mdl or "llama-3.1-8b-instant"
-        elif os.environ.get("DEEPSEEK_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        elif key_is_deepseek or model_looks_deepseek:
             base = "https://api.deepseek.com/v1"
             mdl = mdl or "deepseek-chat"
         else:
             base = "https://api.openai.com/v1"
             mdl = mdl or "gpt-4o-mini"
+    elif "openai.com" in base and not openai_key and (
+        key_is_deepseek or model_looks_deepseek
+    ):
+        # User picked "OpenAI compatible", pasted DeepSeek key / model, left
+        # default OpenAI base — rewrite so classification actually works.
+        base = "https://api.deepseek.com/v1"
+        mdl = mdl or "deepseek-chat"
     if not mdl:
         if "11434" in base:
             mdl = "llama3.1:latest"

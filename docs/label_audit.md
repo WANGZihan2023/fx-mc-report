@@ -82,8 +82,8 @@
 
 - **怎么填？** — 字段说明与例子（默认展开）  
 - **加载练习样例** — 用演示语句练手（主按钮）  
-- **Railway / 环境变量检查清单** — `NEWSAPI_KEY` / `FINNHUB_API_KEY` / LLM / `APP_PASSWORD` 等  
-- 无 Key 时流水线仍会试 **央行 RSS + Google News 公开 RSS**；相关度不够则 evidence_n=0（诚实空证据）
+- **Railway / 环境变量检查清单** — `NEWSAPI_KEY` / `FINNHUB_API_KEY`（决定 References 条数）/ LLM·DeepSeek（只判定）/ `APP_PASSWORD` 等  
+- 无 Key 时流水线仍会试 **央行 RSS + Google News 公开 RSS**；相关度不够则 evidence_n=0–1（诚实空/稀薄证据）。**只填 DeepSeek 不会自动多出 References**
 
 ## Stage 3 · 标签学习强度（脚手架）
 

@@ -90,13 +90,26 @@ FREE_SIGNUP_GUIDES: list[dict[str, str]] = [
         "name": "Groq（LLM 免费额度）",
         "env_key": "GROQ_API_KEY",
         "cost": "有免费额度",
-        "why": "云端大模型：证据判定 + AI 检索抽取（本机无 Ollama 时用）",
+        "why": "云端大模型：证据判定 + AI 检索抽取（本机无 Ollama 时用）。不会单独增加 References 条数。",
         "url": "https://console.groq.com/keys",
         "steps": (
             "1. 打开 Groq Console 注册登录\n"
             "2. API Keys → Create API Key\n"
             "3. 复制后填到「AI API」表的 API Key，通道选 Groq\n"
             "4. 模型可用 llama-3.1-8b-instant"
+        ),
+    },
+    {
+        "name": "DeepSeek（OpenAI 兼容）",
+        "env_key": "DEEPSEEK_API_KEY",
+        "cost": "按量付费（有赠送额度）",
+        "why": "证据判定 / 把已抓到的材料收成语句；不能替代 NewsAPI——References 仍靠新闻/RSS。",
+        "url": "https://platform.deepseek.com/api_keys",
+        "steps": (
+            "1. 打开 DeepSeek 开放平台 → API Keys\n"
+            "2. 创建并复制 Key\n"
+            "3. 「AI API」通道选 DeepSeek（会自动填 Base URL=api.deepseek.com/v1）\n"
+            "4. 模型默认 deepseek-chat；不要用 OpenAI 默认 Base URL"
         ),
     },
     {
@@ -205,6 +218,7 @@ def _seed_from_vault() -> dict[str, str]:
         "GROQ_API_KEY",
         "LLM_API_KEY",
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
         "LLM_BASE_URL",
         "LLM_MODEL",
     ]:
@@ -363,19 +377,33 @@ def render_api_settings_panel() -> dict[str, Any]:
 
     with tab_ai:
         st.markdown(
-            "用于步骤 3（AI 检索抽取）与步骤 4（证据判定）。"
-            "推荐：本机 **Ollama**；或云端 **Groq** 免费额度；也可用公司 OpenAI 兼容网关。"
+            "用于步骤 3（把**已抓到的**材料收成语句）与步骤 4（证据判定/改写）。"
+            "推荐：本机 **Ollama**、云端 **Groq** / **DeepSeek**，或公司 OpenAI 兼容网关。"
+        )
+        st.warning(
+            "**LLM Key ≠ 更多 References。**"
+            "文末参考链接来自新闻抓取（央行 RSS / Google News RSS / "
+            "`NEWSAPI_KEY` / `FINNHUB_API_KEY`）+ 可选搜索（Tavily/Brave）。"
+            "只填 DeepSeek/Groq 不会凭空多出 URL；头条太少或相关度过滤后，"
+            "References 可能只剩 1 条（常见是行情语句）。"
         )
         keys = _session_keys()
+        # Prefer DeepSeek channel if vault already has DeepSeek base/key
+        _default_channel = 0
+        if "deepseek.com" in (keys.get("LLM_BASE_URL") or "") or keys.get("DEEPSEEK_API_KEY"):
+            _default_channel = 2
+        elif keys.get("GROQ_API_KEY") or "groq.com" in (keys.get("LLM_BASE_URL") or ""):
+            _default_channel = 1
         channel = st.selectbox(
             "AI 通道",
-            options=["ollama", "groq", "openai_compatible"],
+            options=["ollama", "groq", "deepseek", "openai_compatible"],
             format_func=lambda x: {
                 "ollama": "Ollama 本机（免费，Key=ollama）",
                 "groq": "Groq 云端（填 GROQ / LLM Key）",
-                "openai_compatible": "OpenAI 兼容（公司网关/DeepSeek/…）",
+                "deepseek": "DeepSeek（自动 Base URL=api.deepseek.com/v1）",
+                "openai_compatible": "其它 OpenAI 兼容网关",
             }[x],
-            index=0,
+            index=_default_channel,
             key="ai_channel",
         )
 
@@ -391,6 +419,16 @@ def render_api_settings_panel() -> dict[str, Any]:
                 "LLM_BASE_URL": "https://api.groq.com/openai/v1",
                 "LLM_MODEL": keys.get("LLM_MODEL") or "llama-3.1-8b-instant",
             }
+        elif channel == "deepseek":
+            defaults = {
+                "LLM_API_KEY": (
+                    keys.get("DEEPSEEK_API_KEY")
+                    or keys.get("LLM_API_KEY")
+                    or ""
+                ),
+                "LLM_BASE_URL": "https://api.deepseek.com/v1",
+                "LLM_MODEL": keys.get("LLM_MODEL") or "deepseek-chat",
+            }
         else:
             defaults = {
                 "LLM_API_KEY": keys.get("LLM_API_KEY") or keys.get("OPENAI_API_KEY") or "",
@@ -403,19 +441,19 @@ def render_api_settings_panel() -> dict[str, Any]:
                 {
                     "字段": "API Key",
                     "环境变量": "LLM_API_KEY",
-                    "说明": "Groq/OpenAI/兼容网关的密钥；Ollama 填 ollama",
+                    "说明": "Groq/DeepSeek/OpenAI/兼容网关；Ollama 填 ollama",
                     "值": defaults["LLM_API_KEY"],
                 },
                 {
                     "字段": "Base URL",
                     "环境变量": "LLM_BASE_URL",
-                    "说明": "OpenAI 兼容接口根路径（…/v1）",
+                    "说明": "必须匹配通道（DeepSeek→api.deepseek.com/v1）",
                     "值": defaults["LLM_BASE_URL"],
                 },
                 {
                     "字段": "Model",
                     "环境变量": "LLM_MODEL",
-                    "说明": "模型名，如 llama3.1:latest / llama-3.1-8b-instant",
+                    "说明": "如 deepseek-chat / llama-3.1-8b-instant / gpt-4o-mini",
                     "值": defaults["LLM_MODEL"],
                 },
             ]
@@ -435,6 +473,14 @@ def render_api_settings_panel() -> dict[str, Any]:
         }
         if channel == "groq" and ai_vals.get("LLM_API_KEY"):
             ai_vals["GROQ_API_KEY"] = ai_vals["LLM_API_KEY"]
+        if channel == "deepseek" and ai_vals.get("LLM_API_KEY"):
+            # So resolve_llm_config can infer DeepSeek even if Base URL was wiped
+            ai_vals["DEEPSEEK_API_KEY"] = ai_vals["LLM_API_KEY"]
+            ai_vals["LLM_BASE_URL"] = (
+                ai_vals.get("LLM_BASE_URL") or "https://api.deepseek.com/v1"
+            )
+            if "openai.com" in (ai_vals.get("LLM_BASE_URL") or ""):
+                ai_vals["LLM_BASE_URL"] = "https://api.deepseek.com/v1"
 
         st.info(
             "Key **不会**写进报告正文，也不会自动上传。"

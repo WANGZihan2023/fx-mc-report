@@ -591,14 +591,16 @@ def railway_env_checklist_markdown(*, news_keys_present: bool = False) -> str:
 
 | 变量 | 用途 | 状态提示 |
 |------|------|----------|
-| `NEWSAPI_KEY` 或 `FINNHUB_API_KEY` | 新闻头条（无 Key 时仅靠央行 RSS） | {news_mark} |
-| `GROQ_API_KEY` / `LLM_API_KEY` | hybrid/LLM 证据判定 | 可选但推荐 |
+| `NEWSAPI_KEY` 或 `FINNHUB_API_KEY` | **References / 证据条数**的主要来源（无 Key 时仅靠央行+Google News RSS） | {news_mark} |
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` | AI 检索员网页搜索（给 LLM 更多原料） | 可选 |
+| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | hybrid 证据判定与语句抽取（**不**单独增加 URL 条数） | 可选但推荐 |
+| `LLM_BASE_URL` | DeepSeek 须为 `https://api.deepseek.com/v1`（通道选 DeepSeek 会自动填） | DeepSeek 必对 |
 | `FRED_API_KEY` | 行情增强 | 可选 |
-| `TAVILY_API_KEY` / `BRAVE_API_KEY` | AI 检索员 | 可选 |
 | `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | 访问口令 | 云端强烈建议 |
 
-无新闻 Key 时系统仍会抓 **Fed/RBA/ECB/BOE 等官方 RSS** +（若启用）Google News 公开 RSS；
-相关度过滤后可能仍为 0 条——属诚实空证据，不是静默模板。
+无新闻 Key 时系统仍会抓 **Fed/RBA/ECB/BOE 等官方 RSS** + Google News 公开 RSS；
+相关度过滤后可能只剩 0–1 条——属诚实空/稀薄证据，不是 LLM 坏了。
+**填 DeepSeek 不会自动多出 References**；要更多链接请填 NewsAPI/Finnhub（或 Tavily）。
 """.strip()
 
 
@@ -621,8 +623,8 @@ def empty_reason_message(
             )
             bits.append(
                 "解决：在 Railway Variables 或侧栏「API / AI Key」填写 "
-                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（可选 `GROQ_API_KEY`），保存后重新运行；"
-                "也可先加载下方「练习样例」熟悉标注。"
+                "`NEWSAPI_KEY` / `FINNHUB_API_KEY`（LLM/DeepSeek 只做判定，不会凭空加链接），"
+                "保存后重新运行；也可先加载下方「练习样例」熟悉标注。"
             )
         elif not news_keys_present and fetched > 0:
             bits.append(
@@ -636,6 +638,38 @@ def empty_reason_message(
                 "可换货币对重跑，或先用练习样例练习标注流程。"
             )
     return " ".join(bits)
+
+
+def thin_refs_message(
+    *,
+    evidence_n: int,
+    fetched: int = 0,
+    news_keys_present: bool = False,
+    statements_n: int | None = None,
+) -> str | None:
+    """Hint when report has only one (or very few) references/evidence items."""
+    if evidence_n > 1 and (statements_n is None or statements_n > 2):
+        return None
+    if evidence_n <= 0:
+        return None
+    parts = [
+        f"本次证据/参考偏少（evidence_n={evidence_n}"
+        + (f"，语句 {statements_n}" if statements_n is not None else "")
+        + f"，抓取头条 fetched={fetched}）。"
+    ]
+    if not news_keys_present:
+        parts.append(
+            "未检测到 `NEWSAPI_KEY`/`FINNHUB_API_KEY`："
+            "目前主要靠央行 RSS + Google News；相关度过滤后常只剩 1 条。"
+            "要更多 References 请填新闻 Key（可选再加 Tavily）；"
+            "DeepSeek/LLM 只判定与改写，不会虚构链接。"
+        )
+    else:
+        parts.append(
+            "已有新闻 Key 但仍偏少：可能是相关度过滤过严或当日头条与货币对匹配弱。"
+            "可加大「最多头条证据条数」、换货币对，或加 Tavily/Brave 给 AI 检索员。"
+        )
+    return " ".join(parts)
 
 
 def spotcheck_filename(pair: str, as_of: date | None = None) -> str:
