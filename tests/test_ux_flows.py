@@ -22,9 +22,13 @@ from fx_report.model.weights import default_weights, resolve_bucket_edges
 from fx_report.pipeline import step4_evaluate_impact
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MIN,
+    START_CHOICE_PLACEHOLDER,
     abs_edges_to_pct_cuts,
     app_password_expected,
     bb_jump_compensate_warning,
+    format_missing_start_message,
+    is_unset_choice,
+    missing_start_choices,
     password_accepted,
     pct_cuts_in_bounds,
     seed_pct_widget_value,
@@ -213,6 +217,89 @@ def test_empty_evidence_policy_off(monkeypatch):
     assert ev == []
     assert meta.get("fallback_templates") is False
     assert meta.get("evidence_quality") == "news_empty_no_prior"
+
+
+# ---------------------------------------------------------------------------
+# 8. Start-setup required choices (no silent defaults)
+# ---------------------------------------------------------------------------
+
+
+def test_is_unset_choice_placeholder_and_empty():
+    assert is_unset_choice(None) is True
+    assert is_unset_choice("") is True
+    assert is_unset_choice("  ") is True
+    assert is_unset_choice(START_CHOICE_PLACEHOLDER) is True
+    assert is_unset_choice("USD/AUD") is False
+    assert is_unset_choice(False) is False  # explicit bool is a choice
+
+
+def test_missing_start_choices_all_empty():
+    missing = missing_start_choices({})
+    assert missing == [
+        "货币对",
+        "看涨货币",
+        "峰值引擎",
+        "是否使用校准参数",
+        "不确定证据是否人工确认",
+        "分档边界方式",
+    ]
+
+
+def test_missing_start_choices_partial_and_message():
+    choices = {
+        "pair": "USD/AUD",
+        "bullish_currency": None,
+        "peak_engine": START_CHOICE_PLACEHOLDER,
+        "use_calibrated": True,
+        "human_review": "yes",  # not bool → missing
+        "bucket_mode": "相对现价",
+    }
+    missing = missing_start_choices(choices)
+    assert "货币对" not in missing
+    assert "看涨货币" in missing
+    assert "峰值引擎" in missing
+    assert "是否使用校准参数" not in missing
+    assert "不确定证据是否人工确认" in missing
+    assert "分档边界方式" not in missing
+    msg = format_missing_start_message(missing)
+    assert msg.startswith("你还没有选择：")
+    assert "看涨货币" in msg
+    assert "峰值引擎" in msg
+
+
+def test_missing_start_choices_dialog_keys_skip_bucket():
+    missing = missing_start_choices(
+        {
+            "pair": "EUR/USD",
+            "bullish_currency": "EUR",
+            "peak_engine": "path_max",
+            "use_calibrated": False,
+            "human_review": True,
+        },
+        keys=(
+            "pair",
+            "bullish_currency",
+            "peak_engine",
+            "use_calibrated",
+            "human_review",
+        ),
+    )
+    assert missing == []
+
+
+def test_missing_start_choices_invalid_engine_and_bucket():
+    missing = missing_start_choices(
+        {
+            "pair": "USD/AUD",
+            "bullish_currency": "USD",
+            "peak_engine": "magic",
+            "use_calibrated": False,
+            "human_review": False,
+            "bucket_mode": "随便",
+        }
+    )
+    assert "峰值引擎" in missing
+    assert "分档边界方式" in missing
 
 
 # ---------------------------------------------------------------------------

@@ -19,8 +19,12 @@ from fx_report.ui.api_panel import render_api_settings_panel
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
+    START_CHOICE_PLACEHOLDER,
     app_password_expected,
     bb_jump_compensate_warning,
+    format_missing_start_message,
+    is_unset_choice,
+    missing_start_choices,
     password_accepted,
     pct_cuts_in_bounds,
     seed_pct_widget_value,
@@ -777,13 +781,25 @@ def render_bucket_editor(
     elif _old_mode == "绝对水平":
         st.session_state[mode_key] = "绝对价位"
 
+    # No silent default: index=None until the user picks explicitly
     mode = st.radio(
-        "边界方式",
+        "边界方式（必选）",
         ["相对现价", "绝对价位"],
+        index=None,
         horizontal=True,
         key=mode_key,
-        help="相对：边界 = 现价 × (1 + 涨幅%/100)。绝对：直接填汇率价位。",
+        help="相对：边界 = 现价 × (1 + 涨幅%/100)。绝对：直接填汇率价位。不预选，请手动选一项。",
     )
+    if mode is None:
+        st.info("请先选择边界方式：相对现价 或 绝对价位。")
+        defaults_preview = _default_pct_cuts(base)
+        preview_edges = (
+            edges_from_spot(spot, tuple(defaults_preview))
+            if spot is not None
+            else tuple(float(x) for x in base.bucket_edges)
+        )
+        st.caption("选定边界方式后可编辑切点；未选时不会运行分析。")
+        return True, tuple(defaults_preview), tuple(preview_edges)  # type: ignore[return-value]
     use_rel = mode == "相对现价"
 
     # Heal only when widgets were seeded from out-of-range abs→pct (not intentional -20).
@@ -914,39 +930,292 @@ def render_bucket_editor(
 
 
 def pick_pair_in_sidebar():
-    """侧栏分区 1：货币对 + 看涨货币（默认可折叠，首次展开）。"""
-    with st.sidebar.expander("① 货币对", expanded=True):
-        mode = st.radio("方式", ["目录", "自定义"], horizontal=True, key="pair_mode")
-        if mode == "目录":
-            pair = st.selectbox("选择", list_pairs(), index=list_pairs().index("USD/AUD"))
-            spec = get_pair(pair)
+    """侧栏分区 ①：展示已确认的开始设置；点按钮打开弹窗（无预选）。"""
+    with st.sidebar.expander("① 开始设置", expanded=True):
+        cfg = st.session_state.get("start_cfg")
+        if not cfg:
+            st.caption("尚未完成开始设置（货币对 / 看涨货币 / 峰值引擎等）。")
         else:
-            pair = st.text_input("BASE/QUOTE", value="EUR/USD")
-            ticker = st.text_input("内部符号", value="EURUSD")
-            invert = st.checkbox("invert", value=False)
-            spec = make_custom_pair(pair, ticker, invert)
+            bull = cfg.get("bullish_currency") or "—"
+            eng = cfg.get("peak_engine") or "—"
+            cal = cfg.get("use_calibrated")
+            cal_s = "使用" if cal is True else ("不使用" if cal is False else "—")
+            hr = cfg.get("human_review")
+            hr_s = "人工确认" if hr is True else ("自动跳过" if hr is False else "—")
+            st.markdown(
+                f"**{cfg.get('pair') or '—'}** · 看涨 **{bull}**  \n"
+                f"峰值引擎 `{eng}` · 校准 {cal_s} · 不确定证据 {hr_s}"
+            )
+        if st.button("打开开始设置…", use_container_width=True, key="btn_open_start_setup"):
+            st.session_state["_open_start_setup"] = True
+            st.rerun()
 
-        # 看涨货币必选：未选时 index=None，禁止静默开跑
-        if st.session_state.get("bullish_pair_key") != spec.pair:
-            st.session_state["bullish_pair_key"] = spec.pair
-            st.session_state.pop("bullish_ccy", None)
+        if not cfg:
+            return None, None
 
+        try:
+            spec = _spec_from_start_cfg(cfg)
+        except Exception as exc:
+            st.error(f"开始设置无效：{exc}")
+            return None, None
+        bullish = cfg.get("bullish_currency")
+        return spec, bullish
+
+
+def _spec_from_start_cfg(cfg: dict) -> PairSpec:
+    mode = cfg.get("pair_mode") or "目录"
+    pair = str(cfg.get("pair") or "").strip()
+    if not pair:
+        raise ValueError("货币对为空")
+    if mode == "自定义":
+        ticker = str(cfg.get("custom_ticker") or "").strip() or pair.replace("/", "")
+        invert = bool(cfg.get("custom_invert", False))
+        return make_custom_pair(pair, ticker, invert)
+    return get_pair(pair)
+
+
+def _start_cfg_choice_map(cfg: dict | None, *, bucket_mode: str | None) -> dict:
+    """Build the dict expected by missing_start_choices."""
+    cfg = cfg or {}
+    return {
+        "pair": cfg.get("pair"),
+        "bullish_currency": cfg.get("bullish_currency"),
+        "peak_engine": cfg.get("peak_engine"),
+        "use_calibrated": cfg.get("use_calibrated"),
+        "human_review": cfg.get("human_review"),
+        "bucket_mode": bucket_mode,
+    }
+
+
+def _dismiss_start_setup() -> None:
+    st.session_state.pop("_open_start_setup", None)
+
+
+def _dismiss_missing_start() -> None:
+    st.session_state.pop("_show_missing_start", None)
+    st.session_state.pop("_missing_start_labels", None)
+
+
+@st.dialog("开始设置", width="large", on_dismiss=_dismiss_start_setup)
+def start_setup_dialog() -> None:
+    """
+    Modal for must-have start choices — no silent defaults.
+    Confirm writes session_state['start_cfg']; incomplete confirm shows inline error.
+    """
+    prev = st.session_state.get("start_cfg") or {}
+    editing = bool(prev)
+
+    st.caption("开跑前请逐项选择；不预选默认项。确认后可在侧栏再次打开修改。")
+
+    pair_modes = ["目录", "自定义"]
+    prev_mode = prev.get("pair_mode") if editing else None
+    mode_idx = pair_modes.index(prev_mode) if prev_mode in pair_modes else None
+    mode = st.radio(
+        "货币对方式（必选）",
+        pair_modes,
+        index=mode_idx,
+        horizontal=True,
+        key="dlg_pair_mode",
+    )
+
+    pair: str | None = None
+    custom_ticker = ""
+    custom_invert = False
+    if mode is None:
+        st.info("请先选择：目录 或 自定义。")
+        base_opts: list[str] = []
+    elif mode == "目录":
+        pairs = list_pairs()
+        prev_pair = prev.get("pair") if editing else None
+        p_idx = pairs.index(prev_pair) if prev_pair in pairs else None
+        pair = st.selectbox(
+            "货币对（必选）",
+            pairs,
+            index=p_idx,
+            placeholder=START_CHOICE_PLACEHOLDER,
+            key="dlg_pair_catalog",
+        )
+        base_opts = []
+        if pair and not is_unset_choice(pair):
+            try:
+                sp = get_pair(pair)
+                base_opts = [sp.base, sp.quote]
+            except Exception:
+                base_opts = []
+    else:
+        default_pair = str(prev.get("pair") or "") if editing else ""
+        pair_in = st.text_input(
+            "BASE/QUOTE（必选，如 EUR/USD）",
+            value=default_pair,
+            placeholder="请输入货币对，例如 EUR/USD",
+            key="dlg_pair_custom",
+        )
+        pair = (pair_in or "").strip() or None
+        custom_ticker = st.text_input(
+            "内部符号（可空，默认去掉斜杠）",
+            value=str(prev.get("custom_ticker") or "") if editing else "",
+            key="dlg_custom_ticker",
+        )
+        custom_invert = st.checkbox(
+            "invert",
+            value=bool(prev.get("custom_invert", False)) if editing else False,
+            key="dlg_custom_invert",
+        )
+        base_opts = []
+        if pair and "/" in pair:
+            parts = pair.split("/", 1)
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                base_opts = [parts[0].strip().upper(), parts[1].strip().upper()]
+                pair = f"{base_opts[0]}/{base_opts[1]}"
+
+    bullish = None
+    if base_opts:
+        prev_b = prev.get("bullish_currency") if editing else None
+        b_idx = base_opts.index(prev_b) if prev_b in base_opts else None
         bullish = st.radio(
             "看涨货币（必选）",
-            [spec.base, spec.quote],
-            index=None,
+            base_opts,
+            index=b_idx,
             horizontal=True,
-            key="bullish_ccy",
+            key="dlg_bullish",
             help="看涨币走强 = 分析报价升高。选 quote 时自动翻转分析口径。",
         )
-        return spec, bullish
+    else:
+        st.caption("选定货币对后，再选看涨货币。")
+
+    engines = ["path_max", "brownian_bridge"]
+    prev_eng = prev.get("peak_engine") if editing else None
+    e_idx = engines.index(prev_eng) if prev_eng in engines else None
+    peak_engine = st.selectbox(
+        "峰值引擎 peak_engine（必选）",
+        engines,
+        index=e_idx,
+        placeholder=START_CHOICE_PLACEHOLDER,
+        key="dlg_peak_engine",
+        help=(
+            "path_max=离散GBM+Merton跳跃路径最大值；"
+            "brownian_bridge=日端点间反射原理连续最大值（不含跳跃）"
+        ),
+    )
+
+    cal_opts = ["使用", "不使用"]
+    prev_cal = prev.get("use_calibrated") if editing else None
+    cal_idx = (
+        0 if prev_cal is True else (1 if prev_cal is False else None)
+    )
+    cal_pick = st.radio(
+        "是否使用校准参数 Stage-1（必选）",
+        cal_opts,
+        index=cal_idx,
+        horizontal=True,
+        key="dlg_use_cal",
+        help="使用：优先 output/ 再内置 JSON；不使用：默认先验。不因文件存在而自动勾选。",
+    )
+
+    hr_opts = ["需要人工确认", "自动跳过"]
+    prev_hr = prev.get("human_review") if editing else None
+    hr_idx = 0 if prev_hr is True else (1 if prev_hr is False else None)
+    hr_pick = st.radio(
+        "不确定证据是否人工确认（必选）",
+        hr_opts,
+        index=hr_idx,
+        horizontal=True,
+        key="dlg_human_review",
+        help="需要人工确认=低置信度证据先暂停；自动跳过=不打断流水线。",
+    )
+
+    use_calibrated = (
+        True if cal_pick == "使用" else (False if cal_pick == "不使用" else None)
+    )
+    human_review = (
+        True
+        if hr_pick == "需要人工确认"
+        else (False if hr_pick == "自动跳过" else None)
+    )
+
+    draft = {
+        "pair": pair,
+        "bullish_currency": bullish,
+        "peak_engine": peak_engine,
+        "use_calibrated": use_calibrated,
+        "human_review": human_review,
+    }
+    dialog_keys = (
+        "pair",
+        "bullish_currency",
+        "peak_engine",
+        "use_calibrated",
+        "human_review",
+    )
+    dialog_missing = missing_start_choices(draft, keys=dialog_keys)
+    # pair_mode is a prerequisite for pair
+    if mode is None:
+        dialog_missing = ["货币对方式", *[x for x in dialog_missing if x != "货币对"]]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        confirmed = st.button("确认开始设置", type="primary", use_container_width=True)
+    with c2:
+        if st.button("取消", use_container_width=True):
+            st.session_state.pop("_open_start_setup", None)
+            st.rerun()
+
+    if confirmed:
+        if dialog_missing:
+            st.error(format_missing_start_message(dialog_missing))
+            return
+        if bullish not in (base_opts or []):
+            st.error(format_missing_start_message(["看涨货币"]))
+            return
+        st.session_state["start_cfg"] = {
+            "pair_mode": mode,
+            "pair": pair,
+            "custom_ticker": (custom_ticker or "").strip(),
+            "custom_invert": bool(custom_invert),
+            "bullish_currency": bullish,
+            "peak_engine": peak_engine,
+            "use_calibrated": bool(use_calibrated),
+            "human_review": bool(human_review),
+        }
+        # Reset pair-tied UI state when pair changes
+        old_pair = (prev or {}).get("pair")
+        if old_pair and old_pair != pair:
+            st.session_state.pop("scenario_edits", None)
+            st.session_state.pop("evidence_edits", None)
+            st.session_state.pop("hitl_checkpoint", None)
+            st.session_state.pop("hitl_choices", None)
+            st.session_state.pop("last_report", None)
+        st.session_state.pop("_open_start_setup", None)
+        st.session_state["_start_setup_shown"] = True
+        st.rerun()
+
+
+@st.dialog("还不能运行", on_dismiss=_dismiss_missing_start)
+def missing_start_dialog(missing_labels: list[str]) -> None:
+    """Popup when user hits Run without completing required start choices."""
+    st.warning(format_missing_start_message(missing_labels))
+    st.caption("请补全后再点「运行分析」。分档边界方式在主区「概率区间」选择。")
+    if st.button("打开开始设置", type="primary", use_container_width=True):
+        st.session_state["_open_start_setup"] = True
+        st.session_state.pop("_show_missing_start", None)
+        st.rerun()
+    if st.button("知道了", use_container_width=True):
+        st.session_state.pop("_show_missing_start", None)
+        st.rerun()
+
 
 def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, dict]:
     st.sidebar.markdown(f"**{pair_name}**")
     st.sidebar.caption(
-        "侧栏目录（点开分区）：①货币对 → ②抓取 → ③蒙特卡洛 → "
+        "侧栏目录：①开始设置 → ②抓取 → ③蒙特卡洛 → "
         "④映射 → ⑤情景 → ⑥证据 → ⑦规则 → ⑧数据源｜分档切点在主区"
     )
+
+    start_cfg = st.session_state.get("start_cfg") or {}
+    # peak_engine / human_review come from 开始设置（必选，无侧栏静默默认）
+    peak_engine = str(start_cfg.get("peak_engine") or getattr(base, "peak_engine", "path_max"))
+    _hr = start_cfg.get("human_review")
+    pause_uncertain = bool(_hr) if isinstance(_hr, bool) else False
 
     # ② 抓取
     with st.sidebar.expander("② 抓取与判定", expanded=False):
@@ -990,13 +1259,10 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
                 "按类别拟合强度倍率并应用到本次证据；不足则提示「标注不足」。"
             ),
         )
-        pause_uncertain = st.checkbox(
-            "不确定证据先人工确认",
-            value=True,
-            help=(
-                "赋权/报告前：若出现低置信度、规则与LLM冲突、簇内方向冲突或类别不清，"
-                "暂停并请你选利多/利空/中性/跳过（最多 3–5 条）。关闭则自动跳过。"
-            ),
+        hr_label = "需要人工确认" if pause_uncertain else "自动跳过"
+        st.caption(
+            f"不确定证据：已在「开始设置」选为 **{hr_label}**"
+            "（点侧栏①修改）。"
         )
 
     # ③ 蒙特卡洛（分档切点在主区设置）
@@ -1005,17 +1271,9 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         trading_days = st.number_input("交易日窗口", 5, 252, base.trading_days, 1)
         seed = st.number_input("随机种子", 0, 10_000_000, base.seed, 1)
         vol_lookback = st.number_input("波动回看日", 20, 252, base.vol_lookback_days, 5)
-        _engine_opts = ["path_max", "brownian_bridge"]
-        _engine_default = getattr(base, "peak_engine", "path_max")
-        _engine_idx = _engine_opts.index(_engine_default) if _engine_default in _engine_opts else 0
-        peak_engine = st.selectbox(
-            "峰值引擎 peak_engine",
-            _engine_opts,
-            index=_engine_idx,
-            help=(
-                "path_max=离散GBM+Merton跳跃路径最大值；"
-                "brownian_bridge=日端点间反射原理连续最大值（Shreve；不含跳跃）"
-            ),
+        st.caption(
+            f"峰值引擎：已在「开始设置」选为 `{peak_engine}`"
+            "（点侧栏①修改）。"
         )
         _jm_opts = ["merton", "none"]
         _jm_default = getattr(base, "jump_model", "merton")
@@ -1062,7 +1320,8 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             if _jc_warn:
                 st.warning(_jc_warn)
         st.caption(
-            "切换引擎/跳跃后点「运行分析」；结果页「本次分析审计」会显示实际 peak_engine / jump_model。"
+            "切换引擎后请重新「开始设置」再点「运行分析」；"
+            "结果页「本次分析审计」会显示实际 peak_engine / jump_model。"
         )
         st.caption("分档边界请在主区「概率区间」设置（相对现价涨幅% 或绝对汇率价位）。")
         use_rel = True
@@ -1798,7 +2057,36 @@ def main() -> None:
     if not _require_password():
         return
 
+    # First visit: open 开始设置 once (no silent defaults)
+    if "start_cfg" not in st.session_state and not st.session_state.get("_start_setup_shown"):
+        st.session_state["_open_start_setup"] = True
+        st.session_state["_start_setup_shown"] = True
+
+    # Keep calling while open — dialog widgets need the function invoked each rerun
+    if st.session_state.get("_open_start_setup"):
+        start_setup_dialog()
+
+    if st.session_state.get("_show_missing_start"):
+        missing_start_dialog(list(st.session_state.get("_missing_start_labels") or []))
+
     display_spec, bullish = pick_pair_in_sidebar()
+
+    if display_spec is None:
+        st.title("FX Analyse")
+        st.warning(
+            "请先完成「开始设置」（侧栏 ①）：货币对、看涨货币、峰值引擎、"
+            "是否使用校准参数、不确定证据是否人工确认。"
+        )
+        with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
+            render_api_settings_panel()
+        if "last_report" not in st.session_state:
+            return
+        # Allow viewing a previous report even if setup was cleared
+        display_spec = get_pair(
+            (st.session_state.get("last_diag") or {}).get("market", {}).get("pair")
+            or "USD/AUD"
+        )
+        bullish = st.session_state.get("start_cfg", {}).get("bullish_currency") or display_spec.base
 
     if st.session_state.get("pair_key") != display_spec.pair:
         st.session_state["pair_key"] = display_spec.pair
@@ -1818,19 +2106,25 @@ def main() -> None:
         st.session_state.pop("last_report", None)
 
     base = default_weights(analysis_spec)
+    # Apply peak_engine from start setup before calib overlay (calib may also set it)
+    start_cfg = st.session_state.get("start_cfg") or {}
+    if start_cfg.get("peak_engine") in ("path_max", "brownian_bridge"):
+        base.peak_engine = str(start_cfg["peak_engine"])
+
     default_cal = resolve_calibrated_params_path(analysis_spec.pair)
-    use_cal = st.sidebar.checkbox(
-        "使用校准参数（Stage 1）",
-        value=default_cal is not None,
-        help=(
-            "优先 output/calibrated_params_{PAIR}.json；"
-            f"否则用内置 {BUNDLED_CALIBRATED_DIR}"
-        ),
-    )
+    # Explicit choice from 开始设置 — never auto-check because a JSON exists
+    use_cal = start_cfg.get("use_calibrated")
+    if use_cal is True:
+        st.sidebar.caption("校准参数：开始设置已选「使用」")
+    elif use_cal is False:
+        st.sidebar.caption("校准参数：开始设置已选「不使用」")
+    else:
+        st.sidebar.caption("校准参数：尚未在开始设置中选择")
+
     cal_path: str | None = None
     cal_label = "default"
     cal_loaded = False
-    if use_cal and default_cal is not None:
+    if use_cal is True and default_cal is not None:
         from fx_report.model.calibrate import apply_calibrated_params, load_calibrated_params
 
         apply_calibrated_params(base, load_calibrated_params(default_cal))
@@ -1838,10 +2132,13 @@ def main() -> None:
         cal_label = str(default_cal)
         cal_loaded = True
         st.sidebar.caption(f"已加载校准参数 · {default_cal.name}")
-    elif use_cal:
+        # Keep user's explicit peak_engine over calibrated default when set in 开始设置
+        if start_cfg.get("peak_engine") in ("path_max", "brownian_bridge"):
+            base.peak_engine = str(start_cfg["peak_engine"])
+    elif use_cal is True:
         st.sidebar.caption("未找到校准 JSON，用默认先验")
-    else:
-        st.sidebar.caption("默认先验（未勾选校准）")
+    elif use_cal is False:
+        st.sidebar.caption("默认先验（开始设置选不使用校准）")
 
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
@@ -1891,7 +2188,7 @@ def main() -> None:
             "先看现价 → 自设概率区间 → 再运行蒙特卡洛"
         )
     else:
-        st.caption("最高日高分档 · 七步情报流水线 · 请先在侧栏选择看涨货币")
+        st.caption("最高日高分档 · 七步情报流水线 · 请先完成侧栏「开始设置」")
 
     render_calib_trust_panel(
         analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
@@ -1903,11 +2200,15 @@ def main() -> None:
         api_opts = render_api_settings_panel()
 
     if not bullish_ok:
-        st.warning("请先在侧栏 ① 选择「看涨货币」（二选一）。选好后立刻显示现价与分档设置。")
+        st.warning(
+            "请先在侧栏 ① 打开「开始设置」，选好货币对与看涨货币。"
+            "选好后立刻显示现价与分档设置。"
+        )
         if "last_report" not in st.session_state:
             return
 
     spot_row: dict | None = None
+    bucket_mode_choice: str | None = None
     if bullish_ok:
         spot_row = render_spot_panel(
             analysis_spec, bullish, lookback_days=weights.vol_lookback_days
@@ -1916,6 +2217,8 @@ def main() -> None:
         use_rel, pct_cuts, abs_edges = render_bucket_editor(
             base, spot_val, analysis_spec.pair
         )
+        mode_key = f"bucket_mode::{analysis_spec.pair}"
+        bucket_mode_choice = st.session_state.get(mode_key)
         weights.use_relative_buckets = use_rel
         weights.bucket_pct_cuts = pct_cuts  # type: ignore[assignment]
         weights.bucket_edges = abs_edges  # type: ignore[assignment]
@@ -1955,37 +2258,51 @@ def main() -> None:
         if not can_run:
             st.caption("现价未就绪时不能运行分析（分档与 MC 都依赖分析报价）。")
         elif "last_report" not in st.session_state and not run:
-            st.info("确认概率区间后点「运行分析」。侧栏 ②–⑧ 可调抓取与模型参数；API 可全空。")
+            st.info(
+                "确认「开始设置」与概率区间后点「运行分析」。"
+                "侧栏 ②–⑧ 可调抓取与模型参数；API 可全空。"
+            )
 
         # —— 双引擎对比（MC-only，降采样）——
         if compare and can_run and spot_val is not None:
-            with st.spinner("双引擎对比中（降采样 MC，不含新闻重跑）…"):
-                try:
-                    from fx_report.model.backtest import compare_peak_engines
-                    from fx_report.model.weights import resolve_bucket_edges
+            missing_cmp = missing_start_choices(
+                _start_cfg_choice_map(
+                    st.session_state.get("start_cfg"),
+                    bucket_mode=bucket_mode_choice,
+                )
+            )
+            if missing_cmp:
+                st.session_state["_missing_start_labels"] = missing_cmp
+                st.session_state["_show_missing_start"] = True
+                missing_start_dialog(missing_cmp)
+            else:
+                with st.spinner("双引擎对比中（降采样 MC，不含新闻重跑）…"):
+                    try:
+                        from fx_report.model.backtest import compare_peak_engines
+                        from fx_report.model.weights import resolve_bucket_edges
 
-                    snap = fetch_market(analysis_spec, lookback_days=weights.vol_lookback_days)
-                    edges_cmp = resolve_bucket_edges(weights, float(snap.spot))
-                    cmp_n = min(int(weights.n_sims), 8_000)
-                    cmp = compare_peak_engines(
-                        float(snap.spot),
-                        float(snap.sigma_daily),
-                        weights,
-                        edges_cmp,
-                        n_sims=cmp_n,
-                        seed=int(weights.seed),
-                        variance_reduction=str(news_opts.get("variance_reduction") or "none"),
-                    )
-                    st.session_state["last_engine_compare"] = {
-                        "n_sims": cmp["n_sims"],
-                        "score_S": cmp["score_S"],
-                        "table": cmp["table"].to_dict(orient="list"),
-                        "note": cmp["note"],
-                        "pair": analysis_spec.pair,
-                    }
-                except Exception as exc:
-                    st.session_state["last_engine_compare"] = None
-                    st.warning(f"双引擎对比失败：{exc}")
+                        snap = fetch_market(analysis_spec, lookback_days=weights.vol_lookback_days)
+                        edges_cmp = resolve_bucket_edges(weights, float(snap.spot))
+                        cmp_n = min(int(weights.n_sims), 8_000)
+                        cmp = compare_peak_engines(
+                            float(snap.spot),
+                            float(snap.sigma_daily),
+                            weights,
+                            edges_cmp,
+                            n_sims=cmp_n,
+                            seed=int(weights.seed),
+                            variance_reduction=str(news_opts.get("variance_reduction") or "none"),
+                        )
+                        st.session_state["last_engine_compare"] = {
+                            "n_sims": cmp["n_sims"],
+                            "score_S": cmp["score_S"],
+                            "table": cmp["table"].to_dict(orient="list"),
+                            "note": cmp["note"],
+                            "pair": analysis_spec.pair,
+                        }
+                    except Exception as exc:
+                        st.session_state["last_engine_compare"] = None
+                        st.warning(f"双引擎对比失败：{exc}")
 
         if st.session_state.get("last_engine_compare"):
             ec = st.session_state["last_engine_compare"]
@@ -2241,8 +2558,21 @@ def main() -> None:
             return
 
     if run:
+        missing = missing_start_choices(
+            _start_cfg_choice_map(
+                st.session_state.get("start_cfg"),
+                bucket_mode=bucket_mode_choice,
+            )
+        )
+        if missing:
+            st.session_state["_missing_start_labels"] = missing
+            st.session_state["_show_missing_start"] = True
+            missing_start_dialog(missing)
+            return
         if not bullish_ok:
-            st.warning("未选择看涨货币，无法运行分析。")
+            st.session_state["_missing_start_labels"] = ["看涨货币"]
+            st.session_state["_show_missing_start"] = True
+            missing_start_dialog(["看涨货币"])
             return
         if not spot_row or not spot_row.get("ok"):
             st.error("现价获取失败，无法运行分析。请先刷新现价。")
