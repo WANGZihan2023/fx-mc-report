@@ -107,6 +107,34 @@ PAIR_NEWSAPI_QUERIES: dict[str, list[str]] = {
     "USD/CHF": ["SNB OR \"Swiss franc\""],
 }
 
+# NewsAPI developer / free plans only allow searching roughly the last month
+# relative to *today*. Using vol lookback (often 60) as NewsAPI `from` pushes
+# the window outside that plan limit and the API fails → empty headlines.
+NEWSAPI_MAX_HISTORY_DAYS = 29
+
+
+def newsapi_earliest_searchable_date(*, today: date | None = None) -> date:
+    """Earliest calendar day NewsAPI developer/free plans can typically search."""
+    return (today or date.today()) - timedelta(days=NEWSAPI_MAX_HISTORY_DAYS)
+
+
+def clamp_newsapi_from_date(
+    start: date,
+    end: date,
+    *,
+    today: date | None = None,
+) -> tuple[date | None, bool]:
+    """Clamp NewsAPI `from` into the searchable window.
+
+    Returns (clamped_start, was_clamped). If `end` itself is older than the
+    searchable window, returns (None, True) so callers skip the request.
+    """
+    earliest = newsapi_earliest_searchable_date(today=today)
+    if end < earliest:
+        return None, True
+    clamped = max(start, earliest)
+    return clamped, clamped > start
+
 # Soft relevance filter for official / public feeds
 PAIR_KEEP_KEYWORDS: dict[str, re.Pattern[str]] = {
     "USD/AUD": re.compile(
@@ -516,6 +544,7 @@ def fetch_historical_headlines_for_pair(
     as_of_date: date | datetime | str,
     lookback_days: int = 60,
     max_items: int = 25,
+    today: date | None = None,
 ) -> tuple[list[Headline], dict[str, Any]]:
     """
     Historical headline fetch with honest limitations.
@@ -526,13 +555,23 @@ def fetch_historical_headlines_for_pair(
 
     We intentionally do NOT reuse current RSS / Google News RSS / Finnhub category
     feeds here because they do not provide trustworthy historical search by date.
+
+    NewsAPI `from` is clamped into the plan searchable window (~last month from
+    *today*). Replay often passes vol lookback=60; without clamping, the request
+    fails silently and evidence_n stays 0 even when a shorter window has hits.
     """
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
     as_of = _coerce_date(as_of_date)
     if as_of is None:
         raise ValueError("as_of_date is required for historical headline fetch")
-    start = as_of - timedelta(days=max(int(lookback_days), 1))
+    requested_lookback = max(int(lookback_days), 1)
+    requested_start = as_of - timedelta(days=requested_lookback)
+    newsapi_start, from_clamped = clamp_newsapi_from_date(
+        requested_start,
+        as_of,
+        today=today,
+    )
     queries = PAIR_NEWSAPI_QUERIES.get(spec.pair) or [spec.pair.replace("/", " ")]
 
     headlines: list[Headline] = []
@@ -545,37 +584,61 @@ def fetch_historical_headlines_for_pair(
         ]
     )
     newsapi_hits = 0
-    if is_set(cfg, "NEWSAPI_KEY"):
+    newsapi_skipped_outside_window = newsapi_start is None
+    if is_set(cfg, "NEWSAPI_KEY") and newsapi_start is not None:
         for q in queries[:2]:
             batch = fetch_newsapi(
                 q,
                 cfg,
                 limit=max_items,
-                start_date=start,
+                start_date=newsapi_start,
                 end_date=as_of,
             )
             headlines.extend(
                 [
                     h
                     for h in batch
-                    if h.published is None or start <= h.published.date() <= as_of
+                    if h.published is None
+                    or newsapi_start <= h.published.date() <= as_of
                 ]
             )
             newsapi_hits += len(batch)
 
+    effective_lookback = (
+        (as_of - newsapi_start).days if newsapi_start is not None else 0
+    )
+    limitation = (
+        "历史新闻仅使用可日期过滤来源（NewsAPI）和本地 inbox 截止文件。"
+        "当前 RSS / Google News RSS / Finnhub category / AI researcher 未用于历史回放，"
+        "以避免把实时流误当成历史检索。"
+    )
+    if newsapi_skipped_outside_window:
+        limitation += (
+            f" as_of={as_of.isoformat()} 早于 NewsAPI 可检索窗口"
+            f"（约近 {NEWSAPI_MAX_HISTORY_DAYS} 天），无法日期过滤检索。"
+        )
+    elif from_clamped:
+        limitation += (
+            f" 已将 NewsAPI from 从 {requested_start.isoformat()} 钳制到"
+            f" {newsapi_start.isoformat()}（开发者套餐约近"
+            f" {NEWSAPI_MAX_HISTORY_DAYS} 天），避免 lookback={requested_lookback}"
+            " 越界导致空结果。"
+        )
+
     meta: dict[str, Any] = {
         "historical_mode": True,
         "historical_as_of": as_of.isoformat(),
-        "historical_lookback_days": int(lookback_days),
+        "historical_lookback_days": requested_lookback,
+        "historical_lookback_days_effective": int(effective_lookback),
+        "newsapi_from": newsapi_start.isoformat() if newsapi_start is not None else None,
+        "newsapi_from_requested": requested_start.isoformat(),
+        "newsapi_from_clamped": bool(from_clamped),
+        "newsapi_outside_window": bool(newsapi_skipped_outside_window),
         "providers_used": sorted({h.provider for h in headlines}),
         "newsapi_enabled": bool(is_set(cfg, "NEWSAPI_KEY")),
         "newsapi_hits": newsapi_hits,
         "historical_news_quality": "date_filtered" if newsapi_hits > 0 else "limited",
-        "limitation": (
-            "历史新闻仅使用可日期过滤来源（NewsAPI）和本地 inbox 截止文件。"
-            "当前 RSS / Google News RSS / Finnhub category / AI researcher 未用于历史回放，"
-            "以避免把实时流误当成历史检索。"
-        ),
+        "limitation": limitation,
     }
     return _dedupe_sort(headlines, max_items), meta
 
