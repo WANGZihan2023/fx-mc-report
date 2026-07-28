@@ -13,7 +13,7 @@ import re
 import ssl
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -165,6 +165,23 @@ def _http_json(url: str, timeout: int = 20) -> Any:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
+
+
+def _coerce_date(value: date | datetime | str | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value).strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    if " " in text:
+        text = text.split(" ", 1)[0]
+    return date.fromisoformat(text)
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if dt.tzinfo is None:
@@ -289,15 +306,30 @@ def fetch_google_news_rss(pair: str, limit: int = 12) -> list[Headline]:
     return out
 
 
-def fetch_newsapi(query: str, cfg: dict[str, str], limit: int = 15) -> list[Headline]:
+def fetch_newsapi(
+    query: str,
+    cfg: dict[str, str],
+    limit: int = 15,
+    *,
+    start_date: date | datetime | str | None = None,
+    end_date: date | datetime | str | None = None,
+) -> list[Headline]:
     if not is_set(cfg, "NEWSAPI_KEY"):
         return []
+    start = _coerce_date(start_date)
+    end = _coerce_date(end_date)
+    extra = ""
+    if start is not None:
+        extra += f"&from={start.isoformat()}"
+    if end is not None:
+        extra += f"&to={end.isoformat()}"
     # Prefer top domain sources when possible
     domains = "reuters.com,bloomberg.com,wsj.com,ft.com,afr.com,cnbc.com,federalreserve.gov"
     url = (
         "https://newsapi.org/v2/everything?"
         f"q={quote_plus(query)}&language=en&sortBy=publishedAt"
         f"&pageSize={min(limit, 50)}&domains={domains}"
+        f"{extra}"
         f"&apiKey={cfg['NEWSAPI_KEY']}"
     )
     try:
@@ -309,7 +341,7 @@ def fetch_newsapi(query: str, cfg: dict[str, str], limit: int = 15) -> list[Head
         url2 = (
             "https://newsapi.org/v2/everything?"
             f"q={quote_plus(query)}&language=en&sortBy=publishedAt"
-            f"&pageSize={min(limit, 50)}&apiKey={cfg['NEWSAPI_KEY']}"
+            f"&pageSize={min(limit, 50)}{extra}&apiKey={cfg['NEWSAPI_KEY']}"
         )
         try:
             data = _http_json(url2, timeout_s(cfg))
@@ -476,6 +508,76 @@ def fetch_headlines_for_pair(
     headlines.extend(fetch_finnhub_forex(cfg, limit=12))
 
     return _dedupe_sort(headlines, max_items)
+
+
+def fetch_historical_headlines_for_pair(
+    pair: PairSpec | str,
+    *,
+    as_of_date: date | datetime | str,
+    lookback_days: int = 60,
+    max_items: int = 25,
+) -> tuple[list[Headline], dict[str, Any]]:
+    """
+    Historical headline fetch with honest limitations.
+
+    Only providers with real date constraints are used:
+      - NewsAPI everything with from/to
+      - local inbox files whose mtime <= as_of
+
+    We intentionally do NOT reuse current RSS / Google News RSS / Finnhub category
+    feeds here because they do not provide trustworthy historical search by date.
+    """
+    spec = get_pair(pair) if isinstance(pair, str) else pair
+    cfg = load_config()
+    as_of = _coerce_date(as_of_date)
+    if as_of is None:
+        raise ValueError("as_of_date is required for historical headline fetch")
+    start = as_of - timedelta(days=max(int(lookback_days), 1))
+    queries = PAIR_NEWSAPI_QUERIES.get(spec.pair) or [spec.pair.replace("/", " ")]
+
+    headlines: list[Headline] = []
+    inbox_all = fetch_inbox_headlines(limit=max_items * 2)
+    headlines.extend(
+        [
+            h
+            for h in inbox_all
+            if h.published is not None and h.published.date() <= as_of
+        ]
+    )
+    newsapi_hits = 0
+    if is_set(cfg, "NEWSAPI_KEY"):
+        for q in queries[:2]:
+            batch = fetch_newsapi(
+                q,
+                cfg,
+                limit=max_items,
+                start_date=start,
+                end_date=as_of,
+            )
+            headlines.extend(
+                [
+                    h
+                    for h in batch
+                    if h.published is None or start <= h.published.date() <= as_of
+                ]
+            )
+            newsapi_hits += len(batch)
+
+    meta: dict[str, Any] = {
+        "historical_mode": True,
+        "historical_as_of": as_of.isoformat(),
+        "historical_lookback_days": int(lookback_days),
+        "providers_used": sorted({h.provider for h in headlines}),
+        "newsapi_enabled": bool(is_set(cfg, "NEWSAPI_KEY")),
+        "newsapi_hits": newsapi_hits,
+        "historical_news_quality": "date_filtered" if newsapi_hits > 0 else "limited",
+        "limitation": (
+            "历史新闻仅使用可日期过滤来源（NewsAPI）和本地 inbox 截止文件。"
+            "当前 RSS / Google News RSS / Finnhub category / AI researcher 未用于历史回放，"
+            "以避免把实时流误当成历史检索。"
+        ),
+    }
+    return _dedupe_sort(headlines, max_items), meta
 
 
 def headlines_to_json(headlines: list[Headline]) -> str:

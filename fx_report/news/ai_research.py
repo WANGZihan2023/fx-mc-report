@@ -19,7 +19,7 @@ import re
 import ssl
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
 from urllib.request import Request, urlopen
@@ -610,6 +610,7 @@ def run_ai_research(
     max_headlines: int = 12,
     max_rounds: int = DEFAULT_MAX_ROUNDS,
     target_keep: int = DEFAULT_TARGET_KEEP,
+    as_of_date: date | datetime | str | None = None,
 ) -> AIResearchResult:
     """
     AI 检索员主入口（迭代人工式）：
@@ -620,6 +621,21 @@ def run_ai_research(
     hands = search_hands_available(cfg)
     paid_search = has_paid_search_api(cfg)
     llm = llm_cfg or resolve_llm_config()
+
+    if as_of_date is not None:
+        return AIResearchResult(
+            headlines=[],
+            hits=[],
+            meta={
+                "enabled": False,
+                "historical_disabled": True,
+                "mode": "historical_disabled",
+                "limitation": (
+                    "AI researcher 默认依赖当前白名单页/搜索结果，无法保证历史时点可追溯；"
+                    "历史回放中已禁用，避免伪造当时可得证据。"
+                ),
+            },
+        )
 
     meta: dict[str, Any] = {
         "enabled": True,

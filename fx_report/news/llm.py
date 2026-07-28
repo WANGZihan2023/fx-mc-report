@@ -265,10 +265,10 @@ def _chat_json(cfg: LLMConfig, system: str, user: str) -> dict[str, Any]:
     return json.loads(content)
 
 
-def _age_days(published: datetime | None) -> float:
+def _age_days(published: datetime | None, now: datetime | None = None) -> float:
     if published is None:
         return 2.0
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     if published.tzinfo is None:
         published = published.replace(tzinfo=timezone.utc)
     return max(0.0, (now - published).total_seconds() / 86400.0)
@@ -319,6 +319,7 @@ def classify_headlines_llm(
     max_items: int = 12,
     fetch_fulltext: bool = True,
     unpriced_cap: float = 0.75,
+    reference_now: datetime | None = None,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
     """
     Batch-classify headlines with an LLM. Optionally fetch article snippets.
@@ -416,7 +417,7 @@ def classify_headlines_llm(
         unpriced_hint = max(0.0, min(unpriced_cap, unpriced_hint))
 
         h = by_id.get(eid)
-        age = _age_days(h.published if h else None)
+        age = _age_days(h.published if h else None, now=reference_now)
         scored = score_strength(
             StrengthInputs(
                 source_tier=source_tier,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from fx_report.news.classify import headlines_to_evidence as rules_headlines_to_evidence
@@ -22,6 +23,7 @@ def build_evidence_from_news(
     unpriced_cap: float = 0.75,
     llm_cfg: LLMConfig | None = None,
     fetch_fulltext: bool = True,
+    reference_now: datetime | None = None,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
     """
     mode:
@@ -50,6 +52,7 @@ def build_evidence_from_news(
             max_items=max_items,
             fetch_fulltext=fetch_fulltext,
             unpriced_cap=unpriced_cap,
+            reference_now=reference_now,
         )
         meta["llm"] = llm_meta
         if items:
@@ -61,14 +64,22 @@ def build_evidence_from_news(
             # hard fail path still falls back so the report can run
             meta["rules_used"] = True
             items, counts = rules_headlines_to_evidence(
-                headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
+                headlines,
+                pair,
+                max_items=max_items,
+                unpriced_cap=unpriced_cap,
+                reference_now=reference_now,
             )
             meta.update(counts)
             return items, meta
 
     meta["rules_used"] = True
     items, counts = rules_headlines_to_evidence(
-        headlines, pair, max_items=max_items, unpriced_cap=unpriced_cap
+        headlines,
+        pair,
+        max_items=max_items,
+        unpriced_cap=unpriced_cap,
+        reference_now=reference_now,
     )
     meta.update(counts)
     return items, meta

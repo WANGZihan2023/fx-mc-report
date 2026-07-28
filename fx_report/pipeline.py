@@ -21,7 +21,11 @@ from typing import Any, Literal
 from fx_report.market.fetch_data import MarketSnapshot, calibrate_unpriced_from_market, fetch_market
 from fx_report.model.monte_carlo import MCResult, enforce_math_floor, run_mixture_monte_carlo
 from fx_report.news.evidence import build_evidence_from_news
-from fx_report.news.fetch import Headline, fetch_headlines_for_pair
+from fx_report.news.fetch import (
+    Headline,
+    fetch_headlines_for_pair,
+    fetch_historical_headlines_for_pair,
+)
 from fx_report.news.classify import MIN_PAIR_RELEVANCE, match_drivers_from_text, pair_relevance
 from fx_report.news.llm import LLMConfig, resolve_llm_config
 from fx_report.market.pair_drivers import DRIVER_CATALOG, describe_pair_factors, info_needs_for_drivers
@@ -215,6 +219,7 @@ def step3_collect_and_store_statements(
     llm_cfg: LLMConfig | None = None,
     vol_estimator: str = "window",
     ewma_lambda: float = 0.94,
+    as_of_date: date | datetime | str | None = None,
 ) -> tuple[MarketSnapshot, list[StoredStatement], list[Headline], dict[str, Any]]:
     """
     3. 按信息需求抓取，并存储有影响的语句
@@ -226,6 +231,7 @@ def step3_collect_and_store_statements(
         lookback_days=lookback_days,
         vol_estimator=vol_estimator,
         ewma_lambda=ewma_lambda,
+        as_of_date=as_of_date,
     )
     statements: list[StoredStatement] = [
         StoredStatement(
@@ -258,10 +264,19 @@ def step3_collect_and_store_statements(
 
     headlines: list[Headline] = []
     if not skip_news:
-        headlines = fetch_headlines_for_pair(spec, max_items=max_items)
+        if as_of_date is not None:
+            headlines, hist_meta = fetch_historical_headlines_for_pair(
+                spec,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+                max_items=max_items,
+            )
+            meta.update(hist_meta)
+        else:
+            headlines = fetch_headlines_for_pair(spec, max_items=max_items)
 
         # AI 检索员：白名单投行页 + 搜索 API + LLM 抽取展望（像人工补搜）
-        if ai_research:
+        if ai_research and as_of_date is None:
             try:
                 from fx_report.news.ai_research import run_ai_research
 
@@ -281,6 +296,14 @@ def step3_collect_and_store_statements(
                         seen.add(key)
             except Exception as e:
                 meta["ai_research"] = {"enabled": True, "errors": [f"ai_research_failed:{e}"]}
+        elif ai_research and as_of_date is not None:
+            meta["ai_research"] = {
+                "enabled": False,
+                "historical_disabled": True,
+                "limitation": (
+                    "历史回放已禁用 AI researcher；当前搜索/白名单页无法保证回到当时信息集。"
+                ),
+            }
 
         allowed = list({n.driver for n in info_needs if n.driver} | set(spec.default_drivers))
         stmt_i = 0
@@ -388,6 +411,7 @@ def step4_evaluate_impact(
     llm_cfg: LLMConfig | None = None,
     fetch_fulltext: bool = True,
     statements: list[StoredStatement] | None = None,
+    as_of_date: date | datetime | str | None = None,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
     """
     4. 评估每条信息对货币对的影响（方向 / 类别 / 强弱输入）
@@ -419,6 +443,17 @@ def step4_evaluate_impact(
     }
 
     auto: list[EvidenceItem] = []
+    reference_now: datetime | None = None
+    if as_of_date is not None:
+        ref_date = as_of_date if isinstance(as_of_date, date) and not isinstance(as_of_date, datetime) else None
+        if ref_date is None:
+            text = str(as_of_date)
+            if "T" in text:
+                text = text.split("T", 1)[0]
+            if " " in text:
+                text = text.split(" ", 1)[0]
+            ref_date = date.fromisoformat(text)
+        reference_now = datetime.combine(ref_date, datetime.min.time(), tzinfo=timezone.utc)
     if headlines:
         auto, news_meta = build_evidence_from_news(
             headlines,
@@ -428,6 +463,7 @@ def step4_evaluate_impact(
             unpriced_cap=suggested_up,
             llm_cfg=cfg,
             fetch_fulltext=fetch_fulltext,
+            reference_now=reference_now,
         )
         meta.update({k: v for k, v in news_meta.items() if k != "mode" or True})
         meta["mode"] = news_meta.get("mode", use_mode)
@@ -560,9 +596,18 @@ def step7_build_report(
     headlines: list[Headline],
     news_meta: dict[str, Any],
     bullish_currency: str | None = None,
+    as_of_date: date | datetime | str | None = None,
 ) -> tuple[str, str, TorchcastReport, dict[str, Any], str]:
     """7. Torchcast 风格报告（HTML/PDF）+ Markdown 副本 + diagnostics"""
-    start = date.today()
+    if as_of_date is not None:
+        if isinstance(as_of_date, date) and not isinstance(as_of_date, datetime):
+            start = as_of_date
+        elif isinstance(as_of_date, datetime):
+            start = as_of_date.date()
+        else:
+            start = date.fromisoformat(str(as_of_date).split("T", 1)[0].split(" ", 1)[0])
+    else:
+        start = date.today()
     end = start + timedelta(days=max(int(weights.trading_days * 1.4), 1))
     horizon = f"{start} 至 {end}"
 
@@ -739,6 +784,7 @@ def run_pipeline(
     calibrated_params_path: str | Path | None = None,
     calibrated_params_label: str | None = None,
     use_label_learned_strength: bool = False,
+    as_of_date: date | datetime | str | None = None,
 ) -> PipelineResult:
     """跑完整七步；可选写入 output/。
 
@@ -843,6 +889,8 @@ def run_pipeline(
     say(f"  → vol_estimator={base.vol_estimator}  drift_mode={base.drift_mode}")
     say(f"  → calibrated_params={cal_source}")
     say(f"  → template_policy={template_policy}")
+    if as_of_date is not None:
+        say(f"  → historical_as_of={as_of_date}")
 
     # 2
     say("【2/7】评估所需要的信息（因货币对而异）")
@@ -863,6 +911,7 @@ def run_pipeline(
         llm_cfg=llm_cfg,
         vol_estimator=getattr(base, "vol_estimator", "window"),
         ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),
+        as_of_date=as_of_date,
     )
     say(f"  → 行情 {market.source} spot={market.spot:.5f}")
     say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条")
@@ -897,6 +946,7 @@ def run_pipeline(
         llm_cfg=llm_cfg,
         fetch_fulltext=not no_fulltext,
         statements=statements,
+        as_of_date=as_of_date,
     )
     news_meta["ai_research"] = ai_meta
     news_meta["step3"] = {
@@ -985,6 +1035,7 @@ def run_pipeline(
         headlines=headlines,
         news_meta=news_meta,
         bullish_currency=bullish,
+        as_of_date=as_of_date,
     )
     diagnostics["calibrated_params"] = cal_source
     torchcast.extra["calibrated_params"] = cal_source

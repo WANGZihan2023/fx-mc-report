@@ -45,6 +45,7 @@ from fx_report.model.calibrate import (
     resolve_calibrated_params_path,
 )
 from fx_report.model.monte_carlo import bucket_labels_from_edges
+from fx_report.model.replay_backtest import run_replay_backtest
 from fx_report.model.strength import (
     SOURCE_TIER_POINTS,
     SURPRISE_POINTS,
@@ -1801,6 +1802,107 @@ def main() -> None:
                         f"logloss={hold.get('logloss', float('nan')):.4f}  "
                         f"hit={100 * hold.get('hit_rate', 0):.1f}%"
                     )
+        with st.expander("历史时点回放", expanded=False):
+            st.caption(
+                "按历史 as_of 冻结跑完整流水线，再对照未来窗口实际最高价。"
+                "UI 仅建议跑 2-5 个时点的小样本；若历史新闻仅能部分还原，会明确显示限制。"
+            )
+            rp1, rp2, rp3, rp4 = st.columns(4)
+            with rp1:
+                replay_start = st.date_input(
+                    "回放起点",
+                    value=max(date.today() - timedelta(days=30), date(2024, 1, 1)),
+                    key="replay_start",
+                )
+            with rp2:
+                replay_end = st.date_input(
+                    "回放终点",
+                    value=max(date.today() - timedelta(days=7), date(2024, 2, 1)),
+                    key="replay_end",
+                )
+            with rp3:
+                replay_step = st.number_input("步长（日）", min_value=1, max_value=30, value=7, step=1)
+            with rp4:
+                replay_max_dates = st.number_input("最多日期数", min_value=2, max_value=5, value=3, step=1)
+            rp5, rp6 = st.columns([1, 1])
+            with rp5:
+                replay_sims = st.number_input("每时点模拟", min_value=300, max_value=3000, value=800, step=100)
+            with rp6:
+                st.write("")
+                run_replay = st.button("运行历史时点回放", use_container_width=True)
+            if run_replay:
+                try:
+                    with st.spinner("历史时点回放中…"):
+                        replay = run_replay_backtest(
+                            display_spec.pair,
+                            bullish_currency=bullish,
+                            start_date=replay_start,
+                            end_date=replay_end,
+                            step_days=int(replay_step),
+                            out_dir="output",
+                            sims=int(replay_sims),
+                            days=int(weights.trading_days),
+                            seed=int(weights.seed),
+                            lookback=int(weights.vol_lookback_days),
+                            peak_engine=str(getattr(weights, "peak_engine", "path_max")),
+                            variance_reduction=str(news_opts.get("variance_reduction") or "none"),
+                            jump_model=str(getattr(weights, "jump_model", "merton")),
+                            jump_compensate=bool(getattr(weights, "jump_compensate", False)),
+                            mode=str(news_opts.get("classify_mode") or "hybrid"),
+                            max_news=int(news_opts.get("max_news_ev") or 10),
+                            keep_templates=bool(news_opts.get("keep_templates")),
+                            template_policy=str(news_opts.get("template_policy") or "off"),
+                            no_news=not bool(news_opts.get("use_news", True)),
+                            no_fulltext=not bool(news_opts.get("fetch_fulltext", True)),
+                            ai_research=bool(news_opts.get("ai_research", True)),
+                            calibrated_params_path=cal_path if cal_loaded else None,
+                            use_label_learned_strength=bool(news_opts.get("use_label_learned_strength")),
+                            max_dates=int(replay_max_dates),
+                            verbose=False,
+                        )
+                    st.session_state["last_replay_backtest"] = {
+                        "summary": replay.summary,
+                        "table": replay.table.to_dict(orient="list"),
+                    }
+                except Exception as exc:
+                    st.session_state["last_replay_backtest"] = None
+                    st.warning(f"历史时点回放失败：{exc}")
+            if st.session_state.get("last_replay_backtest"):
+                rp = st.session_state["last_replay_backtest"]
+                summary = rp["summary"]
+                table_df = pd.DataFrame(rp["table"])
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("argmax hit", f"{100 * float(summary.get('argmax_hit_rate', 0)):.1f}%")
+                m2.metric("mean Brier", f"{float(summary.get('mean_brier', float('nan'))):.4f}")
+                m3.metric("mean Skill", f"{float(summary.get('mean_skill_brier', float('nan'))):.4f}")
+                m4.metric("n", int(summary.get("n_rows", 0)))
+                quality_counts = summary.get("historical_news_quality_counts") or {}
+                if quality_counts.get("limited"):
+                    st.warning(
+                        "历史新闻保真度有限：本次至少有部分时点无法用真实日期过滤新闻完整回放，"
+                        "结果已在 `historical_news_quality` 列中标记。"
+                    )
+                else:
+                    st.info("历史新闻来源为可日期过滤路径（仍建议把它视为 best-effort，而非完美史料库）。")
+                cols = [
+                    c
+                    for c in (
+                        "as_of",
+                        "spot",
+                        "pred_bucket",
+                        "true_bucket",
+                        "argmax_hit",
+                        "brier",
+                        "skill_brier",
+                        "evidence_n",
+                        "historical_news_quality",
+                    )
+                    if c in table_df.columns
+                ]
+                st.dataframe(table_df[cols], hide_index=True, use_container_width=True)
+                st.caption(
+                    f"输出文件：`{summary.get('csv', '')}` / `{summary.get('json', '')}`"
+                )
     else:
         start = date.today()
         end = date.today() + timedelta(days=92)

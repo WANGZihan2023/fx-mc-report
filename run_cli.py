@@ -185,6 +185,51 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay_backtest(args: argparse.Namespace) -> int:
+    from fx_report.model.replay_backtest import run_replay_backtest
+
+    try:
+        result = run_replay_backtest(
+            args.pair,
+            bullish_currency=args.bullish,
+            start_date=args.start,
+            end_date=args.end,
+            step_days=args.step,
+            out_dir=args.out,
+            sims=int(getattr(args, "n_sims", None) or args.sims),
+            days=args.days,
+            seed=args.seed,
+            lookback=args.lookback,
+            peak_engine=args.peak_engine,
+            variance_reduction=args.variance_reduction,
+            jump_model=args.jump_model,
+            jump_compensate=bool(args.jump_compensate),
+            mode=args.mode,
+            max_news=args.max_news,
+            keep_templates=args.keep_templates,
+            template_policy=args.template_policy,
+            no_news=args.no_news,
+            no_fulltext=args.no_fulltext,
+            ai_research=args.ai_research,
+            calibrated_params_path=args.calibrated_params,
+            use_label_learned_strength=bool(args.use_label_learned_strength),
+            max_dates=args.max_dates,
+            verbose=not args.quiet,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print(
+        f"Done → hit_rate={result.summary.get('argmax_hit_rate', 0):.1%}  "
+        f"brier={result.summary.get('mean_brier', float('nan')):.4f}  "
+        f"skill_brier={result.summary.get('mean_skill_brier', float('nan')):.4f}  "
+        f"n={result.n_rows}"
+    )
+    print(f"CSV  → {result.csv_path}")
+    print(f"JSON → {result.json_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="FX Analyse：七步流水线 / 峰值样本 / MC 校准 / 历史回测"
@@ -268,6 +313,15 @@ def main() -> int:
     bt_p.add_argument("--quiet", action="store_true")
     bt_p.set_defaults(func=_cmd_backtest)
 
+    replay_p = sub.add_parser("replay-backtest", help="历史时点冻结回放：全流水线预测 vs 后验实现")
+    _add_pipeline_args(replay_p)
+    replay_p.add_argument("--start", required=True, help="回放起点，如 2024-01-01")
+    replay_p.add_argument("--end", required=True, help="回放终点，如 2024-06-30")
+    replay_p.add_argument("--step", type=int, default=7, help="按多少个自然日抽一个 as_of")
+    replay_p.add_argument("--n-sims", type=int, default=2_000)
+    replay_p.add_argument("--max-dates", type=int, default=None, help="最多跑几个 as_of（UI/烟测可限速）")
+    replay_p.set_defaults(func=_cmd_replay_backtest)
+
     # Backward compatible: no subcommand → treat as `run`
     # Parse known first; if first token isn't a subcommand, inject `run`.
     import sys
@@ -278,6 +332,7 @@ def main() -> int:
         "build-peaks",
         "calibrate",
         "backtest",
+        "replay-backtest",
         "-h",
         "--help",
     }:

@@ -158,7 +158,29 @@ def _pct_change(series: pd.Series, n: int) -> float | None:
     return a / b - 1.0
 
 
-def _fetch_frankfurter_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series, list[str]] | None:
+def _coerce_date(value: date | datetime | str | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value).strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    if " " in text:
+        text = text.split(" ", 1)[0]
+    return date.fromisoformat(text)
+
+
+def _fetch_frankfurter_series(
+    spec: PairSpec,
+    cfg: dict[str, str],
+    *,
+    end_date: date | None = None,
+) -> tuple[pd.Series, list[str]] | None:
     """ECB reference rates via Frankfurter — no API key."""
     notes: list[str] = []
     base = spec.base
@@ -167,13 +189,15 @@ def _fetch_frankfurter_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.S
     if used_proxy:
         notes.append(f"ECB/Frankfurter 无 {spec.quote}，暂用 {quote} 代理（请知悉离岸/在岸差异）。")
 
-    start = (date.today() - timedelta(days=400)).isoformat()
-    url = f"https://api.frankfurter.dev/v1/{start}..?from={base}&to={quote}"
+    end = end_date or date.today()
+    start = (end - timedelta(days=400)).isoformat()
+    end_s = end.isoformat()
+    url = f"https://api.frankfurter.dev/v1/{start}..{end_s}?from={base}&to={quote}"
     invert = False
     try:
         data = _http_json(url, timeout_s(cfg))
     except Exception:
-        url2 = f"https://api.frankfurter.dev/v1/{start}..?from={quote}&to={base}"
+        url2 = f"https://api.frankfurter.dev/v1/{start}..{end_s}?from={quote}&to={base}"
         try:
             data = _http_json(url2, timeout_s(cfg))
             invert = True
@@ -198,7 +222,13 @@ def _fetch_frankfurter_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.S
     return _series_from_closes(rows), notes
 
 
-def _fetch_fred_obs(series_id: str, cfg: dict[str, str], limit: int = 200) -> pd.Series | None:
+def _fetch_fred_obs(
+    series_id: str,
+    cfg: dict[str, str],
+    limit: int = 200,
+    *,
+    observation_end: date | None = None,
+) -> pd.Series | None:
     if not is_set(cfg, "FRED_API_KEY"):
         return None
     q = urllib.parse.urlencode(
@@ -209,6 +239,7 @@ def _fetch_fred_obs(series_id: str, cfg: dict[str, str], limit: int = 200) -> pd
             "sort_order": "desc",
             "limit": str(limit),
         }
+        | ({"observation_end": observation_end.isoformat()} if observation_end else {})
     )
     url = f"https://api.stlouisfed.org/fred/series/observations?{q}"
     try:
@@ -232,12 +263,17 @@ def _fetch_fred_obs(series_id: str, cfg: dict[str, str], limit: int = 200) -> pd
     return _series_from_closes(rows)
 
 
-def _fetch_fred_fx(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series, list[str]] | None:
+def _fetch_fred_fx(
+    spec: PairSpec,
+    cfg: dict[str, str],
+    *,
+    end_date: date | None = None,
+) -> tuple[pd.Series, list[str]] | None:
     mapped = FRED_SERIES.get(spec.pair)
     if not mapped:
         return None
     series_id, need_invert = mapped
-    s = _fetch_fred_obs(series_id, cfg, limit=200)
+    s = _fetch_fred_obs(series_id, cfg, limit=200, observation_end=end_date)
     if s is None:
         return None
     if need_invert:
@@ -249,7 +285,12 @@ def _fetch_fred_fx(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series, list
     return s, notes
 
 
-def _fetch_twelve_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series, list[str]] | None:
+def _fetch_twelve_series(
+    spec: PairSpec,
+    cfg: dict[str, str],
+    *,
+    end_date: date | None = None,
+) -> tuple[pd.Series, list[str]] | None:
     if not is_set(cfg, "TWELVE_DATA_API_KEY"):
         return None
     symbol = f"{spec.base}/{spec.quote}"
@@ -276,10 +317,20 @@ def _fetch_twelve_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series
             continue
     if len(rows) < 12:
         return None
-    return _series_from_closes(rows), ["行情来自 Twelve Data（vault Key）"]
+    series = _series_from_closes(rows)
+    if end_date is not None:
+        series = series.loc[series.index.date <= end_date]
+    if len(series) < 12:
+        return None
+    return series, ["行情来自 Twelve Data（vault Key）"]
 
 
-def _fetch_alpha_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series, list[str]] | None:
+def _fetch_alpha_series(
+    spec: PairSpec,
+    cfg: dict[str, str],
+    *,
+    end_date: date | None = None,
+) -> tuple[pd.Series, list[str]] | None:
     if not is_set(cfg, "ALPHA_VANTAGE_API_KEY"):
         return None
     q = urllib.parse.urlencode(
@@ -307,11 +358,16 @@ def _fetch_alpha_series(spec: PairSpec, cfg: dict[str, str]) -> tuple[pd.Series,
             continue
     if len(rows) < 12:
         return None
-    return _series_from_closes(rows), ["行情来自 Alpha Vantage（vault Key）"]
+    series = _series_from_closes(rows)
+    if end_date is not None:
+        series = series.loc[series.index.date <= end_date]
+    if len(series) < 12:
+        return None
+    return series, ["行情来自 Alpha Vantage（vault Key）"]
 
 
-def _fred_last(series_id: str, cfg: dict[str, str]) -> float | None:
-    s = _fetch_fred_obs(series_id, cfg, limit=5)
+def _fred_last(series_id: str, cfg: dict[str, str], *, as_of_date: date | None = None) -> float | None:
+    s = _fetch_fred_obs(series_id, cfg, limit=5, observation_end=as_of_date)
     if s is None or s.empty:
         return None
     return float(s.iloc[-1])
@@ -330,6 +386,7 @@ def _snapshot_from_series(
     dxy: float | None = None,
     vol_estimator: str = "window",
     ewma_lambda: float = 0.94,
+    snapshot_asof: date | None = None,
 ) -> MarketSnapshot:
     effective_lb = min(lookback_days, len(series) - 1)
     if effective_lb < lookback_days:
@@ -349,7 +406,11 @@ def _snapshot_from_series(
     spot = float(series.iloc[-1])
     closes = series.values.astype(float)
     return MarketSnapshot(
-        asof=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        asof=(
+            f"{snapshot_asof.isoformat()} 00:00 UTC"
+            if snapshot_asof is not None
+            else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        ),
         pair=spec.pair,
         spot=spot,
         provider_raw=spot,
@@ -381,6 +442,7 @@ def _fetch_frankfurter_series_range(
     cfg: dict[str, str],
     *,
     history_days: int,
+    end_date: date | None = None,
 ) -> tuple[pd.Series, list[str]] | None:
     """ECB reference rates via Frankfurter over a longer calendar window."""
     notes: list[str] = []
@@ -390,13 +452,15 @@ def _fetch_frankfurter_series_range(
     if used_proxy:
         notes.append(f"ECB/Frankfurter 无 {spec.quote}，暂用 {quote} 代理（请知悉离岸/在岸差异）。")
 
-    start = (date.today() - timedelta(days=max(history_days, 30))).isoformat()
-    url = f"https://api.frankfurter.dev/v1/{start}..?from={base}&to={quote}"
+    end = end_date or date.today()
+    start = (end - timedelta(days=max(history_days, 30))).isoformat()
+    end_s = end.isoformat()
+    url = f"https://api.frankfurter.dev/v1/{start}..{end_s}?from={base}&to={quote}"
     invert = False
     try:
         data = _http_json(url, timeout_s(cfg))
     except Exception:
-        url2 = f"https://api.frankfurter.dev/v1/{start}..?from={quote}&to={base}"
+        url2 = f"https://api.frankfurter.dev/v1/{start}..{end_s}?from={quote}&to={base}"
         try:
             data = _http_json(url2, timeout_s(cfg))
             invert = True
@@ -425,6 +489,7 @@ def fetch_history_series(
     pair: PairSpec | str,
     *,
     history_days: int = 1500,
+    end_date: date | datetime | str | None = None,
 ) -> tuple[pd.Series, str, list[str]]:
     """
     Longer FX close series for peak-sample construction.
@@ -435,9 +500,10 @@ def fetch_history_series(
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
     notes: list[str] = []
+    as_of = _coerce_date(end_date)
 
     # Prefer long Frankfurter window first
-    got = _fetch_frankfurter_series_range(spec, cfg, history_days=history_days)
+    got = _fetch_frankfurter_series_range(spec, cfg, history_days=history_days, end_date=as_of)
     if got is not None:
         s, extra = got
         if s is not None and len(s) >= 12:
@@ -448,7 +514,7 @@ def fetch_history_series(
         ("Twelve Data", _fetch_twelve_series),
         ("Alpha Vantage", _fetch_alpha_series),
     ):
-        got2 = fetcher(spec, cfg)
+        got2 = fetcher(spec, cfg, end_date=as_of)
         if got2 is None:
             continue
         s, extra = got2
@@ -469,6 +535,7 @@ def fetch_market(
     *,
     vol_estimator: str = "window",
     ewma_lambda: float = 0.94,
+    as_of_date: date | datetime | str | None = None,
 ) -> MarketSnapshot:
     """
     Authoritative FX only (ECB/Frankfurter → FRED → Twelve → Alpha).
@@ -478,8 +545,38 @@ def fetch_market(
     spec = get_pair(pair) if isinstance(pair, str) else pair
     cfg = load_config()
     notes: list[str] = []
+    as_of = _coerce_date(as_of_date)
     if spec.notes:
         notes.append(spec.notes)
+
+    if as_of is not None:
+        history_days = max(lookback_days * 6, lookback_days + 120)
+        series, source, hist_notes = fetch_history_series(
+            spec,
+            history_days=history_days,
+            end_date=as_of,
+        )
+        notes.extend(hist_notes)
+        brent = _fred_last("DCOILBRENTEU", cfg, as_of_date=as_of)
+        dxy = _fred_last("DTWEXBGS", cfg, as_of_date=as_of)
+        if brent is not None:
+            notes.append(f"Brent 来自 FRED DCOILBRENTEU={brent:.2f}")
+        if dxy is not None:
+            notes.append(f"美元指数代理来自 FRED DTWEXBGS={dxy:.2f}")
+        return _snapshot_from_series(
+            spec,
+            series,
+            lookback_days=lookback_days,
+            source=f"{source} @ {as_of.isoformat()}",
+            history_ticker=source,
+            notes=notes,
+            used_proxy=any("代理" in n for n in hist_notes),
+            brent=brent,
+            dxy=dxy,
+            vol_estimator=vol_estimator,
+            ewma_lambda=ewma_lambda,
+            snapshot_asof=as_of,
+        )
 
     candidates: list[tuple[str, Any]] = [
         ("ECB/Frankfurter", _fetch_frankfurter_series),
@@ -494,7 +591,7 @@ def fetch_market(
     used_proxy = False
 
     for name, fetcher in candidates:
-        got = fetcher(spec, cfg)
+        got = fetcher(spec, cfg, end_date=as_of)
         if got is None:
             continue
         s, extra_notes = got
@@ -514,8 +611,8 @@ def fetch_market(
             "请检查网络，或在 API 配置中填写 FRED / Twelve Data Key。"
         )
 
-    brent = _fred_last("DCOILBRENTEU", cfg)
-    dxy = _fred_last("DTWEXBGS", cfg)
+    brent = _fred_last("DCOILBRENTEU", cfg, as_of_date=as_of)
+    dxy = _fred_last("DTWEXBGS", cfg, as_of_date=as_of)
     if brent is not None:
         notes.append(f"Brent 来自 FRED DCOILBRENTEU={brent:.2f}")
     if dxy is not None:
@@ -533,6 +630,7 @@ def fetch_market(
         dxy=dxy,
         vol_estimator=vol_estimator,
         ewma_lambda=ewma_lambda,
+        snapshot_asof=as_of,
     )
 
 

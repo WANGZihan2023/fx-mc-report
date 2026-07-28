@@ -232,6 +232,7 @@ def classify_headline(
     *,
     eid: str,
     unpriced_cap: float = 0.75,
+    reference_now: datetime | None = None,
 ) -> EvidenceItem | None:
     spec = get_pair(pair) if isinstance(pair, str) else pair
     text_title = headline.title
@@ -249,7 +250,7 @@ def classify_headline(
     source_tier = _source_tier(headline.source, headline.url)
     surprise = _surprise(text_title) if _surprise(text_title) != "small" else _surprise(text_full)
     scope = _scope(category, text_title)
-    age = _age_days(headline.published)
+    age = _age_days(headline.published, now=reference_now)
 
     scored = score_strength(
         StrengthInputs(
@@ -354,6 +355,7 @@ def headlines_to_evidence(
     max_items: int = 12,
     unpriced_cap: float = 0.75,
     min_relevance: float = MIN_PAIR_RELEVANCE,
+    reference_now: datetime | None = None,
 ) -> tuple[list[EvidenceItem], dict[str, int]]:
     """
     Convert newest actionable headlines into evidence cards.
@@ -379,7 +381,13 @@ def headlines_to_evidence(
     items: list[EvidenceItem] = []
     classified = 0
     for i, h in enumerate(kept_pool, start=1):
-        ev = classify_headline(h, pair, eid=f"N-{i:02d}", unpriced_cap=unpriced_cap)
+        ev = classify_headline(
+            h,
+            pair,
+            eid=f"N-{i:02d}",
+            unpriced_cap=unpriced_cap,
+            reference_now=reference_now,
+        )
         if ev is None:
             continue
         classified += 1
