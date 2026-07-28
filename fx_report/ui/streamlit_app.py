@@ -46,6 +46,7 @@ from fx_report.model.calibrate import (
 )
 from fx_report.model.monte_carlo import bucket_labels_from_edges
 from fx_report.model.replay_backtest import run_replay_backtest
+from fx_report.model.replay_summary import replay_summary_dataframe
 from fx_report.model.strength import (
     SOURCE_TIER_POINTS,
     SURPRISE_POINTS,
@@ -292,6 +293,76 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
                     f"Skill={_fmt_num(row.get('holdout_skill_brier'))} · "
                     f"n={_safe_int(row.get('holdout_n'))}"
                 )
+
+
+def render_replay_summary_board(*, current_pair: str | None = None, out_dir: str = "output") -> None:
+    with st.expander("历史冻结回放总览", expanded=False):
+        st.caption(
+            "汇总 `output/replay_backtest_*.json`。"
+            "若 `historical_news_working=yes`，表示至少有一个回放时点同时满足 "
+            "`historical_news_quality=date_filtered` 且 `evidence_n>0`。"
+        )
+        try:
+            board = replay_summary_dataframe(out_dir)
+        except Exception as exc:
+            st.warning(f"无法加载 replay 汇总：{exc}")
+            return
+        if board.empty:
+            st.info("尚未找到 replay_backtest_*.json。先跑一次「历史时点回放」或 CLI replay-backtest。")
+            return
+
+        show = board.copy()
+        if current_pair:
+            show = show[show["pair"] == current_pair].reset_index(drop=True)
+            if show.empty:
+                st.info(f"当前货币对 `{current_pair}` 暂无 replay 汇总；下方仍可运行新的小样本。")
+                show = board.copy()
+        show["argmax_hit_rate"] = show["argmax_hit_rate"].map(lambda x: _fmt_pct(x))
+        show["mean_brier"] = show["mean_brier"].map(lambda x: _fmt_num(x, digits=4))
+        show["mean_skill_brier"] = show["mean_skill_brier"].map(lambda x: _fmt_num(x, digits=4))
+        show["evidence_mean"] = show["evidence_mean"].map(lambda x: _fmt_num(x, digits=2))
+        show = show.rename(
+            columns={
+                "pair": "货币对",
+                "window": "窗口",
+                "n_rows": "回放时点数",
+                "argmax_hit_rate": "hit_rate",
+                "mean_brier": "mean_brier",
+                "mean_skill_brier": "mean_skill_brier",
+                "evidence_mean": "evidence_mean",
+                "evidence_max": "evidence_max",
+                "date_filtered_count": "date_filtered",
+                "limited_count": "limited",
+                "historical_news_working": "历史新闻是否工作",
+            }
+        )
+        cols = [
+            c
+            for c in (
+                "货币对",
+                "窗口",
+                "回放时点数",
+                "hit_rate",
+                "mean_brier",
+                "mean_skill_brier",
+                "evidence_mean",
+                "evidence_max",
+                "date_filtered",
+                "limited",
+                "历史新闻是否工作",
+            )
+            if c in show.columns
+        ]
+        st.dataframe(show[cols], hide_index=True, use_container_width=True)
+        n_working = int((board["historical_news_working"] == "yes").sum())
+        if n_working <= 0:
+            st.warning(
+                "当前已落盘 replay 结果里，还没有看到“历史日期过滤新闻 + 非零证据”同时成立的样本。"
+                "这通常意味着历史新闻源尚未真正接通，或该窗口没有取到可用历史新闻。"
+            )
+        else:
+            st.success(f"已发现 {n_working} 个 replay 窗口命中真实历史新闻证据。")
+        st.caption("CLI 汇总：`python run_cli.py replay-summary --out output`")
 
 
 def _horizon(start: date, end: date) -> str:
@@ -1573,6 +1644,7 @@ def main() -> None:
         analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
     )
     render_cross_pair_quality_board(current_pair=analysis_spec.pair)
+    render_replay_summary_board(current_pair=analysis_spec.pair)
 
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
         api_opts = render_api_settings_panel()

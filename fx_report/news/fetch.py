@@ -165,6 +165,20 @@ def _http_json(url: str, timeout: int = 20) -> Any:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    try:
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 def _coerce_date(value: date | datetime | str | None) -> date | None:
@@ -182,20 +196,6 @@ def _coerce_date(value: date | datetime | str | None) -> date | None:
     if " " in text:
         text = text.split(" ", 1)[0]
     return date.fromisoformat(text)
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        pass
-    try:
-        dt = parsedate_to_datetime(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
 
 
 def _local(tag: str) -> str:

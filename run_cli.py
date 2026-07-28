@@ -230,6 +230,46 @@ def _cmd_replay_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay_summary(args: argparse.Namespace) -> int:
+    from fx_report.model.replay_summary import replay_summary_dataframe
+
+    try:
+        df = replay_summary_dataframe(args.out)
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    if df.empty:
+        print("No replay_backtest_*.json found.")
+        return 0
+    show = df[
+        [
+            c
+            for c in (
+                "pair",
+                "window",
+                "n_rows",
+                "argmax_hit_rate",
+                "mean_brier",
+                "mean_skill_brier",
+                "evidence_mean",
+                "evidence_max",
+                "date_filtered_count",
+                "limited_count",
+                "historical_news_working",
+            )
+            if c in df.columns
+        ]
+    ].copy()
+    for col in ("argmax_hit_rate",):
+        if col in show.columns:
+            show[col] = show[col].map(lambda x: f"{100 * float(x):.1f}%" if x == x else "—")
+    for col in ("mean_brier", "mean_skill_brier", "evidence_mean"):
+        if col in show.columns:
+            show[col] = show[col].map(lambda x: f"{float(x):.4f}" if x == x else "—")
+    print(show.to_string(index=False))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="FX Analyse：七步流水线 / 峰值样本 / MC 校准 / 历史回测"
@@ -322,6 +362,10 @@ def main() -> int:
     replay_p.add_argument("--max-dates", type=int, default=None, help="最多跑几个 as_of（UI/烟测可限速）")
     replay_p.set_defaults(func=_cmd_replay_backtest)
 
+    replay_sum_p = sub.add_parser("replay-summary", help="汇总 output/ 下历史冻结回放结果")
+    replay_sum_p.add_argument("--out", default="output")
+    replay_sum_p.set_defaults(func=_cmd_replay_summary)
+
     # Backward compatible: no subcommand → treat as `run`
     # Parse known first; if first token isn't a subcommand, inject `run`.
     import sys
@@ -333,6 +377,7 @@ def main() -> int:
         "calibrate",
         "backtest",
         "replay-backtest",
+        "replay-summary",
         "-h",
         "--help",
     }:

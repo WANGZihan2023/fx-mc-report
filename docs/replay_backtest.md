@@ -29,6 +29,7 @@ python run_cli.py replay-backtest \
 
 - `output/replay_backtest_<PAIR>_<SPAN>.csv`
 - `output/replay_backtest_<PAIR>_<SPAN>.json`
+- `python run_cli.py replay-summary --out output`
 
 核心字段：
 
@@ -70,6 +71,17 @@ python run_cli.py replay-backtest \
   - 没有可用的日期过滤新闻源，或只有本地 inbox
   - 这代表证据链**不是完整历史新闻快照**
 
+更严格的验收口径：
+
+- **历史新闻真正工作**
+  - 至少一个回放时点同时满足：
+    - `historical_news_quality=date_filtered`
+    - `evidence_n > 0`
+- **历史新闻仍未真正工作 / 仍受限**
+  - 全部样本都还是 `limited`
+  - 或虽然出现 `date_filtered`，但 `evidence_n = 0`
+  - 这说明“日期过滤接口可用”与“真的产出可用历史证据”仍有差距
+
 ## 仍然是近似的地方
 
 即使 `historical_news_quality=date_filtered`，也仍不是“完美当日信息集”，原因包括：
@@ -95,8 +107,19 @@ Streamlit 中新增了 `历史时点回放` 小节：
 - 若新闻保真度有限，会弹出警告
 - 结果表会展示 `historical_news_quality`
 
+另外新增 `历史冻结回放总览`：
+
+- 自动汇总 `output/` 下已有 replay JSON
+- 展示 pair / window / hit_rate / mean_brier / mean_skill_brier
+- 同时展示 `evidence_mean`、`evidence_max`、`date_filtered` / `limited` 次数
+- `历史新闻是否工作=yes` 的判定标准：
+  - 至少一个时点 `historical_news_quality=date_filtered`
+  - 且同一时点 `evidence_n > 0`
+
 ## 建议用法
 
 1. 先用小样本（2-3 个日期）做 smoke
-2. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
-3. 如果需要更高新闻保真度，后续可接入真正支持历史归档检索的供应商
+2. 先看 `历史冻结回放总览` 或 `python run_cli.py replay-summary --out output`
+3. 如果结果仍是 `历史新闻是否工作=no`，不要把“回放能跑通”误当成“历史新闻已接通”
+4. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
+5. 如果需要更高新闻保真度，后续可接入真正支持历史归档检索的供应商
