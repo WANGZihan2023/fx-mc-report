@@ -966,6 +966,9 @@ def run_pipeline(
         "providers_used",
         "newsapi_enabled",
         "newsapi_hits",
+        "newsapi_error",
+        "newsapi_http_status",
+        "newsapi_from_cache",
         "historical_news_quality",
         "limitation",
     ):

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from urllib.error import HTTPError
 
 from fx_report.news.fetch import (
     NEWSAPI_MAX_HISTORY_DAYS,
     Headline,
     clamp_newsapi_from_date,
     fetch_historical_headlines_for_pair,
+    fetch_newsapi,
     newsapi_earliest_searchable_date,
 )
 
@@ -42,10 +44,23 @@ def test_fetch_historical_clamps_lookback_60_and_keeps_hits(monkeypatch):
     as_of = date(2026, 7, 13)
     captured: dict[str, object] = {}
 
-    def fake_fetch_newsapi(query, cfg, limit=15, *, start_date=None, end_date=None):
+    def fake_fetch_newsapi(
+        query, cfg, limit=15, *, start_date=None, end_date=None, call_meta=None
+    ):
         captured["start_date"] = start_date
         captured["end_date"] = end_date
         captured["query"] = query
+        if call_meta is not None:
+            call_meta.clear()
+            call_meta.update(
+                {
+                    "error": None,
+                    "http_status": 200,
+                    "from_cache": False,
+                    "used_domains": True,
+                    "total_results": 1,
+                }
+            )
         return [
             Headline(
                 title="RBA holds rates as Australian dollar steadies",
@@ -159,3 +174,210 @@ def test_pipeline_step3_propagates_clamped_news_quality(monkeypatch):
     assert meta["newsapi_hits"] == 1
     assert meta["newsapi_from_clamped"] is True
     assert meta["ai_research"]["historical_disabled"] is True
+
+
+def test_fetch_newsapi_retries_without_domains_when_empty(monkeypatch, tmp_path):
+    """ok-but-empty with domains must fall through to unrestricted search."""
+    calls: list[str] = []
+
+    def fake_http_json(url: str, timeout: int = 20):
+        calls.append(url)
+        if "domains=" in url:
+            return {"status": "ok", "totalResults": 0, "articles": []}
+        return {
+            "status": "ok",
+            "totalResults": 1,
+            "articles": [
+                {
+                    "title": "RBA keeps cash rate steady",
+                    "description": "AUDUSD",
+                    "source": {"name": "Reuters"},
+                    "url": "https://example.com/rba2",
+                    "publishedAt": "2026-07-12T10:00:00Z",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("fx_report.news.fetch._http_json", fake_http_json)
+    monkeypatch.setattr("fx_report.news.fetch._NEWSAPI_MEM_CACHE", {})
+    monkeypatch.setattr(
+        "fx_report.news.fetch._newsapi_cache_dir",
+        lambda: tmp_path / "newsapi_cache",
+    )
+
+    meta: dict = {}
+    out = fetch_newsapi(
+        "RBA",
+        {"NEWSAPI_KEY": "test-key"},
+        limit=5,
+        start_date=date(2026, 6, 29),
+        end_date=date(2026, 7, 13),
+        call_meta=meta,
+    )
+    assert len(out) == 1
+    assert meta["used_domains"] is False
+    assert meta["error"] is None
+    assert any("domains=" in u for u in calls)
+    assert any("domains=" not in u.split("&apiKey=")[0] for u in calls)
+
+
+def test_fetch_newsapi_surfaces_429(monkeypatch, tmp_path):
+    def boom(url: str, timeout: int = 20):
+        raise HTTPError(url, 429, "Too Many Requests", hdrs=None, fp=None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("fx_report.news.fetch._http_json", boom)
+    monkeypatch.setattr("fx_report.news.fetch._NEWSAPI_SLEEP", lambda _s: None)
+    monkeypatch.setattr("fx_report.news.fetch._NEWSAPI_MEM_CACHE", {})
+    monkeypatch.setattr(
+        "fx_report.news.fetch._newsapi_cache_dir",
+        lambda: tmp_path / "newsapi_cache",
+    )
+
+    meta: dict = {}
+    out = fetch_newsapi(
+        "RBA",
+        {"NEWSAPI_KEY": "test-key"},
+        limit=5,
+        start_date=date(2026, 6, 29),
+        end_date=date(2026, 7, 13),
+        call_meta=meta,
+    )
+    assert out == []
+    assert meta["http_status"] == 429
+    assert meta["error"] and "429" in str(meta["error"])
+
+
+def test_historical_surfaces_newsapi_error_in_limitation(monkeypatch):
+    today = date(2026, 7, 28)
+    as_of = date(2026, 7, 13)
+
+    def fake_fetch_newsapi(query, cfg, limit=15, *, start_date=None, end_date=None, call_meta=None):
+        if call_meta is not None:
+            call_meta.clear()
+            call_meta.update(
+                {
+                    "error": "HTTP 429: Too Many Requests",
+                    "http_status": 429,
+                    "from_cache": False,
+                    "used_domains": None,
+                    "total_results": None,
+                }
+            )
+        return []
+
+    monkeypatch.setattr("fx_report.news.fetch.fetch_newsapi", fake_fetch_newsapi)
+    monkeypatch.setattr("fx_report.news.fetch.fetch_inbox_headlines", lambda limit=12: [])
+    monkeypatch.setattr(
+        "fx_report.news.fetch.load_config",
+        lambda: {"NEWSAPI_KEY": "test-key-not-secret"},
+    )
+    monkeypatch.setattr(
+        "fx_report.news.fetch.is_set",
+        lambda cfg, key: bool(cfg.get(key)),
+    )
+
+    _hl, meta = fetch_historical_headlines_for_pair(
+        "USD/AUD",
+        as_of_date=as_of,
+        lookback_days=60,
+        max_items=25,
+        today=today,
+    )
+    assert meta["newsapi_hits"] == 0
+    assert meta["historical_news_quality"] == "limited"
+    assert meta["newsapi_http_status"] == 429
+    assert "429" in str(meta["newsapi_error"])
+    assert "429" in meta["limitation"]
+
+
+def test_pipeline_evidence_n_positive_for_clamped_as_of_20260713(monkeypatch):
+    """End-to-end: lookback=60 + clamp + one NewsAPI hit → evidence_n>0 date_filtered."""
+    from types import SimpleNamespace
+
+    from fx_report.market.pairs import get_pair
+    from fx_report.model.weights import ModelWeights
+    from fx_report.pipeline import step4_evaluate_impact
+
+    as_of = date(2026, 7, 13)
+    today = date(2026, 7, 28)
+    fake_market = SimpleNamespace(
+        spot=1.44,
+        sigma_daily=0.01,
+        sigma_annual=0.16,
+        source="test",
+        asof="2026-07-13",
+        notes=[],
+        ret_1d=0.0,
+        ret_5d=0.0,
+        to_dict=lambda: {},
+    )
+
+    monkeypatch.setattr(
+        "fx_report.news.fetch.fetch_inbox_headlines",
+        lambda limit=12: [],
+    )
+    monkeypatch.setattr(
+        "fx_report.news.fetch.load_config",
+        lambda: {"NEWSAPI_KEY": "test-key-not-secret"},
+    )
+    monkeypatch.setattr(
+        "fx_report.news.fetch.is_set",
+        lambda cfg, key: bool(cfg.get(key)),
+    )
+
+    def fake_fetch_newsapi(
+        query, cfg, limit=15, *, start_date=None, end_date=None, call_meta=None
+    ):
+        assert start_date == date(2026, 6, 29)
+        assert end_date == as_of
+        if call_meta is not None:
+            call_meta.clear()
+            call_meta.update(
+                {
+                    "error": None,
+                    "http_status": 200,
+                    "from_cache": False,
+                    "used_domains": True,
+                    "total_results": 1,
+                }
+            )
+        return [
+            Headline(
+                title="RBA hawkish hold lifts Australian dollar as USD softens",
+                summary="AUDUSD rallies after RBA signal; iron ore steady",
+                source="Reuters",
+                url="https://example.com/rba-aud",
+                published=datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc),
+                provider="newsapi",
+            )
+        ]
+
+    monkeypatch.setattr("fx_report.news.fetch.fetch_newsapi", fake_fetch_newsapi)
+
+    headlines, hist_meta = fetch_historical_headlines_for_pair(
+        get_pair("USD/AUD"),
+        as_of_date=as_of,
+        lookback_days=60,
+        max_items=25,
+        today=today,
+    )
+    assert hist_meta["newsapi_from_clamped"] is True
+    assert hist_meta["historical_news_quality"] == "date_filtered"
+    assert hist_meta["newsapi_hits"] == 1
+    assert len(headlines) == 1
+
+    evidence, news_meta = step4_evaluate_impact(
+        headlines,
+        get_pair("USD/AUD"),
+        fake_market,
+        ModelWeights(),
+        mode="rules",
+        max_items=10,
+        template_policy="off",
+        fetch_fulltext=False,
+        as_of_date=as_of,
+    )
+    news_meta.update({k: hist_meta[k] for k in hist_meta if k not in news_meta})
+    assert news_meta["historical_news_quality"] == "date_filtered"
+    assert len(evidence) > 0
+    assert news_meta["evidence_n"] > 0

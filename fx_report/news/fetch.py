@@ -8,15 +8,19 @@ Priority:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import ssl
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.error import HTTPError
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
@@ -334,51 +338,47 @@ def fetch_google_news_rss(pair: str, limit: int = 12) -> list[Headline]:
     return out
 
 
-def fetch_newsapi(
+_NEWSAPI_DOMAINS = (
+    "reuters.com,bloomberg.com,wsj.com,ft.com,afr.com,cnbc.com,federalreserve.gov"
+)
+_NEWSAPI_MEM_CACHE: dict[str, list[dict[str, Any]]] = {}
+# Injectable sleep for unit tests (avoid real waits on 429 backoff).
+_NEWSAPI_SLEEP: Callable[[float], None] = time.sleep
+
+
+def _newsapi_cache_dir() -> Path:
+    override = (os.environ.get("FX_NEWSAPI_CACHE") or "").strip()
+    if override:
+        return Path(override)
+    # output/ is gitignored; keeps successful pages across replay re-runs
+    return Path(__file__).resolve().parents[2] / "output" / ".cache" / "newsapi"
+
+
+def _newsapi_cache_key(
     query: str,
-    cfg: dict[str, str],
-    limit: int = 15,
     *,
-    start_date: date | datetime | str | None = None,
-    end_date: date | datetime | str | None = None,
-) -> list[Headline]:
-    if not is_set(cfg, "NEWSAPI_KEY"):
-        return []
-    start = _coerce_date(start_date)
-    end = _coerce_date(end_date)
-    extra = ""
-    if start is not None:
-        extra += f"&from={start.isoformat()}"
-    if end is not None:
-        extra += f"&to={end.isoformat()}"
-    # Prefer top domain sources when possible
-    domains = "reuters.com,bloomberg.com,wsj.com,ft.com,afr.com,cnbc.com,federalreserve.gov"
-    url = (
-        "https://newsapi.org/v2/everything?"
-        f"q={quote_plus(query)}&language=en&sortBy=publishedAt"
-        f"&pageSize={min(limit, 50)}&domains={domains}"
-        f"{extra}"
-        f"&apiKey={cfg['NEWSAPI_KEY']}"
+    start: date | None,
+    end: date | None,
+    domains: bool,
+) -> str:
+    # Intentionally omit pageSize/limit: pipeline uses max_items=30 while ad-hoc
+    # fetches may use 25; same from/to window must share one cache entry.
+    raw = "|".join(
+        [
+            query.strip(),
+            start.isoformat() if start else "",
+            end.isoformat() if end else "",
+            "domains" if domains else "all",
+        ]
     )
-    try:
-        data = _http_json(url, timeout_s(cfg))
-    except Exception:
-        return []
-    if not isinstance(data, dict) or data.get("status") != "ok":
-        # retry without domain filter
-        url2 = (
-            "https://newsapi.org/v2/everything?"
-            f"q={quote_plus(query)}&language=en&sortBy=publishedAt"
-            f"&pageSize={min(limit, 50)}{extra}&apiKey={cfg['NEWSAPI_KEY']}"
-        )
-        try:
-            data = _http_json(url2, timeout_s(cfg))
-        except Exception:
-            return []
-    if not isinstance(data, dict) or data.get("status") != "ok":
-        return []
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+
+def _headlines_from_articles(articles: list[Any], limit: int) -> list[Headline]:
     out: list[Headline] = []
-    for a in data.get("articles") or []:
+    for a in articles:
+        if not isinstance(a, dict):
+            continue
         title = (a.get("title") or "").strip()
         if not title or title == "[Removed]":
             continue
@@ -397,6 +397,191 @@ def fetch_newsapi(
         if len(out) >= limit:
             break
     return out
+
+
+def _newsapi_cache_get(key: str) -> list[dict[str, Any]] | None:
+    if key in _NEWSAPI_MEM_CACHE:
+        return list(_NEWSAPI_MEM_CACHE[key])
+    path = _newsapi_cache_dir() / f"{key}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    arts = data.get("articles") if isinstance(data, dict) else None
+    if not isinstance(arts, list):
+        return None
+    _NEWSAPI_MEM_CACHE[key] = list(arts)
+    return list(arts)
+
+
+def _newsapi_cache_put(key: str, articles: list[dict[str, Any]]) -> None:
+    payload = list(articles)
+    _NEWSAPI_MEM_CACHE[key] = payload
+    try:
+        root = _newsapi_cache_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{key}.json").write_text(
+            json.dumps({"articles": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _newsapi_request_json(
+    url: str,
+    timeout: int,
+    *,
+    max_retries: int = 3,
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
+    """GET NewsAPI JSON with 429 backoff. Returns (data, error, http_status)."""
+    last_err: str | None = None
+    last_status: int | None = None
+    for attempt in range(max(1, int(max_retries))):
+        try:
+            data = _http_json(url, timeout)
+            if isinstance(data, dict):
+                return data, None, 200
+            last_err = f"non_dict_response:{type(data).__name__}"
+            return None, last_err, last_status
+        except HTTPError as e:
+            last_status = int(e.code)
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:240]
+            except Exception:
+                body = ""
+            last_err = f"HTTP {e.code}: {e.reason}"
+            if body:
+                last_err = f"{last_err} | {body}"
+            # Daily developer quota (100/24h) won't recover with short sleeps —
+            # abort retries so replay does not burn remaining calls.
+            if e.code == 429 and "rateLimited" in (body or ""):
+                return None, last_err, last_status
+            if e.code == 429 and attempt + 1 < max_retries:
+                _NEWSAPI_SLEEP(min(60.0, 2.0 * (3**attempt)))
+                continue
+            return None, last_err, last_status
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            return None, last_err, last_status
+    return None, last_err or "request_failed", last_status
+
+
+def fetch_newsapi(
+    query: str,
+    cfg: dict[str, str],
+    limit: int = 15,
+    *,
+    start_date: date | datetime | str | None = None,
+    end_date: date | datetime | str | None = None,
+    call_meta: dict[str, Any] | None = None,
+) -> list[Headline]:
+    """
+    NewsAPI /v2/everything.
+
+    Improvements vs silent-empty prior behavior:
+      - process + disk cache (replay re-runs should not re-burn quota)
+      - 429 exponential backoff
+      - if domains filter returns ok-but-empty, retry without domains
+      - surface last error via optional call_meta
+    """
+    if call_meta is not None:
+        call_meta.clear()
+        call_meta.update(
+            {
+                "error": None,
+                "http_status": None,
+                "from_cache": False,
+                "used_domains": None,
+                "total_results": None,
+            }
+        )
+    if not is_set(cfg, "NEWSAPI_KEY"):
+        if call_meta is not None:
+            call_meta["error"] = "NEWSAPI_KEY not set"
+        return []
+    start = _coerce_date(start_date)
+    end = _coerce_date(end_date)
+    page_size = min(int(limit), 50)
+    extra = ""
+    if start is not None:
+        extra += f"&from={start.isoformat()}"
+    if end is not None:
+        extra += f"&to={end.isoformat()}"
+
+    # Prefer cache from either domains or all-sources key.
+    for use_domains in (True, False):
+        key = _newsapi_cache_key(
+            query, start=start, end=end, domains=use_domains
+        )
+        cached = _newsapi_cache_get(key)
+        if cached is not None:
+            if call_meta is not None:
+                call_meta["from_cache"] = True
+                call_meta["used_domains"] = use_domains
+                call_meta["total_results"] = len(cached)
+            return _headlines_from_articles(cached, limit)
+
+    timeout = timeout_s(cfg)
+    api_key = cfg["NEWSAPI_KEY"]
+    last_error: str | None = None
+    last_status: int | None = None
+
+    def build_url(*, domains: bool) -> str:
+        base = (
+            "https://newsapi.org/v2/everything?"
+            f"q={quote_plus(query)}&language=en&sortBy=publishedAt"
+            f"&pageSize={page_size}"
+        )
+        if domains:
+            base += f"&domains={_NEWSAPI_DOMAINS}"
+        return f"{base}{extra}&apiKey={api_key}"
+
+    # 1) domains filter  2) if missing/empty/error → all sources
+    for use_domains in (True, False):
+        data, err, status = _newsapi_request_json(
+            build_url(domains=use_domains), timeout, max_retries=3
+        )
+        if err:
+            last_error = err
+            last_status = status
+            # On hard auth / daily quota errors, don't bother with the second variant.
+            if status in {401, 403}:
+                break
+            if status == 429 and err and "rateLimited" in err:
+                break
+            continue
+        assert data is not None
+        if data.get("status") != "ok":
+            last_error = (
+                f"status={data.get('status')} code={data.get('code')} "
+                f"msg={(data.get('message') or '')[:160]}"
+            )
+            last_status = status
+            continue
+        articles = list(data.get("articles") or [])
+        total = data.get("totalResults")
+        if call_meta is not None:
+            call_meta["used_domains"] = use_domains
+            call_meta["total_results"] = (
+                int(total) if isinstance(total, int) else len(articles)
+            )
+        if not articles and use_domains:
+            # ok-but-empty with domains: try unrestricted sources next
+            continue
+        key = _newsapi_cache_key(
+            query, start=start, end=end, domains=use_domains
+        )
+        _newsapi_cache_put(key, articles)
+        return _headlines_from_articles(articles, limit)
+
+    if call_meta is not None:
+        call_meta["error"] = last_error or "empty_or_failed"
+        call_meta["http_status"] = last_status
+    return []
 
 
 def fetch_finnhub_forex(cfg: dict[str, str], limit: int = 15) -> list[Headline]:
@@ -585,14 +770,20 @@ def fetch_historical_headlines_for_pair(
     )
     newsapi_hits = 0
     newsapi_skipped_outside_window = newsapi_start is None
+    newsapi_errors: list[str] = []
+    newsapi_http_status: int | None = None
+    newsapi_from_cache = False
+    # One query is enough for historical replay; extra queries burn free-tier quota.
     if is_set(cfg, "NEWSAPI_KEY") and newsapi_start is not None:
-        for q in queries[:2]:
+        for q in queries[:1]:
+            call_meta: dict[str, Any] = {}
             batch = fetch_newsapi(
                 q,
                 cfg,
                 limit=max_items,
                 start_date=newsapi_start,
                 end_date=as_of,
+                call_meta=call_meta,
             )
             headlines.extend(
                 [
@@ -603,6 +794,14 @@ def fetch_historical_headlines_for_pair(
                 ]
             )
             newsapi_hits += len(batch)
+            if call_meta.get("from_cache"):
+                newsapi_from_cache = True
+            err = call_meta.get("error")
+            if err:
+                newsapi_errors.append(str(err))
+            status = call_meta.get("http_status")
+            if isinstance(status, int):
+                newsapi_http_status = status
 
     effective_lookback = (
         (as_of - newsapi_start).days if newsapi_start is not None else 0
@@ -624,6 +823,10 @@ def fetch_historical_headlines_for_pair(
             f" {NEWSAPI_MAX_HISTORY_DAYS} 天），避免 lookback={requested_lookback}"
             " 越界导致空结果。"
         )
+    if newsapi_hits == 0 and newsapi_errors:
+        limitation += f" NewsAPI 请求失败：{newsapi_errors[0][:180]}"
+    elif newsapi_hits == 0 and is_set(cfg, "NEWSAPI_KEY") and not newsapi_skipped_outside_window:
+        limitation += " NewsAPI 在可检索窗口内返回 0 条（可能配额耗尽或该窗口无匹配）。"
 
     meta: dict[str, Any] = {
         "historical_mode": True,
@@ -637,6 +840,9 @@ def fetch_historical_headlines_for_pair(
         "providers_used": sorted({h.provider for h in headlines}),
         "newsapi_enabled": bool(is_set(cfg, "NEWSAPI_KEY")),
         "newsapi_hits": newsapi_hits,
+        "newsapi_error": newsapi_errors[0] if newsapi_errors else None,
+        "newsapi_http_status": newsapi_http_status,
+        "newsapi_from_cache": bool(newsapi_from_cache),
         "historical_news_quality": "date_filtered" if newsapi_hits > 0 else "limited",
         "limitation": limitation,
     }
