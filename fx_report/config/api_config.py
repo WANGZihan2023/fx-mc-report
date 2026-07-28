@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 # Dev Mac shared vault (local Streamlit). On Railway/cloud this path does not exist —
@@ -87,6 +90,14 @@ RAILWAY_VARIABLE_NAMES: tuple[str, ...] = (
     "BROKER_REST_TOKEN",
     "FX_PDF_ENGINE",
 )
+
+
+@dataclass(frozen=True)
+class RailwayPersistResult:
+    ok: bool
+    changed_keys: tuple[str, ...]
+    skipped_keys: tuple[str, ...]
+    message: str
 
 
 def is_cloud_runtime() -> bool:
@@ -218,6 +229,121 @@ def railway_variables_checklist(*, only_set_in: dict[str, str] | None = None) ->
         "#   ./scripts/push_env_to_railway.sh",
     ]
     return "\n".join(lines)
+
+
+def persistence_keys_only(keys: dict[str, str] | None) -> dict[str, str]:
+    """Keep only supported persistable keys with non-empty values."""
+    if not keys:
+        return {}
+    allowed = set(PERSIST_KEYS) | set(RAILWAY_VARIABLE_NAMES)
+    out: dict[str, str] = {}
+    for k, v in keys.items():
+        key = (k or "").strip()
+        val = (v or "").strip()
+        if not key or not val:
+            continue
+        if key in {"FX_API_ROOT", "FX_API_ENV_PATH"}:
+            continue
+        if key in allowed:
+            out[key] = val
+    return out
+
+
+def railway_variables_env_block(keys: dict[str, str] | None) -> str:
+    """Real KEY=VALUE block for Railway Variables copy/paste and `.env` download."""
+    picked = persistence_keys_only(keys)
+    lines = [
+        "# Railway Variables / .env",
+        "# Paste into Railway -> Service -> Variables",
+        "",
+    ]
+    for key in sorted(picked):
+        lines.append(f"{key}={picked[key]}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def railway_direct_persist_hint() -> tuple[bool, str]:
+    """
+    Best-effort capability hint for one-click Railway persistence.
+    Real success still depends on a live CLI call when the user clicks save.
+    """
+    cli = shutil.which("railway")
+    if not cli:
+        return False, "当前运行环境没有 `railway` CLI"
+    if not is_cloud_runtime():
+        return True, "检测到本机/宿主可用 `railway` CLI"
+    if os.environ.get("RAILWAY_TOKEN"):
+        return True, "检测到 `railway` CLI + `RAILWAY_TOKEN`"
+    return False, "云端运行环境未检测到可直接改 Variables 的认证信息"
+
+
+def persist_keys_to_railway_variables(keys: dict[str, str] | None) -> RailwayPersistResult:
+    """
+    Push non-empty keys into Railway Variables via Railway CLI.
+    Never prints secret values; success means real server-side persistence.
+    """
+    picked = persistence_keys_only(keys)
+    if not picked:
+        return RailwayPersistResult(
+            ok=False,
+            changed_keys=(),
+            skipped_keys=(),
+            message="没有可持久化的非空变量。",
+        )
+
+    cli = shutil.which("railway")
+    if not cli:
+        return RailwayPersistResult(
+            ok=False,
+            changed_keys=(),
+            skipped_keys=tuple(sorted(picked)),
+            message="未找到 `railway` CLI，无法一键写入 Railway Variables。",
+        )
+
+    changed: list[str] = []
+    for key in sorted(picked):
+        value = picked[key]
+        cmd = [cli, "variables", "set", f"{key}={value}"]
+        try:
+            run = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            return RailwayPersistResult(
+                ok=False,
+                changed_keys=tuple(changed),
+                skipped_keys=tuple(k for k in sorted(picked) if k not in changed),
+                message="写入 Railway Variables 超时，请改用下方复制块或本机脚本。",
+            )
+        except OSError as exc:
+            return RailwayPersistResult(
+                ok=False,
+                changed_keys=tuple(changed),
+                skipped_keys=tuple(k for k in sorted(picked) if k not in changed),
+                message=f"无法调用 `railway` CLI：{exc}",
+            )
+
+        if run.returncode != 0:
+            stderr = (run.stderr or run.stdout or "").strip()
+            err = stderr.splitlines()[-1] if stderr else "Railway CLI 返回失败"
+            return RailwayPersistResult(
+                ok=False,
+                changed_keys=tuple(changed),
+                skipped_keys=tuple(k for k in sorted(picked) if k not in changed),
+                message=f"Railway Variables 写入失败：{err}",
+            )
+        changed.append(key)
+
+    return RailwayPersistResult(
+        ok=True,
+        changed_keys=tuple(changed),
+        skipped_keys=(),
+        message=f"已写入 Railway Variables：{len(changed)} 个变量。",
+    )
 
 
 def env_path() -> Path:

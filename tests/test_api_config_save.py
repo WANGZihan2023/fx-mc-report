@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import fx_report.config.api_config as ac
@@ -112,3 +113,71 @@ def test_configured_key_sources_from_environ(monkeypatch):
     sources = ac.configured_key_sources(cfg)
     assert sources["FRED_API_KEY"] == "已从环境变量加载"
     assert "NEWSAPI_KEY" not in sources
+
+
+def test_persistence_keys_only_filters_local_only_fields():
+    picked = ac.persistence_keys_only(
+        {
+            "FRED_API_KEY": "fred",
+            "FX_API_ROOT": "/tmp/local-only",
+            "NEWSAPI_KEY": "news",
+            "UNKNOWN_KEY": "nope",
+            "LLM_MODEL": "deepseek-chat",
+            "EMPTY": "",
+        }
+    )
+    assert picked == {
+        "FRED_API_KEY": "fred",
+        "NEWSAPI_KEY": "news",
+        "LLM_MODEL": "deepseek-chat",
+    }
+
+
+def test_railway_variables_env_block_contains_real_values():
+    block = ac.railway_variables_env_block(
+        {"NEWSAPI_KEY": "news-123", "FX_API_ROOT": "/tmp/skip", "LLM_MODEL": "llama"}
+    )
+    assert "NEWSAPI_KEY=news-123" in block
+    assert "LLM_MODEL=llama" in block
+    assert "FX_API_ROOT" not in block
+
+
+def test_railway_direct_persist_hint_without_cli(monkeypatch):
+    monkeypatch.setattr(ac.shutil, "which", lambda _: None)
+    ok, hint = ac.railway_direct_persist_hint()
+    assert ok is False
+    assert "railway" in hint.lower()
+
+
+def test_persist_keys_to_railway_variables_success(monkeypatch):
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(ac.shutil, "which", lambda _: "/usr/local/bin/railway")
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run)
+
+    result = ac.persist_keys_to_railway_variables(
+        {"FRED_API_KEY": "fred", "FX_API_ROOT": "/tmp/skip", "LLM_MODEL": "llama"}
+    )
+    assert result.ok is True
+    assert result.changed_keys == ("FRED_API_KEY", "LLM_MODEL")
+    assert calls == [
+        ["/usr/local/bin/railway", "variables", "set", "FRED_API_KEY=fred"],
+        ["/usr/local/bin/railway", "variables", "set", "LLM_MODEL=llama"],
+    ]
+
+
+def test_persist_keys_to_railway_variables_failure(monkeypatch):
+    def _fake_run(cmd, check, capture_output, text, timeout):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="not linked")
+
+    monkeypatch.setattr(ac.shutil, "which", lambda _: "/usr/local/bin/railway")
+    monkeypatch.setattr(ac.subprocess, "run", _fake_run)
+
+    result = ac.persist_keys_to_railway_variables({"NEWSAPI_KEY": "news"})
+    assert result.ok is False
+    assert result.changed_keys == ()
+    assert "not linked" in result.message

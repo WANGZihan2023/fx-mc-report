@@ -28,7 +28,11 @@ from fx_report.config.api_config import (
     mask_secret,
     merge_nonempty,
     parse_env_bytes,
+    persist_keys_to_railway_variables,
+    persistence_keys_only,
     project_env_path,
+    railway_direct_persist_hint,
+    railway_variables_env_block,
     railway_variables_checklist,
     save_keys_to_local,
     status_text,
@@ -344,8 +348,16 @@ def _render_persistence_banner(cloud: bool) -> None:
         )
 
 
-def _render_env_upload_and_railway(cloud: bool) -> None:
-    st.markdown("#### 恢复 / 持久化")
+def _env_loaded_from_server_env(sources: dict[str, str]) -> list[str]:
+    return [k for k, v in sources.items() if v == "已从环境变量加载"]
+
+
+def _render_env_upload_and_railway(
+    cloud: bool,
+    merged: dict[str, str],
+    sources: dict[str, str],
+) -> None:
+    st.markdown("#### 仅本次会话")
     up = st.file_uploader(
         "从本机 .env 上传并应用到本会话",
         help=(
@@ -406,6 +418,75 @@ def _render_env_upload_and_railway(cloud: bool) -> None:
                 "本机有真实 `.env` 时可运行：`./scripts/push_env_to_railway.sh`"
             )
 
+    st.markdown("#### 保存到服务器 / 持久化")
+    direct_ok, direct_hint = railway_direct_persist_hint()
+    persistable = persistence_keys_only(merged)
+    loaded_from_env = _env_loaded_from_server_env(sources)
+    if cloud and loaded_from_env:
+        st.success(
+            "已永久保存到 Railway Variables：当前启动已从服务器环境变量加载 "
+            + " · ".join(f"`{k}`" for k in loaded_from_env[:8])
+            + (" …" if len(loaded_from_env) > 8 else "")
+        )
+    elif cloud:
+        st.warning(
+            "当前还没有检测到服务器级持久化变量。若只做“本次会话”，刷新或 redeploy 后仍需重新恢复。"
+        )
+    else:
+        st.info("本机可直接保存到 `.env`；若要同步到 Railway，也可用下面的一键/复制流程。")
+
+    if direct_ok:
+        st.caption(f"可尝试一键持久化：{direct_hint}。若失败，会保留可复制的 Railway Variables 块。")
+    else:
+        st.caption(f"当前不能从这里直接改 Railway Variables：{direct_hint}。已提供复制块和 `.env` 下载作为兜底。")
+
+    p1, p2 = st.columns(2)
+    with p1:
+        if st.button(
+            "保存并持久化",
+            type="primary",
+            use_container_width=True,
+            key="btn_persist_server",
+        ):
+            if not persistable:
+                st.error("没有可持久化的非空变量。请先填写后再保存。")
+            elif direct_ok:
+                result = persist_keys_to_railway_variables(persistable)
+                _set_session_keys(persistable)
+                if result.ok:
+                    st.success(
+                        "已永久保存到 Railway Variables："
+                        + " · ".join(f"`{k}`" for k in result.changed_keys[:10])
+                        + (" …" if len(result.changed_keys) > 10 else "")
+                    )
+                else:
+                    st.warning(result.message)
+                    st.code(railway_variables_env_block(persistable), language="bash")
+                    st.caption(
+                        "复制上面的 `KEY=VALUE` 到 Railway -> Service -> Variables；"
+                        "或在本机运行 `./scripts/push_env_to_railway.sh <你的.env文件>`。"
+                    )
+            else:
+                _set_session_keys(persistable)
+                st.warning("当前无法从网页宿主直接改 Railway Variables，还需手动执行最后一步。")
+                st.code(railway_variables_env_block(persistable), language="bash")
+                st.caption(
+                    "最省事做法：复制整块到 Railway -> Service -> Variables，"
+                    "或下载 `.env` 后在本机运行 `./scripts/push_env_to_railway.sh <你的.env文件>`。"
+                )
+    with p2:
+        if persistable:
+            st.download_button(
+                "下载持久化 .env",
+                data=railway_variables_env_block(persistable).encode("utf-8"),
+                file_name="railway-variables.env",
+                mime="text/plain",
+                use_container_width=True,
+                help="用于本机一条命令推送到 Railway Variables，或留作下次恢复。",
+            )
+        else:
+            st.button("下载持久化 .env", use_container_width=True, disabled=True)
+
 
 def render_api_settings_panel() -> dict[str, Any]:
     """
@@ -456,8 +537,6 @@ def render_api_settings_panel() -> dict[str, Any]:
                 "本机 `.env` / vault 里目前没有行情/新闻 Key。"
                 "填表后务必点 **保存到本机 .env**，否则刷新或重启 Streamlit 会全部丢失。"
             )
-
-    _render_env_upload_and_railway(cloud)
 
     tab_free, tab_paid, tab_ai, tab_status = st.tabs(
         ["① 免费申请指引", "② 付费/增强 Key 表", "③ AI API", "④ 当前状态"]
@@ -727,13 +806,15 @@ def render_api_settings_panel() -> dict[str, Any]:
     # Merge editor output without letting blanks wipe already-filled keys.
     merged = merge_nonempty(_session_keys(), {**free_vals, **paid_vals, **ai_vals})
 
+    _render_env_upload_and_railway(cloud, merged, sources)
+
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
-        if st.button("应用到本会话", type="primary", use_container_width=True):
+        if st.button("仅本次会话", use_container_width=True):
             _set_session_keys(merged)
             st.success("已注入本会话环境，可直接跑流水线。注意：未持久化则刷新会丢。")
     with c2:
-        save_label = "写入服务器磁盘（临时）" if cloud else "保存到本机 .env"
+        save_label = "写入服务器临时磁盘" if cloud else "保存到本机 .env"
         if st.button(save_label, use_container_width=True, disabled=False):
             nonempty = {k: v for k, v in merged.items() if (v or "").strip()}
             if not nonempty:

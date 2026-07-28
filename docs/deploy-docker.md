@@ -49,9 +49,10 @@ git push
 
 > **重要（网页持久 = Railway Variables）：**
 > - 刷新 / 关掉再开 → Streamlit `session_state` 清空，页面里刚填的 Key **会消失**（正常）。
-> - 「写入服务器磁盘 / 保存」只写**容器临时盘**，**redeploy 后丢失**，也**不会**写到你 Mac。
+> - `仅本次会话` 只对当前网页进程生效；`写入服务器临时磁盘` 只写**容器临时盘**，**redeploy 后丢失**，也**不会**写到你 Mac。
 > - 「下载 .env」只得到本机文件；网站**不会**自动读 Mac 上的 `.env`。
-> - **一次配好**：Railway → Service → **Variables**（页面可点「生成 Railway 变量清单」）。本机有真实 Key 时：`./scripts/push_env_to_railway.sh`。
+> - 页面 `保存并持久化` 会优先尝试**直接写 Railway Variables**；若当前宿主无 CLI/认证，则会回退为可复制的 `KEY=VALUE` Variables 块 + 可下载 `railway-variables.env`。
+> - **一次配好**：Railway → Service → **Variables**。本机有真实 Key 或已下载 `railway-variables.env` 时：`./scripts/push_env_to_railway.sh [path/to/file.env]`。
 > - **临时恢复**：网页「从本机 .env 上传并应用到本会话」。
 
 | 变量 | 说明 |
