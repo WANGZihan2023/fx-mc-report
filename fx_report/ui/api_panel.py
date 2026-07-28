@@ -274,15 +274,63 @@ def _editor_display_value(ek: str, value_map: dict[str, str]) -> str:
     return ""
 
 
-def _editor_table(
+def _is_secret_key(ek: str) -> bool:
+    return ek not in {"LLM_BASE_URL", "LLM_MODEL", "BROKER_REST_BASE_URL"}
+
+
+def _input_widget_key(section_key: str, env_key: str) -> str:
+    return f"{section_key}__{env_key}"
+
+
+def _input_placeholder(ek: str, value_map: dict[str, str], sources: dict[str, str]) -> str:
+    configured = bool((value_map.get(ek) or "").strip()) or bool(sources.get(ek))
+    if _is_secret_key(ek):
+        if configured:
+            return "已配置且不会回显；留空保留，直接粘贴可替换"
+        return "直接粘贴新的 Key / Token"
+    if ek == "BROKER_REST_BASE_URL":
+        return "例如 https://your-broker.example/api"
+    if ek == "LLM_BASE_URL":
+        return "例如 https://api.deepseek.com/v1"
+    if ek == "LLM_MODEL":
+        return "例如 deepseek-chat"
+    return "输入新值"
+
+
+def _clear_secret_inputs(rows: list[dict[str, str]], key_col: str, *, section_key: str) -> None:
+    pending = dict(st.session_state.get("_api_widget_resets") or {})
+    for row in rows:
+        ek = row[key_col]
+        if _is_secret_key(ek):
+            pending[_input_widget_key(section_key, ek)] = ""
+    st.session_state["_api_widget_resets"] = pending
+
+
+def _apply_pending_widget_reset(widget_key: str) -> None:
+    pending = dict(st.session_state.get("_api_widget_resets") or {})
+    if widget_key not in pending:
+        return
+    st.session_state[widget_key] = pending.pop(widget_key)
+    st.session_state["_api_widget_resets"] = pending
+
+
+def _reset_ai_key_input(channel: str, defaults: dict[str, str]) -> None:
+    pending = dict(st.session_state.get("_api_widget_resets") or {})
+    pending["ai_api_key_input"] = (
+        defaults.get("LLM_API_KEY", "") if channel == "ollama" else ""
+    )
+    st.session_state["_api_widget_resets"] = pending
+
+
+def _render_key_inputs(
     rows: list[dict[str, str]],
     key_col: str,
     value_map: dict[str, str],
     *,
-    editor_key: str,
+    section_key: str,
     sources: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Show editable table; return env_key -> *new* values only (masks/blanks skipped)."""
+    """Render read-only status table + stable inputs for replacement/new values."""
     sources = sources or {}
     data = []
     for r in rows:
@@ -294,35 +342,40 @@ def _editor_table(
                 "档位": r.get("tier", r.get("cost", "")),
                 "用途": r.get("why", ""),
                 "申请页": r.get("signup", r.get("url", "")) or None,
-                "API Key / 值": _editor_display_value(ek, value_map),
                 "已配置": _status_label(ek, value_map, sources),
             }
         )
     df = pd.DataFrame(data)
-    edited = st.data_editor(
+    st.dataframe(
         df,
         hide_index=True,
         use_container_width=True,
-        disabled=["名称", "环境变量", "档位", "用途", "申请页", "已配置"],
         column_config={
             "申请页": st.column_config.LinkColumn("申请页", display_text="打开"),
-            "API Key / 值": st.column_config.TextColumn(
-                "API Key / 值",
-                help="已配置请留空以保留；只在要更换时粘贴新 Key",
-                width="medium",
-            ),
             "已配置": st.column_config.TextColumn(
                 "已配置",
                 help="来源：Railway Variables / 本机 .env / 本会话上传",
                 width="medium",
             ),
         },
-        key=editor_key,
     )
+
+    st.markdown("#### 填写 / 更换")
     out: dict[str, str] = {}
-    for _, row in edited.iterrows():
-        ek = str(row["环境变量"])
-        raw = str(row["API Key / 值"] or "").strip()
+    for row in rows:
+        ek = row[key_col]
+        widget_key = _input_widget_key(section_key, ek)
+        _apply_pending_widget_reset(widget_key)
+        if widget_key not in st.session_state:
+            st.session_state[widget_key] = _editor_display_value(ek, value_map)
+        raw = st.text_input(
+            f"{row.get('name', ek)} · {ek}",
+            key=widget_key,
+            type="password" if _is_secret_key(ek) else "default",
+            placeholder=_input_placeholder(ek, value_map, sources),
+            help="留空=保留现有值；输入非空内容=覆盖为新值。",
+        )
+        raw = str(raw or "").strip()
         if _looks_like_mask_or_placeholder(raw):
             continue
         out[ek] = raw
@@ -356,6 +409,9 @@ def _render_env_upload_and_railway(
     cloud: bool,
     merged: dict[str, str],
     sources: dict[str, str],
+    *,
+    free_rows: list[dict[str, str]],
+    paid_rows: list[dict[str, str]],
 ) -> None:
     st.markdown("#### 仅本次会话")
     up = st.file_uploader(
@@ -381,6 +437,9 @@ def _render_env_upload_and_railway(
                 st.error("文件里没有非空 Key。")
             else:
                 _set_session_keys(parsed)
+                _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+                _clear_secret_inputs(paid_rows, "env_key", section_key="paid_keys")
+                _reset_ai_key_input(st.session_state.get("ai_channel", "ollama"), _session_keys())
                 if cloud:
                     try:
                         paths = save_keys_to_local(parsed)
@@ -453,6 +512,9 @@ def _render_env_upload_and_railway(
             elif direct_ok:
                 result = persist_keys_to_railway_variables(persistable)
                 _set_session_keys(persistable)
+                _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+                _clear_secret_inputs(paid_rows, "env_key", section_key="paid_keys")
+                _reset_ai_key_input(st.session_state.get("ai_channel", "ollama"), merged)
                 if result.ok:
                     st.success(
                         "已永久保存到 Railway Variables："
@@ -468,6 +530,9 @@ def _render_env_upload_and_railway(
                     )
             else:
                 _set_session_keys(persistable)
+                _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+                _clear_secret_inputs(paid_rows, "env_key", section_key="paid_keys")
+                _reset_ai_key_input(st.session_state.get("ai_channel", "ollama"), merged)
                 st.warning("当前无法从网页宿主直接改 Railway Variables，还需手动执行最后一步。")
                 st.code(railway_variables_env_block(persistable), language="bash")
                 st.caption(
@@ -588,11 +653,11 @@ def render_api_settings_panel() -> dict[str, Any]:
             for g in FREE_SIGNUP_GUIDES
             if g.get("env_key")
         ]
-        free_vals = _editor_table(
+        free_vals = _render_key_inputs(
             free_rows,
             "env_key",
             _session_keys(),
-            editor_key="free_keys_editor",
+            section_key="free_keys",
             sources=sources,
         )
 
@@ -602,11 +667,11 @@ def render_api_settings_panel() -> dict[str, Any]:
             "公司若已买终端/数据商，把 Key 填进表即可增强。"
         )
         st.caption("已配置的行请留空「API Key / 值」以保留。")
-        paid_vals = _editor_table(
+        paid_vals = _render_key_inputs(
             PAID_OR_OPTIONAL,
             "env_key",
             _session_keys(),
-            editor_key="paid_keys_editor",
+            section_key="paid_keys",
             sources=sources,
         )
 
@@ -700,51 +765,71 @@ def render_api_settings_panel() -> dict[str, Any]:
                     "字段": "API Key",
                     "环境变量": "LLM_API_KEY",
                     "说明": "已配置请留空保留；Groq/DeepSeek/OpenAI；Ollama 填 ollama",
-                    "值": ai_key_display
-                    if channel != "ollama"
-                    else defaults["LLM_API_KEY"],
                     "已配置": ai_status or "否",
                 },
                 {
                     "字段": "Base URL",
                     "环境变量": "LLM_BASE_URL",
                     "说明": "必须匹配通道（DeepSeek→api.deepseek.com/v1）",
-                    "值": defaults["LLM_BASE_URL"],
                     "已配置": "✓" if defaults["LLM_BASE_URL"] else "否",
                 },
                 {
                     "字段": "Model",
                     "环境变量": "LLM_MODEL",
                     "说明": "如 deepseek-chat / llama-3.1-8b-instant / gpt-4o-mini",
-                    "值": defaults["LLM_MODEL"],
                     "已配置": "✓" if defaults["LLM_MODEL"] else "否",
                 },
             ]
         )
-        ai_edited = st.data_editor(
+        st.dataframe(
             ai_df,
             hide_index=True,
             use_container_width=True,
-            disabled=["字段", "环境变量", "说明", "已配置"],
-            column_config={
-                "值": st.column_config.TextColumn("值", width="large"),
-            },
-            key="ai_api_editor",
         )
+        st.markdown("#### 填写 / 更换")
+        if st.session_state.get("ai_channel_last") != channel:
+            st.session_state["ai_channel_last"] = channel
+            _reset_ai_key_input(channel, defaults)
+            pending = dict(st.session_state.get("_api_widget_resets") or {})
+            pending["ai_base_url_input"] = defaults["LLM_BASE_URL"]
+            pending["ai_model_input"] = defaults["LLM_MODEL"]
+            st.session_state["_api_widget_resets"] = pending
         ai_vals: dict[str, str] = {}
-        for _, r in ai_edited.iterrows():
-            ek = str(r["环境变量"])
-            raw = str(r["值"] or "").strip()
-            if ek == "LLM_API_KEY" and _looks_like_mask_or_placeholder(raw):
-                if defaults.get("LLM_API_KEY") and channel != "ollama":
-                    continue
-                if channel == "ollama":
-                    ai_vals[ek] = "ollama"
-                continue
-            if not raw and ek == "LLM_API_KEY" and defaults.get("LLM_API_KEY"):
-                continue
-            if raw:
-                ai_vals[ek] = raw
+        _apply_pending_widget_reset("ai_api_key_input")
+        _apply_pending_widget_reset("ai_base_url_input")
+        _apply_pending_widget_reset("ai_model_input")
+        ai_key_raw = st.text_input(
+            "API Key · LLM_API_KEY",
+            key="ai_api_key_input",
+            type="password" if channel != "ollama" else "default",
+            placeholder=(
+                "已配置且不会回显；留空保留，直接粘贴可替换"
+                if ai_key_configured and channel != "ollama"
+                else "Groq / DeepSeek / OpenAI 兼容 Key；Ollama 填 ollama"
+            ),
+            help="留空=保留现有值；输入非空内容=覆盖为新值。",
+        )
+        ai_base_raw = st.text_input(
+            "Base URL · LLM_BASE_URL",
+            key="ai_base_url_input",
+            placeholder="例如 https://api.deepseek.com/v1",
+        )
+        ai_model_raw = st.text_input(
+            "Model · LLM_MODEL",
+            key="ai_model_input",
+            placeholder="例如 deepseek-chat",
+        )
+        ai_key_raw = str(ai_key_raw or "").strip()
+        ai_base_raw = str(ai_base_raw or "").strip()
+        ai_model_raw = str(ai_model_raw or "").strip()
+        if ai_key_raw:
+            ai_vals["LLM_API_KEY"] = ai_key_raw
+        elif channel == "ollama" and defaults.get("LLM_API_KEY"):
+            ai_vals["LLM_API_KEY"] = defaults["LLM_API_KEY"]
+        if ai_base_raw:
+            ai_vals["LLM_BASE_URL"] = ai_base_raw
+        if ai_model_raw:
+            ai_vals["LLM_MODEL"] = ai_model_raw
         if channel == "groq" and (
             ai_vals.get("LLM_API_KEY") or defaults.get("LLM_API_KEY")
         ):
@@ -806,12 +891,21 @@ def render_api_settings_panel() -> dict[str, Any]:
     # Merge editor output without letting blanks wipe already-filled keys.
     merged = merge_nonempty(_session_keys(), {**free_vals, **paid_vals, **ai_vals})
 
-    _render_env_upload_and_railway(cloud, merged, sources)
+    _render_env_upload_and_railway(
+        cloud,
+        merged,
+        sources,
+        free_rows=free_rows,
+        paid_rows=PAID_OR_OPTIONAL,
+    )
 
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         if st.button("仅本次会话", use_container_width=True):
             _set_session_keys(merged)
+            _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+            _clear_secret_inputs(PAID_OR_OPTIONAL, "env_key", section_key="paid_keys")
+            _reset_ai_key_input(channel, merged)
             st.success("已注入本会话环境，可直接跑流水线。注意：未持久化则刷新会丢。")
     with c2:
         save_label = "写入服务器临时磁盘" if cloud else "保存到本机 .env"
@@ -827,6 +921,9 @@ def render_api_settings_panel() -> dict[str, Any]:
                 try:
                     paths = save_keys_to_local(nonempty)
                     _set_session_keys(nonempty)
+                    _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+                    _clear_secret_inputs(PAID_OR_OPTIONAL, "env_key", section_key="paid_keys")
+                    _reset_ai_key_input(channel, nonempty)
                     lines = ["已写入**服务器容器**（redeploy 会丢）："]
                     for p in paths:
                         lines.append(f"- `{p}`")
@@ -849,6 +946,9 @@ def render_api_settings_panel() -> dict[str, Any]:
                 try:
                     _set_session_keys(nonempty)
                     paths = save_keys_to_local(nonempty)
+                    _clear_secret_inputs(free_rows, "env_key", section_key="free_keys")
+                    _clear_secret_inputs(PAID_OR_OPTIONAL, "env_key", section_key="paid_keys")
+                    _reset_ai_key_input(channel, nonempty)
                     lines = ["已写入本机（gitignore，勿提交）："]
                     for p in paths:
                         lines.append(f"- 绝对路径 `{p}`")
