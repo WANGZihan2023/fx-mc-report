@@ -65,7 +65,7 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         "--ai-research",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="步骤3启用 AI 检索员（白名单投行页+搜索API+LLM抽取）；--no-ai-research 关闭",
+        help="步骤3启用 AI 检索员（LLM脑迭代拟词 + Tavily/Brave/NewsAPI/GoogleNews手）；--no-ai-research 关闭",
     )
     p.add_argument(
         "--calibrated-params",

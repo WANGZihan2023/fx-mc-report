@@ -1,12 +1,15 @@
 """
-AI 检索员：按货币对信息需求，像人工一样搜索公开源并抽取投行/宏观展望。
+AI 检索员：模仿人工「一条条」检索公开源，再抽投行/宏观展望。
 
-能力（有什么用什么）：
-  1) 公开投行/研究白名单页直接抓取
-  2) NewsAPI / Tavily / Brave 搜索（.env 填 Key）
-  3) LLM（Ollama / OpenAI 兼容）把材料收成结构化语句
+分工：
+  · 脑 = LLM（DeepSeek / Groq / Ollama …）——拟下一句搜索词、挑选有用标题、收成语句
+  · 手 = 搜索 API / 公开 RSS —— Tavily → Brave → NewsAPI → Google News RSS（免费无 Key）
+  · 另：公开投行白名单页直接抓取（不依赖搜索 Key）
 
-不破解付费墙；打不开的源会跳过并记入 meta。
+诚实约定：
+  · 不发明 URL；References 只保留搜索/白名单真正返回的链接
+  · 只填 DeepSeek、没有搜索手时：只能吃白名单 +（若有）Google News；并在 meta 里写清限制
+  · 不破解付费墙；打不开的源跳过并记入 meta
 """
 
 from __future__ import annotations
@@ -15,21 +18,19 @@ import json
 import re
 import ssl
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
 from urllib.request import Request, urlopen
 
-from fx_report.config.api_config import is_set, load_config, timeout_s
+from fx_report.config.api_config import SEARCH_KEYS, is_set, load_config, timeout_s
 from fx_report.news.fetch import Headline
 from fx_report.news.llm import LLMConfig, resolve_llm_config
 from fx_report.market.pairs import PairSpec
 
-# 可公开尝试的投行/研究页（按货币对选）
+# 可公开尝试的投行/研究页（按货币对选；URL 失效时自动跳过）
 BANK_PUBLIC_URLS: dict[str, list[tuple[str, str]]] = {
-    # (机构名, URL模板或固定URL)
     "*": [
         ("ING Think FX Daily", "https://think.ing.com/articles/fx-daily-dollar-upside-risks-are-rising-rapidly/"),
         ("ING G10 FX Talking", "https://think.ing.com/articles/g10-fx-talking-july-2026/"),
@@ -54,6 +55,9 @@ BANK_PUBLIC_URLS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+DEFAULT_MAX_ROUNDS = 4
+DEFAULT_TARGET_KEEP = 10
+
 
 @dataclass
 class ResearchHit:
@@ -61,7 +65,7 @@ class ResearchHit:
     url: str
     source: str
     snippet: str
-    provider: str  # whitelist | newsapi | tavily | brave | llm
+    provider: str  # whitelist | newsapi | tavily | brave | google_news_rss | llm
 
 
 @dataclass
@@ -138,7 +142,8 @@ def _html_to_text(html: str, max_chars: int = 4000) -> str:
     return text[:max_chars]
 
 
-def _queries_for_pair(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
+def _seed_queries(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
+    """Fallback query list when LLM planner unavailable — still one-at-a-time."""
     pair = spec.pair
     q = [
         f"{pair} forecast outlook bank",
@@ -154,7 +159,7 @@ def _queries_for_pair(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
         q.append("Fed rate hike odds CPI USD")
     if "pboc" in info_need_ids:
         q.append("PBOC yuan CNH outlook")
-    return q[:5]
+    return q[:6]
 
 
 def _whitelist_urls(spec: PairSpec) -> list[tuple[str, str]]:
@@ -162,7 +167,6 @@ def _whitelist_urls(spec: PairSpec) -> list[tuple[str, str]]:
     out.extend(BANK_PUBLIC_URLS.get("*", []))
     for ccy in (spec.base, spec.quote):
         out.extend(BANK_PUBLIC_URLS.get(ccy, []))
-    # dedupe by url
     seen: set[str] = set()
     uniq: list[tuple[str, str]] = []
     for name, url in out:
@@ -171,6 +175,22 @@ def _whitelist_urls(spec: PairSpec) -> list[tuple[str, str]]:
         seen.add(url)
         uniq.append((name, url))
     return uniq
+
+
+def search_hands_available(cfg: dict[str, str] | None = None) -> dict[str, bool]:
+    """Which search backends can act as「手」."""
+    cfg = cfg or load_config()
+    return {
+        "tavily": is_set(cfg, "TAVILY_API_KEY"),
+        "brave": is_set(cfg, "BRAVE_SEARCH_API_KEY"),
+        "newsapi": is_set(cfg, "NEWSAPI_KEY"),
+        "google_news_rss": True,  # free, no key
+    }
+
+
+def has_paid_search_api(cfg: dict[str, str] | None = None) -> bool:
+    cfg = cfg or load_config()
+    return any(is_set(cfg, k) for k in SEARCH_KEYS)
 
 
 def search_newsapi(query: str, cfg: dict[str, str], limit: int = 8) -> list[ResearchHit]:
@@ -281,6 +301,47 @@ def search_brave(query: str, cfg: dict[str, str], limit: int = 6) -> list[Resear
     return hits
 
 
+def search_google_news_rss(query: str, limit: int = 6) -> list[ResearchHit]:
+    """Free Google News RSS — no API key. Used as fallback「手」."""
+    url = (
+        "https://news.google.com/rss/search?"
+        + urllib.parse.urlencode({"q": query, "hl": "en-US", "gl": "US", "ceid": "US:en"})
+    )
+    try:
+        raw = _http_get(url, timeout=15)
+    except Exception:
+        return []
+    # Minimal RSS item parse (avoid importing private helpers)
+    hits: list[ResearchHit] = []
+    for m in re.finditer(r"<item>(.*?)</item>", raw.decode("utf-8", errors="ignore"), re.I | re.S):
+        block = m.group(1)
+        title_m = re.search(r"<title[^>]*><!\[CDATA\[(.*?)\]\]></title>|<title[^>]*>(.*?)</title>", block, re.I | re.S)
+        link_m = re.search(r"<link[^>]*>(.*?)</link>", block, re.I | re.S)
+        desc_m = re.search(r"<description[^>]*><!\[CDATA\[(.*?)\]\]></description>|<description[^>]*>(.*?)</description>", block, re.I | re.S)
+        title = ""
+        if title_m:
+            title = (title_m.group(1) or title_m.group(2) or "").strip()
+        link = (link_m.group(1).strip() if link_m else "")
+        desc = ""
+        if desc_m:
+            desc = re.sub(r"<[^>]+>", " ", (desc_m.group(1) or desc_m.group(2) or ""))
+            desc = re.sub(r"\s+", " ", desc).strip()[:400]
+        if not title:
+            continue
+        hits.append(
+            ResearchHit(
+                title=title[:180],
+                url=link,
+                source="Google News",
+                snippet=desc,
+                provider="google_news_rss",
+            )
+        )
+        if len(hits) >= limit:
+            break
+    return hits
+
+
 def fetch_whitelist(spec: PairSpec, cfg: dict[str, str]) -> list[ResearchHit]:
     hits: list[ResearchHit] = []
     for name, url in _whitelist_urls(spec):
@@ -306,14 +367,148 @@ def fetch_whitelist(spec: PairSpec, cfg: dict[str, str]) -> list[ResearchHit]:
     return hits
 
 
+def execute_search(query: str, cfg: dict[str, str], *, limit: int = 6) -> tuple[list[ResearchHit], list[str]]:
+    """
+    Run one human-like search round with available hands (priority order).
+    Returns (hits, providers_used).
+    """
+    hits: list[ResearchHit] = []
+    used: list[str] = []
+    for name, fn in (
+        ("tavily", lambda: search_tavily(query, cfg, limit=limit)),
+        ("brave", lambda: search_brave(query, cfg, limit=limit)),
+        ("newsapi", lambda: search_newsapi(query, cfg, limit=limit)),
+    ):
+        batch = fn()
+        if batch:
+            hits.extend(batch)
+            used.append(name)
+    # Free fallback always tried if paid hands empty or thin
+    if len(hits) < 3:
+        gn = search_google_news_rss(query, limit=limit)
+        if gn:
+            hits.extend(gn)
+            used.append("google_news_rss")
+    return hits, used
+
+
+def _dedupe_hits(hits: list[ResearchHit]) -> list[ResearchHit]:
+    seen: set[str] = set()
+    uniq: list[ResearchHit] = []
+    for h in hits:
+        key = (h.url or h.title).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(h)
+    return uniq
+
+
+def _allowed_urls(hits: list[ResearchHit]) -> set[str]:
+    return {h.url.strip() for h in hits if (h.url or "").strip().startswith("http")}
+
+
+def _llm_plan_next_query(
+    spec: PairSpec,
+    need_ids: list[str],
+    kept: list[ResearchHit],
+    tried_queries: list[str],
+    round_i: int,
+    max_rounds: int,
+    llm: LLMConfig,
+) -> dict[str, Any]:
+    """Brain: decide next search query or stop."""
+    from fx_report.news.llm import _chat_json
+
+    found = []
+    for i, h in enumerate(kept[:10], 1):
+        found.append(f"[{i}] {h.source}: {h.title[:120]}")
+    system = (
+        "You are an FX research librarian. Mimic a human who searches one query at a time. "
+        "Return ONLY JSON: "
+        '{"action":"search"|"stop","query":str,"reason":str}. '
+        "Prefer bank outlooks, central-bank, CPI, oil/geopolitics relevant to the pair. "
+        "Do not invent URLs. If enough material exists or queries exhausted, action=stop."
+    )
+    user = (
+        f"Pair: {spec.pair}\nDrivers needed: {', '.join(need_ids) or 'macro'}\n"
+        f"Round {round_i + 1}/{max_rounds}\n"
+        f"Already tried queries: {tried_queries or ['(none)']}\n"
+        f"Kept headlines so far ({len(kept)}):\n"
+        + ("\n".join(found) if found else "(none yet)")
+        + "\n\nPropose ONE next English web search query, or stop."
+    )
+    try:
+        data = _chat_json(llm, system, user)
+    except Exception as e:
+        return {"action": "search", "query": "", "reason": f"llm_plan_failed:{e}", "error": str(e)}
+    if not isinstance(data, dict):
+        return {"action": "stop", "query": "", "reason": "bad_plan_json"}
+    action = (data.get("action") or "search").strip().lower()
+    query = (data.get("query") or "").strip()
+    reason = (data.get("reason") or "").strip()
+    if action not in ("search", "stop"):
+        action = "search" if query else "stop"
+    return {"action": action, "query": query, "reason": reason}
+
+
+def _llm_select_hits(
+    spec: PairSpec,
+    candidates: list[ResearchHit],
+    llm: LLMConfig,
+    *,
+    already_kept: int,
+    target: int,
+) -> list[int]:
+    """Brain: pick useful indices from this round's candidates (0-based)."""
+    if not candidates:
+        return []
+    from fx_report.news.llm import _chat_json
+
+    lines = []
+    for i, h in enumerate(candidates):
+        lines.append(
+            f"[{i}] provider={h.provider} source={h.source}\n"
+            f"title={h.title}\nurl={h.url}\nsnippet={h.snippet[:280]}\n"
+        )
+    need = max(0, target - already_kept)
+    system = (
+        "You select FX-relevant headlines for a research memo. "
+        f"Return ONLY JSON: {{\"keep\":[int,...]}} with 0-based indices. "
+        f"Keep at most {min(need + 2, 6)} items that help {spec.pair} outlook "
+        "(banks, CB, CPI, geopolitics, commodities). Drop clickbait/unrelated."
+    )
+    user = "Candidates:\n" + "\n".join(lines)
+    try:
+        data = _chat_json(llm, system, user)
+    except Exception:
+        # Fallback: keep first few with http URLs
+        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][: min(4, need or 4)]
+    keep = data.get("keep") if isinstance(data, dict) else None
+    if not isinstance(keep, list):
+        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][: min(4, need or 4)]
+    out: list[int] = []
+    for x in keep:
+        try:
+            idx = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(candidates) and idx not in out:
+            out.append(idx)
+    return out[:6]
+
+
 def _llm_extract_outlooks(
     spec: PairSpec,
     hits: list[ResearchHit],
     llm: LLMConfig,
+    *,
+    allowed_urls: set[str],
 ) -> list[Headline]:
     if not hits:
         return []
-    # Pack materials for LLM
+    from fx_report.news.llm import _chat_json
+
     materials = []
     for i, h in enumerate(hits[:12], 1):
         materials.append(
@@ -325,38 +520,32 @@ def _llm_extract_outlooks(
         "market-moving facts for the given currency pair. "
         "Return ONLY JSON: {\"items\":[{\"title\":str,\"summary\":str,\"source\":str,\"url\":str,"
         "\"bank\":str,\"relevance\":str}]}. "
-        "Prefer investment-bank or official forecasts with target levels if present. "
+        "CRITICAL: url MUST be copied exactly from materials — never invent or alter URLs. "
+        "If a fact has no URL in materials, omit that item. "
         "If nothing useful, return {\"items\":[]}."
     )
     user = (
         f"Currency pair: {spec.pair}\nDrivers: {', '.join(spec.default_drivers)}\n\n"
         f"Materials:\n{''.join(materials)}"
     )
-    # reuse news_llm chat path without importing private if possible
-    from fx_report.news.llm import _chat_json
-
     try:
         data = _chat_json(llm, system, user)
     except Exception:
-        # fallback: turn hits into headlines directly
         return [
             Headline(
                 title=f"[AI research] {h.title}",
                 summary=h.snippet[:400],
                 source=h.source,
-                url=h.url,
+                url=h.url if h.url in allowed_urls else "",
                 published=datetime.now(timezone.utc),
                 provider="ai_research",
             )
             for h in hits[:8]
+            if (h.url in allowed_urls) or h.provider == "whitelist"
         ]
 
-    # _chat_json returns parsed model JSON object when successful
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
-        # sometimes wrapped
-        if isinstance(data, dict) and "choices" in data:
-            return []
         items = []
 
     out: list[Headline] = []
@@ -365,6 +554,15 @@ def _llm_extract_outlooks(
             continue
         title = (it.get("title") or "").strip()
         if not title:
+            continue
+        url = (it.get("url") or "").strip()
+        # Honesty: drop invented URLs
+        if url and url not in allowed_urls:
+            # try match by ignoring trailing slash / case
+            url_norm = url.rstrip("/").lower()
+            match = next((u for u in allowed_urls if u.rstrip("/").lower() == url_norm), "")
+            url = match
+        if not url:
             continue
         bank = (it.get("bank") or "").strip()
         src = (it.get("source") or bank or "AI research").strip()
@@ -376,11 +574,31 @@ def _llm_extract_outlooks(
                 title=f"[AI research] {title}"[:220],
                 summary=summary[:500],
                 source=src,
-                url=(it.get("url") or "").strip(),
+                url=url,
                 published=datetime.now(timezone.utc),
                 provider="ai_research",
             )
         )
+    return out
+
+
+def _hits_to_headlines(hits: list[ResearchHit], *, max_n: int) -> list[Headline]:
+    out: list[Headline] = []
+    for h in hits:
+        if not (h.url or "").startswith("http"):
+            continue
+        out.append(
+            Headline(
+                title=f"[AI research] {h.title}"[:220],
+                summary=h.snippet[:400],
+                source=h.source,
+                url=h.url,
+                published=datetime.now(timezone.utc),
+                provider="ai_research",
+            )
+        )
+        if len(out) >= max_n:
+            break
     return out
 
 
@@ -390,70 +608,178 @@ def run_ai_research(
     info_need_ids: list[str] | None = None,
     llm_cfg: LLMConfig | None = None,
     max_headlines: int = 12,
+    max_rounds: int = DEFAULT_MAX_ROUNDS,
+    target_keep: int = DEFAULT_TARGET_KEEP,
 ) -> AIResearchResult:
     """
-    AI 检索员主入口。
-    - 无 LLM 且无搜索 Key 时：仍尝试白名单页
-    - 有 LLM：把材料收成投行/展望语句
+    AI 检索员主入口（迭代人工式）：
+      白名单 → 多轮「拟 query → 搜索手 → 挑选」→ LLM 收成语句（仅真 URL）
     """
     cfg = load_config()
     need_ids = info_need_ids or list(spec.default_drivers)
+    hands = search_hands_available(cfg)
+    paid_search = has_paid_search_api(cfg)
+    llm = llm_cfg or resolve_llm_config()
+
     meta: dict[str, Any] = {
         "enabled": True,
+        "mode": "iterative",
+        "brain": bool(llm),
+        "llm": bool(llm),
+        "hands": hands,
+        "paid_search": paid_search,
         "queries": [],
+        "rounds": [],
         "whitelist_ok": 0,
         "search_hits": 0,
+        "kept_hits": 0,
         "errors": [],
+        "limitation": None,
     }
 
-    hits: list[ResearchHit] = []
+    if llm and not paid_search:
+        meta["limitation"] = (
+            "仅有 LLM（如 DeepSeek）作「脑」，无 Tavily/Brave/NewsAPI 作增强「手」。"
+            "本轮仍用白名单公开页 + Google News RSS（免费）；"
+            "DeepSeek 不会虚构 URL。填 TAVILY_API_KEY 或 BRAVE_SEARCH_API_KEY 可搜得更全。"
+        )
+    elif not llm and not paid_search:
+        meta["limitation"] = (
+            "无 LLM 且无 Tavily/Brave/NewsAPI：仅白名单 + Google News RSS 固定词。"
+            "建议填 DEEPSEEK_API_KEY（脑）+ TAVILY_API_KEY（手）。"
+        )
+    elif not llm and paid_search:
+        meta["limitation"] = (
+            "有搜索 Key 但无 LLM：按预设词一条条搜，不做智能选题/抽取。"
+            "建议填 DEEPSEEK_API_KEY 或本机 Ollama。"
+        )
 
     # 1) whitelist pages (no search key needed)
+    kept: list[ResearchHit] = []
     wl = fetch_whitelist(spec, cfg)
-    hits.extend(wl)
+    kept.extend(wl)
     meta["whitelist_ok"] = len(wl)
 
-    # 2) search APIs
-    queries = _queries_for_pair(spec, need_ids)
-    meta["queries"] = queries
-    for q in queries:
-        before = len(hits)
-        hits.extend(search_tavily(q, cfg, limit=5))
-        hits.extend(search_brave(q, cfg, limit=5))
-        hits.extend(search_newsapi(q, cfg, limit=6))
-        if len(hits) == before:
-            meta["errors"].append(f"no_search_hits:{q[:40]}")
+    all_hits: list[ResearchHit] = list(wl)
+    tried_queries: list[str] = []
+    seed = _seed_queries(spec, need_ids)
+    seed_i = 0
 
-    # dedupe by url/title
-    seen: set[str] = set()
-    uniq: list[ResearchHit] = []
-    for h in hits:
-        key = (h.url or h.title).strip().lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        uniq.append(h)
-    hits = uniq
-    meta["search_hits"] = len(hits)
+    # 2) iterative rounds: brain proposes → hands search → brain selects
+    for round_i in range(max(1, max_rounds)):
+        if len(kept) >= target_keep:
+            meta["rounds"].append({"round": round_i, "action": "stop", "reason": "target_reached"})
+            break
 
-    llm = llm_cfg or resolve_llm_config()
-    meta["llm"] = bool(llm)
-    if llm and hits:
-        headlines = _llm_extract_outlooks(spec, hits, llm)
-    else:
-        headlines = [
-            Headline(
-                title=f"[AI research] {h.title}",
-                summary=h.snippet[:400],
-                source=h.source,
-                url=h.url,
-                published=datetime.now(timezone.utc),
-                provider="ai_research",
+        query = ""
+        plan_reason = ""
+        if llm:
+            plan = _llm_plan_next_query(
+                spec, need_ids, kept, tried_queries, round_i, max_rounds, llm
             )
-            for h in hits[:max_headlines]
-        ]
+            plan_reason = plan.get("reason") or ""
+            if plan.get("error"):
+                meta["errors"].append(f"plan:{plan['error']}")
+            if plan.get("action") == "stop" and kept:
+                meta["rounds"].append(
+                    {"round": round_i, "action": "stop", "reason": plan_reason or "llm_stop"}
+                )
+                break
+            query = (plan.get("query") or "").strip()
+
+        if not query:
+            # fallback: next seed query (still one-at-a-time)
+            while seed_i < len(seed) and seed[seed_i] in tried_queries:
+                seed_i += 1
+            if seed_i >= len(seed):
+                meta["rounds"].append(
+                    {"round": round_i, "action": "stop", "reason": "no_more_seed_queries"}
+                )
+                break
+            query = seed[seed_i]
+            seed_i += 1
+            plan_reason = plan_reason or "seed_fallback"
+
+        if query in tried_queries:
+            meta["rounds"].append(
+                {"round": round_i, "action": "skip", "query": query, "reason": "duplicate_query"}
+            )
+            continue
+
+        tried_queries.append(query)
+        meta["queries"].append(query)
+
+        round_hits, used = execute_search(query, cfg, limit=6)
+        round_hits = _dedupe_hits(round_hits)
+        # drop already kept
+        kept_keys = {(h.url or h.title).strip().lower() for h in kept}
+        fresh = [h for h in round_hits if (h.url or h.title).strip().lower() not in kept_keys]
+        all_hits.extend(fresh)
+
+        selected: list[ResearchHit] = []
+        if fresh and llm:
+            idxs = _llm_select_hits(
+                spec, fresh, llm, already_kept=len(kept), target=target_keep
+            )
+            selected = [fresh[i] for i in idxs if 0 <= i < len(fresh)]
+        elif fresh:
+            selected = [h for h in fresh if (h.url or "").startswith("http")][:4]
+
+        kept.extend(selected)
+        meta["rounds"].append(
+            {
+                "round": round_i,
+                "action": "search",
+                "query": query,
+                "reason": plan_reason,
+                "providers": used,
+                "fresh": len(fresh),
+                "kept": len(selected),
+            }
+        )
+        if not fresh:
+            meta["errors"].append(f"no_search_hits:{query[:50]}")
+
+    kept = _dedupe_hits(kept)
+    all_hits = _dedupe_hits(all_hits)
+    meta["search_hits"] = len(all_hits)
+    meta["kept_hits"] = len(kept)
+
+    allowed = _allowed_urls(kept) | _allowed_urls(all_hits)
+
+    if llm and kept:
+        headlines = _llm_extract_outlooks(spec, kept, llm, allowed_urls=allowed)
+        if not headlines:
+            # Extract returned empty (or all URLs rejected) — use raw kept with real URLs
+            headlines = _hits_to_headlines(kept, max_n=max_headlines)
+            meta["errors"].append("llm_extract_empty_used_raw_kept")
+    else:
+        headlines = _hits_to_headlines(kept or all_hits, max_n=max_headlines)
         if not llm:
             meta["errors"].append("no_llm_config_used_raw_hits")
 
-    meta["headlines_out"] = len(headlines)
-    return AIResearchResult(headlines=headlines[:max_headlines], hits=hits, meta=meta)
+    # Final honesty pass: strip any headline whose URL is not in allowed set
+    honest: list[Headline] = []
+    for h in headlines:
+        if h.url and h.url not in allowed:
+            h = Headline(
+                title=h.title,
+                summary=h.summary,
+                source=h.source,
+                url="",
+                published=h.published,
+                provider=h.provider,
+            )
+        # Prefer items that still have a real URL for References
+        if h.url or h.provider == "ai_research":
+            if h.url:
+                honest.append(h)
+            elif not allowed:
+                # no URLs at all — still surface title for evidence text (no fake link)
+                honest.append(h)
+    # If honesty filter wiped everything, fall back to kept with URLs only
+    if not honest:
+        honest = _hits_to_headlines(kept, max_n=max_headlines)
+
+    meta["headlines_out"] = len(honest[:max_headlines])
+    return AIResearchResult(headlines=honest[:max_headlines], hits=kept, meta=meta)

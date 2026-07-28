@@ -637,7 +637,15 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
     # ② 抓取
     with st.sidebar.expander("② 抓取与判定", expanded=False):
         use_news = st.checkbox("官方 / vault 头条", value=True)
-        ai_research = st.checkbox("AI 检索员", value=True)
+        ai_research = st.checkbox(
+            "AI 检索员",
+            value=True,
+            help=(
+                "模仿人工一条条搜：LLM（DeepSeek 等）当「脑」拟下一句搜索词并挑选标题；"
+                "Tavily/Brave/NewsAPI/Google News RSS 当「手」抓真链接。"
+                "只填 DeepSeek 不会虚构 URL——请同时填搜索 Key 或依赖免费 Google News。"
+            ),
+        )
         classify_mode = st.selectbox(
             "证据判定",
             ["hybrid", "llm", "rules"],
@@ -1993,6 +2001,15 @@ def main() -> None:
         note_bits.append("本次使用了模板/先验证据（非纯新闻驱动），已标记并降权或告警。")
     if eq == "news_empty_no_prior":
         note_bits.append("新闻未产出证据且 template_policy=off → S≈0，未静默填模板。")
+    ai_meta = news_meta.get("ai_research") or {}
+    if isinstance(ai_meta, dict):
+        if ai_meta.get("limitation"):
+            note_bits.append(f"AI 检索员：{ai_meta['limitation']}")
+        elif ai_meta.get("mode") == "iterative":
+            note_bits.append(
+                f"AI 检索员迭代 {len([r for r in (ai_meta.get('rounds') or []) if r.get('action')=='search'])} 轮，"
+                f"精选 {ai_meta.get('kept_hits', 0)} 条原料 → 产出 {ai_meta.get('headlines_out', 0)}。"
+            )
     if bb_caveat:
         note_bits.append(str(bb_caveat))
     elif peak_eng == "brownian_bridge":

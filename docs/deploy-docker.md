@@ -53,8 +53,8 @@ git push
 |------|------|
 | `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **产品共享访问密钥**；镜像默认 `uniocean`。平台 Variables 可覆盖。 |
 | `NEWSAPI_KEY` / `FINNHUB_API_KEY` | **References / 证据条数**主来源 |
-| `TAVILY_API_KEY` | AI 检索员搜索（可选） |
-| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | LLM 判定/抽取（**不**单独增加参考链接） |
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` | AI 检索员搜索「手」（强烈建议） |
+| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | LLM「脑」：迭代拟搜索词 + 判定（**不**虚构 URL） |
 | `LLM_BASE_URL` | DeepSeek 须 `https://api.deepseek.com/v1` |
 | `FRED_API_KEY` | 行情增强 |
 | `FX_PDF_ENGINE` | 默认已是 `weasyprint`，一般不用改 |

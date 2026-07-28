@@ -103,7 +103,7 @@ FREE_SIGNUP_GUIDES: list[dict[str, str]] = [
         "name": "DeepSeek（OpenAI 兼容）",
         "env_key": "DEEPSEEK_API_KEY",
         "cost": "按量付费（有赠送额度）",
-        "why": "证据判定 / 把已抓到的材料收成语句；不能替代 NewsAPI——References 仍靠新闻/RSS。",
+        "why": "AI 检索员的「脑」+ 证据判定；要更多真链接请再填 Tavily/NewsAPI（手）。",
         "url": "https://platform.deepseek.com/api_keys",
         "steps": (
             "1. 打开 DeepSeek 开放平台 → API Keys\n"
@@ -382,10 +382,11 @@ def render_api_settings_panel() -> dict[str, Any]:
         )
         st.warning(
             "**LLM Key ≠ 更多 References。**"
-            "文末参考链接来自新闻抓取（央行 RSS / Google News RSS / "
-            "`NEWSAPI_KEY` / `FINNHUB_API_KEY`）+ 可选搜索（Tavily/Brave）。"
-            "只填 DeepSeek/Groq 不会凭空多出 URL；头条太少或相关度过滤后，"
-            "References 可能只剩 1 条（常见是行情语句）。"
+            "文末参考链接来自真实抓取："
+            "央行 RSS / Google News RSS / `NEWSAPI_KEY` / `FINNHUB_API_KEY`，"
+            "以及侧栏「AI 检索员」的搜索手（`TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY`）。"
+            "DeepSeek 只当「脑」（拟搜索词、挑选、抽取），不会虚构 URL。"
+            "推荐：DeepSeek + Tavily（或至少 NewsAPI）；缺搜索 Key 时 AI 检索员仍可用白名单 + Google News。"
         )
         keys = _session_keys()
         # Prefer DeepSeek channel if vault already has DeepSeek base/key

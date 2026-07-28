@@ -870,12 +870,18 @@ def run_pipeline(
         say(f"  → 低相关头条跳过 {step3_meta['low_rel_skipped']} 条")
     ai_meta = step3_meta.get("ai_research") or {}
     if ai_meta:
+        rounds = ai_meta.get("rounds") or []
+        n_search = sum(1 for r in rounds if r.get("action") == "search")
         say(
-            f"  → AI 检索：白名单 {ai_meta.get('whitelist_ok', 0)}｜"
-            f"命中 {ai_meta.get('search_hits', 0)}｜"
+            f"  → AI 检索（迭代）：白名单 {ai_meta.get('whitelist_ok', 0)}｜"
+            f"轮次 {n_search}｜命中 {ai_meta.get('search_hits', 0)}｜"
+            f"精选 {ai_meta.get('kept_hits', ai_meta.get('search_hits', 0))}｜"
             f"产出 {ai_meta.get('headlines_out', 0)}｜"
-            f"LLM={'on' if ai_meta.get('llm') else 'off'}"
+            f"脑={'on' if ai_meta.get('llm') else 'off'}"
         )
+        lim = ai_meta.get("limitation")
+        if lim:
+            say(f"  → AI 检索限制：{lim}")
 
     # 4
     say("【4/7】评估每条信息对货币对的影响")

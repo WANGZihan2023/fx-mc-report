@@ -366,7 +366,7 @@ def status_text(cfg: dict[str, str] | None = None) -> str:
         "",
         "Market: ECB/Frankfurter → FRED → Twelve → Alpha",
         "News: Fed/RBA/ECB/BOE RSS → inbox → NewsAPI/Finnhub",
-        "AI research: whitelist bank pages → Tavily/Brave/NewsAPI → LLM extract",
+        "AI research: iterative (LLM brain → Tavily/Brave/NewsAPI/GoogleNews hands)",
         "",
         "Providers:",
     ]

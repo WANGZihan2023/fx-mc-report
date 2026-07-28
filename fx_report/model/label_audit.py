@@ -592,15 +592,15 @@ def railway_env_checklist_markdown(*, news_keys_present: bool = False) -> str:
 | 变量 | 用途 | 状态提示 |
 |------|------|----------|
 | `NEWSAPI_KEY` 或 `FINNHUB_API_KEY` | **References / 证据条数**的主要来源（无 Key 时仅靠央行+Google News RSS） | {news_mark} |
-| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` | AI 检索员网页搜索（给 LLM 更多原料） | 可选 |
-| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | hybrid 证据判定与语句抽取（**不**单独增加 URL 条数） | 可选但推荐 |
+| `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` | AI 检索员的「手」（网页搜索，产出真 URL） | 强烈建议配 DeepSeek |
+| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | 「脑」：迭代拟搜索词 + 选题 + 证据判定（**不**单独发明 URL） | 可选但推荐 |
 | `LLM_BASE_URL` | DeepSeek 须为 `https://api.deepseek.com/v1`（通道选 DeepSeek 会自动填） | DeepSeek 必对 |
 | `FRED_API_KEY` | 行情增强 | 可选 |
 | `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | 访问口令 | 云端强烈建议 |
 
 无新闻 Key 时系统仍会抓 **Fed/RBA/ECB/BOE 等官方 RSS** + Google News 公开 RSS；
 相关度过滤后可能只剩 0–1 条——属诚实空/稀薄证据，不是 LLM 坏了。
-**填 DeepSeek 不会自动多出 References**；要更多链接请填 NewsAPI/Finnhub（或 Tavily）。
+**只填 DeepSeek 不会自动多出 References**；要更多链接请开「AI 检索员」并填 Tavily/Brave/NewsAPI（详见 `docs/ai_research.md`）。
 """.strip()
 
 
@@ -661,13 +661,14 @@ def thin_refs_message(
         parts.append(
             "未检测到 `NEWSAPI_KEY`/`FINNHUB_API_KEY`："
             "目前主要靠央行 RSS + Google News；相关度过滤后常只剩 1 条。"
-            "要更多 References 请填新闻 Key（可选再加 Tavily）；"
-            "DeepSeek/LLM 只判定与改写，不会虚构链接。"
+            "要更多 References：填 `NEWSAPI_KEY`/`FINNHUB_API_KEY`，"
+            "并开侧栏「AI 检索员」+ `TAVILY_API_KEY`（DeepSeek 当脑、Tavily 当手）；"
+            "单独填 LLM 不会虚构链接。"
         )
     else:
         parts.append(
             "已有新闻 Key 但仍偏少：可能是相关度过滤过严或当日头条与货币对匹配弱。"
-            "可加大「最多头条证据条数」、换货币对，或加 Tavily/Brave 给 AI 检索员。"
+            "可加大「最多头条证据条数」、换货币对，或确认「AI 检索员」已开并加 Tavily/Brave。"
         )
     return " ".join(parts)
 

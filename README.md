@@ -120,7 +120,7 @@ streamlit run app.py
 ## 数据源
 
 权威优先：ECB 行情 + 央行 RSS；可选 FRED/NewsAPI/inbox。  
-步骤3可开 AI 检索员：公开投行页 +（可选）Tavily/Brave/NewsAPI Key，再经 LLM 收成展望语句。
+步骤3可开 AI 检索员（默认开）：LLM 当「脑」迭代拟搜索词，Tavily/Brave/NewsAPI/Google News 当「手」抓真链接；详见 `docs/ai_research.md`。
 
 ### 网站上填 Key
 
@@ -146,6 +146,7 @@ macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `
 - 证据人工标注（label_audit）+ Stage 3 标签学习：`docs/label_audit.md`
 - 校准日常闭环（overnight / **每日 launchd 03:00** → sync → Railway）：`docs/calibration_loop.md`（本机已可 `./scripts/install_daily_calibrate.sh`）
 - 长期分享 / Streamlit 公开设置：`docs/sharing.md`
+- **AI 检索员（脑+手迭代搜新闻）**：`docs/ai_research.md`
 - **Docker 云部署（WeasyPrint / 澳洲）**：`docs/deploy-docker.md`（含 **`APP_PASSWORD`**）
 - 云端 redeploy 标记：`docs/CLOUD_REDEPLOY.txt`
 - 部署推送：`scripts/deploy.sh`
