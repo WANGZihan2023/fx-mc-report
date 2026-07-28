@@ -51,18 +51,18 @@ git push
 > - 刷新 / 关掉再开 → Streamlit `session_state` 清空，页面里刚填的 Key **会消失**（正常）。
 > - `仅本次会话` 只对当前网页进程生效；`写入服务器临时磁盘` 只写**容器临时盘**，**redeploy 后丢失**，也**不会**写到你 Mac。
 > - 「下载 .env」只得到本机文件；网站**不会**自动读 Mac 上的 `.env`。
-> - **一次性先配管理员口令**：Railway → Service → Variables 新增 `ADMIN_SAVE_TOKEN=你自定的强口令`。
+> - **管理员保存口令默认已启用**；若要自定义/轮换，再在 Railway → Service → Variables 设置 `ADMIN_SAVE_TOKEN=你自定的强口令`。
 > - 页面 `保存并持久化到 Railway Variables` 只有输入正确 **管理员保存口令** 后才会开放；普通访客仍可 `仅本次会话` 使用。
 > - 持久化白名单只允许 **API / LLM 相关变量**，不会写 `APP_PASSWORD` / `FX_REPORT_PASSWORD` / `FX_PDF_ENGINE` 这类非 API 配置。
 > - 页面 `保存并持久化到 Railway Variables` 会优先尝试**直接写 Railway Variables**；若当前宿主无 CLI/认证，则会回退为可复制的 `KEY=VALUE` Variables 块 + 可下载 `railway-variables.env`。
 > - 为避免泄露，网页导出的持久化块 / `.env` 只包含**本次新填写或上传**的值，不会回显服务器里原有 secrets。
-> - **一次配好**：先设 `ADMIN_SAVE_TOKEN`，再由管理员在网页中持久化；或在本机用真实 Key / `railway-variables.env` 执行 `./scripts/push_env_to_railway.sh [path/to/file.env]`。
+> - **一次配好**：可直接用默认管理员口令解锁；若你已在 Variables 覆盖 `ADMIN_SAVE_TOKEN`，则以平台值为准；之后再由管理员在网页中持久化，或在本机用真实 Key / `railway-variables.env` 执行 `./scripts/push_env_to_railway.sh [path/to/file.env]`。
 > - **临时恢复**：网页「从本机 .env 上传并应用到本会话」。
 
 | 变量 | 说明 |
 |------|------|
 | `APP_PASSWORD`（或 `FX_REPORT_PASSWORD`） | **产品共享访问密钥**；镜像默认 `uniocean`。平台 Variables 可覆盖。 |
-| `ADMIN_SAVE_TOKEN` | **管理员保存口令**；只有输入这个口令的人，才能在网页里把 API / LLM 配置持久化进 Railway Variables |
+| `ADMIN_SAVE_TOKEN` | **管理员保存口令**；未设置时使用应用内默认值，设置后以平台 Variables 覆盖；只有输入这个口令的人，才能在网页里把 API / LLM 配置持久化进 Railway Variables |
 | `NEWSAPI_KEY` / `FINNHUB_API_KEY` | **References / 证据条数**主来源 |
 | `TAVILY_API_KEY` / `BRAVE_SEARCH_API_KEY` | AI 检索员搜索「手」（强烈建议） |
 | `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `LLM_API_KEY` | LLM「脑」：迭代拟搜索词 + 判定（**不**虚构 URL） |

@@ -40,6 +40,7 @@ MARKET_KEYS = (
 )
 
 ADMIN_SAVE_TOKEN_ENV = "ADMIN_SAVE_TOKEN"
+DEFAULT_ADMIN_SAVE_TOKEN = "unio"
 
 NEWS_KEYS = ("NEWSAPI_KEY", "FINNHUB_API_KEY")
 SEARCH_KEYS = ("TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "NEWSAPI_KEY")
@@ -180,12 +181,17 @@ def key_loaded_from_environ(key: str) -> bool:
     return bool((os.environ.get(key) or "").strip())
 
 
+def admin_save_token_expected() -> str:
+    """Admin save gate: env override, else default unio."""
+    return (os.environ.get(ADMIN_SAVE_TOKEN_ENV) or "").strip() or DEFAULT_ADMIN_SAVE_TOKEN
+
+
 def admin_save_token_configured() -> bool:
-    return bool((os.environ.get(ADMIN_SAVE_TOKEN_ENV) or "").strip())
+    return bool(admin_save_token_expected().strip())
 
 
 def admin_save_token_accepted(token: str | None) -> bool:
-    expected = (os.environ.get(ADMIN_SAVE_TOKEN_ENV) or "").strip()
+    expected = admin_save_token_expected()
     entered = (token or "").strip()
     return bool(expected and entered and entered == expected)
 

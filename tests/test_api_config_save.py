@@ -158,6 +158,17 @@ def test_admin_save_token_accepted(monkeypatch):
     assert ac.admin_save_token_accepted("") is False
 
 
+def test_admin_save_token_default_and_env_override(monkeypatch):
+    monkeypatch.delenv(ac.ADMIN_SAVE_TOKEN_ENV, raising=False)
+    assert ac.admin_save_token_configured() is True
+    assert ac.admin_save_token_expected() == "unio"
+    assert ac.admin_save_token_accepted("unio") is True
+    monkeypatch.setenv(ac.ADMIN_SAVE_TOKEN_ENV, "override-token")
+    assert ac.admin_save_token_expected() == "override-token"
+    assert ac.admin_save_token_accepted("override-token") is True
+    assert ac.admin_save_token_accepted("unio") is False
+
+
 def test_railway_variables_env_block_contains_real_values():
     block = ac.railway_variables_env_block(
         {"NEWSAPI_KEY": "news-123", "FX_API_ROOT": "/tmp/skip", "LLM_MODEL": "llama"}

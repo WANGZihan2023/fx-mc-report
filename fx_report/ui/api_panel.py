@@ -502,6 +502,7 @@ def _render_env_upload_and_railway(
     persistable = _persist_candidates()
     loaded_from_env = _env_loaded_from_server_env(sources)
     admin_ready = admin_save_token_configured()
+    admin_token_overridden = key_loaded_from_environ(ADMIN_SAVE_TOKEN_ENV)
     admin_unlocked = bool(st.session_state.get("admin_save_unlocked"))
     if cloud and loaded_from_env:
         st.success(
@@ -523,7 +524,7 @@ def _render_env_upload_and_railway(
             type="password",
             key="admin_save_token_input",
             placeholder="输入后才可保存并持久化到 Railway Variables",
-            help="这是单独的管理员口令，不等于页面访问密码。",
+            help="这是单独的管理员口令，不等于页面访问密码；可用环境变量 ADMIN_SAVE_TOKEN 覆盖默认值。",
         )
         if st.button("解锁持久化权限", use_container_width=True, key="btn_unlock_admin_save"):
             ok = admin_save_token_accepted(token)
@@ -537,6 +538,12 @@ def _render_env_upload_and_railway(
             st.success("当前会话已解锁管理员持久化权限。")
         else:
             st.caption("普通访客仍可“仅本次会话”使用；只有管理员可做持久化保存。")
+        if admin_token_overridden:
+            st.caption(f"当前管理员保存口令来自服务器环境变量 `{ADMIN_SAVE_TOKEN_ENV}`。")
+        else:
+            st.caption(
+                f"当前管理员保存口令使用应用内默认值；如需轮换，请在 Railway Variables 设置 `{ADMIN_SAVE_TOKEN_ENV}` 覆盖。"
+            )
     else:
         st.warning(
             f"当前服务端还没有设置 `{ADMIN_SAVE_TOKEN_ENV}`，因此网页端持久化入口不会开启。"

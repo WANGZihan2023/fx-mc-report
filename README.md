@@ -133,7 +133,7 @@ streamlit run app.py
    - `仅本次会话`：立刻生效，但刷新会丢
    - `保存到本机 .env`：写入 vault + 仓库 `.env`（gitignore）
 5. **Railway 公网站**：
-   - 一次性先在 Railway Variables 里设置 `ADMIN_SAVE_TOKEN`
+   - 管理员保存口令默认已启用；如需自定义/轮换，可在 Railway Variables 设置 `ADMIN_SAVE_TOKEN`
    - 普通访客可继续 `仅本次会话` 使用，不必拿管理员口令
    - 管理员在网页输入 **管理员保存口令** 后，才可点 `保存并持久化到 Railway Variables`
    - `保存并持久化到 Railway Variables`：只会处理 API / LLM 相关白名单变量，优先尝试直接写 **Railway Variables**
