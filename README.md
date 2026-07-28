@@ -92,6 +92,11 @@ python run_cli.py backtest --pair USD/AUD --max-rows 40
 # → output/backtest_USDAUD.csv + backtest_USDAUD_summary.json + calib_oos_summary_USDAUD.json
 # 评分规则说明：docs/math_goal_E_gneiting.md
 
+# 历史新闻证据日扫描 + 引擎 A vs C 对比（小样本；先 source railway-variables.env）
+# 详见 docs/replay_backtest.md
+python run_cli.py replay-engine-compare --pair USD/AUD
+# → output/engine_compare/A_*.json + C_*.json + summary.json
+
 # 流水线使用校准参数
 python run_cli.py run --pair USD/AUD --calibrated-params output/calibrated_params_USDAUD.json
 

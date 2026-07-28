@@ -123,3 +123,28 @@ Streamlit 中新增了 `历史时点回放` 小节：
 3. 如果结果仍是 `历史新闻是否工作=no`，不要把“回放能跑通”误当成“历史新闻已接通”
 4. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
 5. 如果需要更高新闻保真度，后续可接入真正支持历史归档检索的供应商
+
+## 引擎 A vs C 自动对比
+
+先 `source railway-variables.env`（或保证进程里已有 `NEWSAPI_KEY` 等），再跑：
+
+```bash
+set -a && source railway-variables.env && set +a
+python run_cli.py replay-engine-compare --pair USD/AUD
+# 等价：python scripts/auto_replay_engine_compare.py --pair USD/AUD
+```
+
+默认行为：
+
+- 扫描近窗（约 `today-25` → `today-(days+1)`），步长 `--step 3`
+- 候选条件：`evidence_n>0` **或** `historical_news_quality=date_filtered`
+- 最多 `--max-dates 3`（控 NewsAPI 配额；命中 429 提前停）
+- 每个候选各跑一次引擎 **A**（`path_max+merton+antithetic`）与 **C**（`brownian_bridge+none+antithetic`）
+- 小样本默认：`--sims 800 --days 20 --lookback 14 --mode rules`
+- 输出：`output/engine_compare/A_{asof}.json`、`C_{asof}.json`、`summary.json`，并打印中文汇总表
+
+跳过扫描、指定日期：
+
+```bash
+python run_cli.py replay-engine-compare --dates 2026-07-10,2026-07-15 --max-dates 2
+```

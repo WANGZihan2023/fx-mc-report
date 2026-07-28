@@ -270,6 +270,35 @@ def _cmd_replay_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay_engine_compare(args: argparse.Namespace) -> int:
+    from fx_report.model.replay_engine_compare import print_chinese_summary, run_engine_compare
+
+    try:
+        result = run_engine_compare(
+            args.pair,
+            start_date=args.start,
+            end_date=args.end,
+            step_days=args.step,
+            dates=args.dates,
+            max_dates=args.max_dates,
+            sims=args.sims,
+            days=args.days,
+            seed=args.seed,
+            lookback=args.lookback,
+            max_news=args.max_news,
+            mode=args.mode,
+            out_dir=args.out,
+            bullish_currency=args.bullish,
+            calibrated_params_path=args.calibrated_params,
+            verbose=not args.quiet,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    print_chinese_summary(result)
+    return 0 if result.rows else 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="FX Analyse：七步流水线 / 峰值样本 / MC 校准 / 历史回测"
@@ -366,6 +395,32 @@ def main() -> int:
     replay_sum_p.add_argument("--out", default="output")
     replay_sum_p.set_defaults(func=_cmd_replay_summary)
 
+    cmp_p = sub.add_parser(
+        "replay-engine-compare",
+        help="扫描有历史新闻证据的 as_of，对比引擎 A vs C（小样本）",
+    )
+    cmp_p.add_argument("--pair", default="USD/AUD")
+    cmp_p.add_argument("--bullish", default=None)
+    cmp_p.add_argument("--start", default=None, help="扫描起点；默认 today-25")
+    cmp_p.add_argument("--end", default=None, help="扫描终点；默认 today-(days+1)")
+    cmp_p.add_argument("--step", type=int, default=3)
+    cmp_p.add_argument(
+        "--dates",
+        default=None,
+        help="跳过新闻扫描，逗号分隔 as_of，如 2026-07-10,2026-07-15",
+    )
+    cmp_p.add_argument("--max-dates", type=int, default=3)
+    cmp_p.add_argument("--sims", type=int, default=800)
+    cmp_p.add_argument("--days", type=int, default=20)
+    cmp_p.add_argument("--seed", type=int, default=42)
+    cmp_p.add_argument("--lookback", type=int, default=14)
+    cmp_p.add_argument("--max-news", type=int, default=10)
+    cmp_p.add_argument("--mode", choices=["hybrid", "llm", "rules"], default="rules")
+    cmp_p.add_argument("--out", default="output/engine_compare")
+    cmp_p.add_argument("--calibrated-params", default=None)
+    cmp_p.add_argument("--quiet", action="store_true")
+    cmp_p.set_defaults(func=_cmd_replay_engine_compare)
+
     # Backward compatible: no subcommand → treat as `run`
     # Parse known first; if first token isn't a subcommand, inject `run`.
     import sys
@@ -378,6 +433,7 @@ def main() -> int:
         "backtest",
         "replay-backtest",
         "replay-summary",
+        "replay-engine-compare",
         "-h",
         "--help",
     }:
