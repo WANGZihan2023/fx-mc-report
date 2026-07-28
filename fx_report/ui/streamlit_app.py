@@ -16,6 +16,12 @@ import streamlit as st
 
 from fx_report.config.api_config import status_text
 from fx_report.ui.api_panel import render_api_settings_panel
+from fx_report.order_pdf import (
+    OrderPdfParse,
+    order_pdf_from_dict,
+    parse_order_pdf,
+    preview_lines,
+)
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
@@ -740,6 +746,17 @@ def render_bucket_editor(
     abs_key = f"bucket_abs::{analysis_pair}"
     seeded_key = f"abs_seeded_from_spot::{analysis_pair}"
 
+    # Apply 单子 PDF bucket hints once (mode / absolute or relative cuts)
+    _apply_order_pdf_bucket_hint(analysis_pair, mode_key, pct_key, abs_key)
+    hint = st.session_state.get("order_pdf_bucket_hint") or {}
+    if hint.get("barrier") is not None or hint.get("strike") is not None:
+        bits = []
+        if hint.get("barrier") is not None:
+            bits.append(f"Barrier={float(hint['barrier']):g}")
+        if hint.get("strike") is not None:
+            bits.append(f"Strike={float(hint['strike']):g}")
+        st.caption("单子价位参考（请核对后再改切点）：" + " · ".join(bits))
+
     if pct_key not in st.session_state:
         st.session_state[pct_key] = list(defaults)
 
@@ -996,19 +1013,121 @@ def _dismiss_missing_start() -> None:
     st.session_state.pop("_missing_start_labels", None)
 
 
+def _apply_order_pdf_to_dialog_state(result: OrderPdfParse) -> None:
+    """
+    Seed start-setup widget keys from a confident PDF parse.
+
+    Does NOT touch peak_engine / use_calibrated / human_review.
+    Bucket hints are applied later in the main-area bucket editor.
+    """
+    if not result.ok:
+        return
+    if result.pair_mode in ("目录", "自定义"):
+        st.session_state["dlg_pair_mode"] = result.pair_mode
+    if result.pair:
+        if result.pair_mode == "自定义":
+            st.session_state["dlg_pair_custom"] = result.pair
+        else:
+            # Catalog selectbox; fall back to custom if not listed
+            if result.pair in list_pairs():
+                st.session_state["dlg_pair_mode"] = "目录"
+                st.session_state["dlg_pair_catalog"] = result.pair
+            else:
+                st.session_state["dlg_pair_mode"] = "自定义"
+                st.session_state["dlg_pair_custom"] = result.pair
+    if result.bullish_currency:
+        st.session_state["dlg_bullish"] = result.bullish_currency
+    st.session_state["order_pdf_bucket_hint"] = {
+        "pair": result.pair,
+        "bucket_mode": result.bucket_mode,
+        "bucket_edges": list(result.bucket_edges) if result.bucket_edges else None,
+        "bucket_pct_cuts": list(result.bucket_pct_cuts) if result.bucket_pct_cuts else None,
+        "barrier": result.barrier,
+        "strike": result.strike,
+        "spot": result.spot,
+    }
+    # Allow re-apply when pair changes after confirm
+    if result.pair:
+        st.session_state.pop(f"_order_pdf_bucket_applied::{result.pair}", None)
+
+
+def _apply_order_pdf_bucket_hint(analysis_pair: str, mode_key: str, pct_key: str, abs_key: str) -> None:
+    """One-shot apply of PDF bucket mode / edges into the main bucket editor."""
+    hint = st.session_state.get("order_pdf_bucket_hint") or {}
+    if not hint:
+        return
+    hint_pair = str(hint.get("pair") or "")
+    if hint_pair and hint_pair != analysis_pair:
+        return
+    flag = f"_order_pdf_bucket_applied::{analysis_pair}"
+    if st.session_state.get(flag):
+        return
+    mode = hint.get("bucket_mode")
+    if mode in ("相对现价", "绝对价位"):
+        st.session_state[mode_key] = mode
+    edges = hint.get("bucket_edges")
+    if isinstance(edges, (list, tuple)) and len(edges) == 4:
+        st.session_state[abs_key] = [float(x) for x in edges]
+        for i, e in enumerate(edges):
+            st.session_state[f"abs_cut_{analysis_pair}_{i}"] = float(e)
+        st.session_state[f"abs_seeded_from_spot::{analysis_pair}"] = True
+    pcts = hint.get("bucket_pct_cuts")
+    if isinstance(pcts, (list, tuple)) and len(pcts) == 4:
+        st.session_state[pct_key] = [float(x) for x in pcts]
+        for i, p in enumerate(pcts):
+            st.session_state[f"pct_cut_{analysis_pair}_{i}"] = float(p)
+    st.session_state[flag] = True
+
+
 @st.dialog("开始设置", width="large", on_dismiss=_dismiss_start_setup)
 def start_setup_dialog() -> None:
     """
     Modal for must-have start choices — no silent defaults.
     Confirm writes session_state['start_cfg']; incomplete confirm shows inline error.
+    Optional: upload 单子 PDF to auto-fill pair / bullish / bucket hints.
     """
     prev = st.session_state.get("start_cfg") or {}
     editing = bool(prev)
 
-    st.caption("开跑前请逐项选择；不预选默认项。确认后可在侧栏再次打开修改。")
+    st.caption(
+        "开跑前请逐项选择；不预选默认项。也可上传单子 PDF 自动填入能识别的项；"
+        "峰值引擎 / 校准 / 人工确认仍须手选。确认后可在侧栏再次打开修改。"
+    )
+
+    with st.expander("上传单子 PDF（可选）", expanded=not editing):
+        uploaded = st.file_uploader(
+            "上传单子 PDF",
+            type=["pdf"],
+            key="dlg_order_pdf",
+            help="识别货币对、看涨方向、Barrier/Strike/分档等；识别失败可继续手动填。",
+        )
+        if uploaded is not None:
+            raw = uploaded.getvalue()
+            file_id = f"{uploaded.name}:{len(raw)}:{hash(raw[:4096])}"
+            if st.session_state.get("_order_pdf_file_id") != file_id:
+                with st.spinner("正在解析单子…"):
+                    result = parse_order_pdf(raw, use_llm=True)
+                st.session_state["_order_pdf_file_id"] = file_id
+                st.session_state["order_pdf_result"] = result.to_dict()
+                if result.ok:
+                    _apply_order_pdf_to_dialog_state(result)
+                # Rerun so widget keys seeded above take effect before radios render
+                st.rerun()
+
+        pdf_res = order_pdf_from_dict(st.session_state.get("order_pdf_result"))
+        if pdf_res is not None:
+            if not pdf_res.ok:
+                st.error(pdf_res.error or "单子解析失败，请手动填写。")
+            else:
+                st.success("单子已解析（请核对下方预填项，未识别项仍须手选）。")
+                for line in preview_lines(pdf_res):
+                    st.caption(line)
 
     pair_modes = ["目录", "自定义"]
     prev_mode = prev.get("pair_mode") if editing else None
+    # Prefer PDF-seeded widget state; else previous confirmed cfg
+    if "dlg_pair_mode" in st.session_state and st.session_state["dlg_pair_mode"] in pair_modes:
+        prev_mode = st.session_state["dlg_pair_mode"]
     mode_idx = pair_modes.index(prev_mode) if prev_mode in pair_modes else None
     mode = st.radio(
         "货币对方式（必选）",
