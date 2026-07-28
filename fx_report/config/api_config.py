@@ -104,20 +104,9 @@ def apply_runtime_overrides(overrides: dict[str, str] | None) -> None:
         os.environ[k] = val
 
 
-def save_keys_to_env(overrides: dict[str, str], path: Path | None = None) -> Path:
-    """
-    Merge non-empty keys into vault .env (create if missing).
-    Does not delete existing keys that are absent from overrides.
-    """
-    path = path or env_path()
+def _write_env_file(path: Path, existing: dict[str, str]) -> None:
+    """Rewrite .env with stable key order. Caller merges overrides into existing first."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _parse_env_file(path) if path.is_file() else {}
-    for k, v in overrides.items():
-        val = (v or "").strip()
-        if val:
-            existing[k] = val
-
-    # Preserve a short header; rewrite known keys in stable order
     order = [
         "FX_API_ROOT",
         "FRED_API_KEY",
@@ -160,8 +149,47 @@ def save_keys_to_env(overrides: dict[str, str], path: Path | None = None) -> Pat
     if "FX_API_TIMEOUT" not in existing:
         lines.append("FX_API_TIMEOUT=20")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def save_keys_to_env(overrides: dict[str, str], path: Path | None = None) -> Path:
+    """
+    Merge non-empty keys into vault .env (create if missing).
+    Does not delete existing keys that are absent from overrides.
+    """
+    path = path or env_path()
+    existing = _parse_env_file(path) if path.is_file() else {}
+    for k, v in overrides.items():
+        val = (v or "").strip()
+        if val:
+            existing[k] = val
+    _write_env_file(path, existing)
     apply_runtime_overrides(overrides)
     return path
+
+
+def project_env_path() -> Path:
+    """仓库根目录 .env（已 gitignore）。"""
+    return _repo_root() / ".env"
+
+
+def save_keys_to_local(overrides: dict[str, str]) -> list[Path]:
+    """
+    同时写入 vault .env 与仓库根 .env（双份落盘，刷新/重启不丢）。
+    仅合并非空值；不删除已有但本次未填的键。
+    """
+    apply_runtime_overrides(overrides)
+    written: list[Path] = []
+    for path in (env_path(), project_env_path()):
+        existing = _parse_env_file(path) if path.is_file() else {}
+        for k, v in overrides.items():
+            val = (v or "").strip()
+            if val:
+                existing[k] = val
+        if path == env_path():
+            existing.setdefault("FX_API_ROOT", str(DEFAULT_VAULT))
+        _write_env_file(path, existing)
+        written.append(path)
+    return written
 
 
 def timeout_s(cfg: dict[str, str] | None = None) -> int:

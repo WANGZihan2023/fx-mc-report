@@ -21,7 +21,8 @@ from fx_report.config.api_config import (
     env_path,
     is_set,
     load_config,
-    save_keys_to_env,
+    project_env_path,
+    save_keys_to_local,
     status_text,
 )
 
@@ -262,7 +263,17 @@ def render_api_settings_panel() -> dict[str, Any]:
         st.session_state["api_keys_ui"] = _seed_from_vault()
 
     st.subheader("API 配置")
-    st.caption("免费按指引申请；付费/AI 有 Key 再填。空=跳过。可保存到本机 vault（勿提交 git）。")
+    st.caption(
+        "免费按指引申请；付费/AI 有 Key 再填。空=跳过。"
+        "「应用到本会话」刷新即丢；点「保存 API 到本机 .env」才会落盘（已 gitignore，勿提交）。"
+    )
+    vault_cfg = load_config()
+    disk_on = [k for k in PROVIDERS if is_set(vault_cfg, k)]
+    if not disk_on:
+        st.warning(
+            "本机 `.env` / vault 里目前没有行情/新闻 Key。"
+            "填表后务必点 **保存 API 到本机 .env**，否则刷新或重启 Streamlit 会全部丢失。"
+        )
 
     tab_free, tab_paid, tab_ai, tab_status = st.tabs(
         ["① 免费申请指引", "② 付费/增强 Key 表", "③ AI API", "④ 当前状态"]
@@ -426,14 +437,24 @@ def render_api_settings_panel() -> dict[str, Any]:
     with c1:
         if st.button("应用到本会话", type="primary", use_container_width=True):
             _set_session_keys(merged)
-            st.success("已注入本会话环境，可直接点「运行七步流水线」。")
+            st.success("已注入本会话环境，可直接跑流水线。注意：未点保存则刷新会丢。")
     with c2:
-        if st.button("保存到本机 vault .env", use_container_width=True):
-            _set_session_keys(merged)
-            path = save_keys_to_env(merged)
-            st.success(f"已写入 {path}（请确认该文件在 .gitignore 中）。")
+        if st.button("保存 API 到本机 .env", use_container_width=True):
+            nonempty = {k: v for k, v in merged.items() if (v or "").strip()}
+            if not nonempty:
+                st.error("表格里没有非空 Key，无法保存。请先粘贴再点保存。")
+            else:
+                _set_session_keys(merged)
+                paths = save_keys_to_local(merged)
+                st.success(
+                    "已写入本机（gitignore，勿提交）：\n\n"
+                    + "\n".join(f"- `{p}`" for p in paths)
+                )
     with c3:
-        st.caption("每次改表后会自动注入会话；「保存到 vault」才会落盘。")
+        st.caption(
+            f"落盘位置：vault `{env_path()}` 与仓库 `{project_env_path()}`。"
+            "只点「应用到本会话」不会写盘。"
+        )
 
     _set_session_keys(merged)
 
