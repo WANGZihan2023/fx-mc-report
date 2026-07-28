@@ -85,6 +85,18 @@ FREE_PROVIDERS = {
 }
 
 
+def _normalize_base_url(base_url: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    lower = base.lower()
+    if "api.deepseek.com" in lower and not lower.endswith("/v1"):
+        return "https://api.deepseek.com/v1"
+    if "api.groq.com/openai" in lower and not lower.endswith("/v1"):
+        return "https://api.groq.com/openai/v1"
+    return base
+
+
 def ollama_available(timeout: float = 1.5) -> bool:
     try:
         req = Request("http://127.0.0.1:11434/api/tags", method="GET")
@@ -114,7 +126,8 @@ def resolve_llm_config(
         or os.environ.get("LLM_BASE_URL")
         or os.environ.get("OPENAI_BASE_URL")
         or ""
-    ).rstrip("/")
+    )
+    base = _normalize_base_url(base)
     mdl = model or os.environ.get("LLM_MODEL") or os.environ.get("OPENAI_MODEL") or ""
 
     deepseek_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()

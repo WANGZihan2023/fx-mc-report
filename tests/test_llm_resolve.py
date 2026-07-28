@@ -33,6 +33,19 @@ def test_deepseek_key_rewrites_mistaken_openai_base(monkeypatch):
     assert cfg.model == "deepseek-chat"
 
 
+def test_deepseek_base_without_v1_is_normalized(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = resolve_llm_config(
+        api_key="sk-deepseek-test",
+        base_url="https://api.deepseek.com",
+        allow_ollama_auto=False,
+    )
+    assert cfg is not None
+    assert cfg.base_url == "https://api.deepseek.com/v1"
+    assert cfg.model == "deepseek-chat"
+
+
 def test_explicit_openai_key_keeps_openai_base(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-other")

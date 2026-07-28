@@ -348,8 +348,10 @@ def _render_env_upload_and_railway(cloud: bool) -> None:
     st.markdown("#### 恢复 / 持久化")
     up = st.file_uploader(
         "从本机 .env 上传并应用到本会话",
-        type=["env", "txt"],
-        help="选择你之前「下载 .env」存下的文件；Key 会进本会话（并可选写入服务器临时盘）。",
+        help=(
+            "接受 `.env`、`env`、无扩展名或 `.txt` 文本文件；"
+            "只按内容里的 `KEY=VALUE` 解析，不依赖后缀名。"
+        ),
         key="env_upload_restore",
     )
     c_up, c_rail = st.columns(2)
