@@ -10,16 +10,26 @@ from __future__ import annotations
 import os
 from typing import Mapping, Sequence
 
+from fx_report.ui.i18n import (
+    CHOICE_PLACEHOLDERS,
+    DEFAULT_LANG,
+    PLACEHOLDER_ZH,
+    format_missing_message,
+    normalize_lang,
+    start_field_label,
+)
+
 # Relative-cut number_input bounds (NOT the default cuts).
 PCT_CUT_MIN = -20.0
 PCT_CUT_MAX = 50.0
 
 _DEFAULT_APP_PASSWORD = "uniocean"
 
-# Placeholder label for select/radio when nothing is chosen yet.
-START_CHOICE_PLACEHOLDER = "请选择…"
+# Placeholder label for select/radio when nothing is chosen yet (zh default).
+START_CHOICE_PLACEHOLDER = PLACEHOLDER_ZH
 
 # Stable order + Chinese labels for must-have start choices before Run.
+# Prefer start_field_label(key, lang=…) for UI; this dict stays zh for tests / PDF.
 START_REQUIRED_LABELS: dict[str, str] = {
     "pair": "货币对",
     "bullish_currency": "看涨货币",
@@ -130,7 +140,7 @@ def is_unset_choice(value: object) -> bool:
         return True
     if isinstance(value, str):
         s = value.strip()
-        return (not s) or s == START_CHOICE_PLACEHOLDER
+        return (not s) or s in CHOICE_PLACEHOLDERS
     return False
 
 
@@ -140,9 +150,10 @@ def missing_start_choices(
     keys: Sequence[str] | None = None,
     setup_mode: str | None = None,
     include_bucket: bool = False,
+    lang: str | None = None,
 ) -> list[str]:
     """
-    Return Chinese labels for required start fields that are still unset.
+    Return localized labels for required start fields that are still unset.
 
     Expected keys (any subset; missing key counts as unset unless `keys` narrows):
       pair, bullish_currency, peak_engine, use_calibrated,
@@ -155,7 +166,10 @@ def missing_start_choices(
     Bool fields must be actual bool (not None). String fields must be
     non-empty and not the placeholder. peak_engine / bucket_mode must be
     one of the known options.
+
+    ``lang`` defaults to Chinese for backward-compatible tests / CLI.
     """
+    lang = normalize_lang(lang if lang is not None else DEFAULT_LANG)
     if keys is not None:
         check_keys = list(keys)
     elif setup_mode is not None:
@@ -168,7 +182,7 @@ def missing_start_choices(
         check_keys = list(START_REQUIRED_LABELS.keys())
     missing: list[str] = []
     for key in check_keys:
-        label = START_REQUIRED_LABELS.get(key, key)
+        label = start_field_label(key, lang=lang)
         if key not in choices:
             missing.append(label)
             continue
@@ -189,9 +203,10 @@ def missing_start_choices(
     return missing
 
 
-def format_missing_start_message(missing_labels: Sequence[str]) -> str:
-    """Chinese popup copy listing what the user still needs to pick."""
-    labels = [str(x).strip() for x in missing_labels if str(x).strip()]
-    if not labels:
-        return "你还没有选择：必选项"
-    return "你还没有选择：" + "、".join(labels)
+def format_missing_start_message(
+    missing_labels: Sequence[str],
+    *,
+    lang: str | None = None,
+) -> str:
+    """Popup copy listing what the user still needs to pick (localized)."""
+    return format_missing_message(list(missing_labels), lang=lang)

@@ -23,10 +23,17 @@ from fx_report.order_pdf import (
     parse_order_pdf,
     preview_lines,
 )
+from fx_report.ui.i18n import (
+    choice_placeholder,
+    get_lang,
+    init_language,
+    render_language_selector,
+    start_field_label,
+    t,
+)
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
-    START_CHOICE_PLACEHOLDER,
     START_EXPERT_DIALOG_KEYS,
     START_SIMPLE_DIALOG_KEYS,
     app_password_expected,
@@ -363,17 +370,19 @@ def render_hitl_uncertain_form() -> bool:
 
 def _require_password() -> bool:
     """Return True if the user may see the main UI. Always requires a password."""
+    init_language()
     expected = _app_password()
     if st.session_state.get("_auth_ok") is True:
         return True
     st.title("FX Analyse")
-    st.caption("请输入访问密码（可用环境变量 APP_PASSWORD / FX_REPORT_PASSWORD 覆盖默认）。")
-    entered = st.text_input("访问密码", type="password", key="auth_password_input")
-    if st.button("进入", type="primary", key="auth_submit"):
+    render_language_selector(location="main", key="auth_ui_lang_select")
+    st.caption(t("auth.caption"))
+    entered = st.text_input(t("auth.password"), type="password", key="auth_password_input")
+    if st.button(t("auth.enter"), type="primary", key="auth_submit"):
         if password_accepted(entered, expected):
             st.session_state["_auth_ok"] = True
             st.rerun()
-        st.error("密码错误" if (entered or "").strip() else "请输入密码")
+        st.error(t("auth.wrong") if (entered or "").strip() else t("auth.empty"))
     return False
 
 
@@ -1104,34 +1113,53 @@ def render_bucket_editor(
 
 def pick_pair_in_sidebar():
     """侧栏分区 ①：展示已确认的开始设置；点按钮打开弹窗（无预选）。"""
-    with st.sidebar.expander("① 开始设置", expanded=True):
+    with st.sidebar.expander(t("side.start"), expanded=True):
         cfg = st.session_state.get("start_cfg")
         if not cfg:
-            st.caption("尚未完成开始设置（货币对 / 看涨货币等）。")
+            st.caption(t("side.start.empty"))
         else:
             bull = cfg.get("bullish_currency") or "—"
             eng = cfg.get("peak_engine") or "—"
             cal = cfg.get("use_calibrated")
-            cal_s = "使用" if cal is True else ("不使用" if cal is False else "—")
+            cal_s = (
+                t("val.use")
+                if cal is True
+                else (t("val.not_use") if cal is False else "—")
+            )
             hr = cfg.get("human_review")
-            hr_s = "人工确认" if hr is True else ("自动跳过" if hr is False else "—")
-            mode_s = "简洁（推荐）" if is_simple_setup_mode(cfg.get("setup_mode")) else "专家"
+            hr_s = (
+                t("val.review")
+                if hr is True
+                else (t("val.skip") if hr is False else "—")
+            )
+            mode_s = (
+                t("opt.simple")
+                if is_simple_setup_mode(cfg.get("setup_mode"))
+                else t("opt.expert")
+            )
             st.markdown(
-                f"**{cfg.get('pair') or '—'}** · 看涨 **{bull}**  \n"
-                f"模式 `{mode_s}` · 峰值引擎 `{eng}` · 校准 {cal_s} · 不确定证据 {hr_s}"
+                t(
+                    "side.start.summary",
+                    pair=cfg.get("pair") or "—",
+                    bull=bull,
+                    mode=mode_s,
+                    eng=eng,
+                    cal=cal_s,
+                    hr=hr_s,
+                )
             )
             if is_simple_setup_mode(cfg.get("setup_mode")):
-                st.caption("本次算法由系统推荐（见结果页审计）。")
+                st.caption(t("side.start.algo_caption"))
                 if st.button(
-                    "改用专家设置",
+                    t("side.to_expert"),
                     use_container_width=True,
                     key="btn_switch_expert",
-                    help="打开开始设置并切换到专家模式，可手选峰值引擎 / 校准 / HITL。",
+                    help=t("side.to_expert.help"),
                 ):
                     st.session_state["_force_setup_mode"] = "专家"
                     st.session_state["_open_start_setup"] = True
                     st.rerun()
-        if st.button("打开开始设置…", use_container_width=True, key="btn_open_start_setup"):
+        if st.button(t("side.open_start"), use_container_width=True, key="btn_open_start_setup"):
             st.session_state["_open_start_setup"] = True
             st.rerun()
 
@@ -1141,7 +1169,7 @@ def pick_pair_in_sidebar():
         try:
             spec = _spec_from_start_cfg(cfg)
         except Exception as exc:
-            st.error(f"开始设置无效：{exc}")
+            st.error(t("side.start.invalid", exc=exc))
             return None, None
         bullish = cfg.get("bullish_currency")
         return spec, bullish
@@ -1181,6 +1209,7 @@ def _missing_for_start_cfg(cfg: dict | None, *, bucket_mode: str | None) -> list
         _start_cfg_choice_map(cfg, bucket_mode=bucket_mode),
         setup_mode=mode,
         include_bucket=True,
+        lang=get_lang(),
     )
 
 
@@ -1259,15 +1288,36 @@ def _apply_order_pdf_bucket_hint(analysis_pair: str, mode_key: str, pct_key: str
     st.session_state[flag] = True
 
 
-@st.dialog("开始设置", width="large", on_dismiss=_dismiss_start_setup)
-def start_setup_dialog() -> None:
+def _fmt_pair_mode(v: str) -> str:
+    return t("opt.catalog") if v == "目录" else (t("opt.custom") if v == "自定义" else v)
+
+
+def _fmt_setup_mode(v: str) -> str:
+    return t("opt.simple") if v == "简洁（推荐）" else (t("opt.expert") if v == "专家" else v)
+
+
+def _fmt_cal_opt(v: str) -> str:
+    return t("opt.cal_use") if v == "使用" else (t("opt.cal_skip") if v == "不使用" else v)
+
+
+def _fmt_hr_opt(v: str) -> str:
+    return (
+        t("opt.need_review")
+        if v == "需要人工确认"
+        else (t("opt.auto_skip") if v == "自动跳过" else v)
+    )
+
+
+def _start_setup_dialog_body() -> None:
     """
-    Modal for must-have start choices.
-    简洁（推荐）：只需货币对 + 看涨（+ 可选单子 PDF）；算法由系统推荐。
-    专家：须手选峰值引擎 / 校准 / HITL（无静默默认）。
+    Modal body for must-have start choices.
+    Internal option values stay Chinese for session compatibility;
+    labels go through t().
     """
     prev = st.session_state.get("start_cfg") or {}
     editing = bool(prev)
+    lang = get_lang()
+    ph = choice_placeholder(lang)
 
     setup_mode_opts = ["简洁（推荐）", "专家"]
     force = st.session_state.pop("_force_setup_mode", None)
@@ -1281,88 +1331,78 @@ def start_setup_dialog() -> None:
         prev_setup = "简洁（推荐）"
     setup_idx = setup_mode_opts.index(prev_setup)
     setup_pick = st.radio(
-        "设置模式",
+        t("dlg.setup_mode"),
         setup_mode_opts,
         index=setup_idx,
         horizontal=True,
         key="dlg_setup_mode",
-        help=(
-            "简洁：选定货币对与看涨后，系统自动推荐峰值引擎 / 跳跃 / 方差缩减 / "
-            "聚类 / 校准 / 人工确认；专家：以上项须手选，不会静默覆盖。"
-        ),
+        format_func=_fmt_setup_mode,
+        help=t("dlg.setup_mode.help"),
     )
     simple = setup_pick == "简洁（推荐）"
 
     if simple:
-        st.caption(
-            "简洁模式：只需货币对 + 看涨货币（可上传单子 PDF）。"
-            "算法由系统按校准 JSON → 引擎对比 → 产品默认推荐；"
-            "确认后可在侧栏点「改用专家设置」。"
-        )
+        st.caption(t("dlg.simple.caption"))
     else:
-        st.caption(
-            "专家模式：请逐项选择峰值引擎 / 校准 / 人工确认；不预选默认项。"
-            "也可上传单子 PDF 自动填入货币对与看涨；算法项仍须手选。"
-        )
+        st.caption(t("dlg.expert.caption"))
 
-    with st.expander("上传单子 PDF（可选）", expanded=not editing):
+    with st.expander(t("dlg.upload_pdf"), expanded=not editing):
         uploaded = st.file_uploader(
-            "上传单子 PDF",
+            t("dlg.upload_pdf.label"),
             type=["pdf"],
             key="dlg_order_pdf",
-            help="识别货币对、看涨方向、Barrier/Strike/分档等；识别失败可继续手动填。",
+            help=t("dlg.upload_pdf.help"),
         )
         if uploaded is not None:
             raw = uploaded.getvalue()
             file_id = f"{uploaded.name}:{len(raw)}:{hash(raw[:4096])}"
             if st.session_state.get("_order_pdf_file_id") != file_id:
-                with st.spinner("正在解析单子…"):
+                with st.spinner(t("dlg.pdf.parsing")):
                     result = parse_order_pdf(raw, use_llm=True)
                 st.session_state["_order_pdf_file_id"] = file_id
                 st.session_state["order_pdf_result"] = result.to_dict()
                 if result.ok:
                     _apply_order_pdf_to_dialog_state(result)
-                # Rerun so widget keys seeded above take effect before radios render
                 st.rerun()
 
         pdf_res = order_pdf_from_dict(st.session_state.get("order_pdf_result"))
         if pdf_res is not None:
             if not pdf_res.ok:
-                st.error(pdf_res.error or "单子解析失败，请手动填写。")
+                st.error(pdf_res.error or t("dlg.pdf.fail"))
             else:
-                st.success("单子已解析（请核对下方预填项，未识别项仍须手选）。")
+                st.success(t("dlg.pdf.ok"))
                 for line in preview_lines(pdf_res):
                     st.caption(line)
 
     pair_modes = ["目录", "自定义"]
     prev_mode = prev.get("pair_mode") if editing else None
-    # Prefer PDF-seeded widget state; else previous confirmed cfg
     if "dlg_pair_mode" in st.session_state and st.session_state["dlg_pair_mode"] in pair_modes:
         prev_mode = st.session_state["dlg_pair_mode"]
     mode_idx = pair_modes.index(prev_mode) if prev_mode in pair_modes else None
     mode = st.radio(
-        "货币对方式（必选）",
+        t("dlg.pair_mode"),
         pair_modes,
         index=mode_idx,
         horizontal=True,
         key="dlg_pair_mode",
+        format_func=_fmt_pair_mode,
     )
 
     pair: str | None = None
     custom_ticker = ""
     custom_invert = False
     if mode is None:
-        st.info("请先选择：目录 或 自定义。")
+        st.info(t("dlg.pair_mode.hint"))
         base_opts: list[str] = []
     elif mode == "目录":
         pairs = list_pairs()
         prev_pair = prev.get("pair") if editing else None
         p_idx = pairs.index(prev_pair) if prev_pair in pairs else None
         pair = st.selectbox(
-            "货币对（必选）",
+            t("dlg.pair"),
             pairs,
             index=p_idx,
-            placeholder=START_CHOICE_PLACEHOLDER,
+            placeholder=ph,
             key="dlg_pair_catalog",
         )
         base_opts = []
@@ -1375,14 +1415,14 @@ def start_setup_dialog() -> None:
     else:
         default_pair = str(prev.get("pair") or "") if editing else ""
         pair_in = st.text_input(
-            "BASE/QUOTE（必选，如 EUR/USD）",
+            t("dlg.pair_custom"),
             value=default_pair,
-            placeholder="请输入货币对，例如 EUR/USD",
+            placeholder=t("dlg.pair_custom.ph"),
             key="dlg_pair_custom",
         )
         pair = (pair_in or "").strip() or None
         custom_ticker = st.text_input(
-            "内部符号（可空，默认去掉斜杠）",
+            t("dlg.ticker"),
             value=str(prev.get("custom_ticker") or "") if editing else "",
             key="dlg_custom_ticker",
         )
@@ -1403,17 +1443,16 @@ def start_setup_dialog() -> None:
         prev_b = prev.get("bullish_currency") if editing else None
         b_idx = base_opts.index(prev_b) if prev_b in base_opts else None
         bullish = st.radio(
-            "看涨货币（必选）",
+            t("dlg.bullish"),
             base_opts,
             index=b_idx,
             horizontal=True,
             key="dlg_bullish",
-            help="看涨币走强 = 分析报价升高。选 quote 时自动翻转分析口径。",
+            help=t("dlg.bullish.help"),
         )
     else:
-        st.caption("选定货币对后，再选看涨货币。")
+        st.caption(t("dlg.bullish.wait"))
 
-    # Preview / collect algorithm fields
     rec: AlgoRecommendation | None = None
     peak_engine: str | None = None
     use_calibrated: bool | None = None
@@ -1431,59 +1470,57 @@ def start_setup_dialog() -> None:
             jump_model = rec.jump_model
             variance_reduction = rec.variance_reduction
             cluster_method = rec.cluster_method
+            cal_s = t("val.use") if rec.use_calibrated else t("val.not_use")
+            hr_s = t("val.review") if rec.human_review else t("val.skip")
             st.info(
-                "本次算法由系统推荐  \n"
+                f"{t('dlg.algo.preview')}  \n"
                 f"· peak_engine=`{rec.peak_engine}`　jump_model=`{rec.jump_model}`　"
                 f"VR=`{rec.variance_reduction}`　cluster=`{rec.cluster_method}`  \n"
-                f"· 校准={'使用' if rec.use_calibrated else '不使用'}　"
-                f"不确定证据={'人工确认' if rec.human_review else '自动跳过'}  \n"
+                f"· {cal_s}　{hr_s}  \n"
                 + "  \n".join(f"· {r}" for r in rec.reasons)
             )
-            if st.button("改用专家设置", key="dlg_to_expert"):
+            if st.button(t("dlg.to_expert"), key="dlg_to_expert"):
                 st.session_state["_force_setup_mode"] = "专家"
                 st.rerun()
         else:
-            st.caption("选定货币对后，将显示系统推荐的算法组合。")
+            st.caption(t("dlg.algo.wait"))
     else:
         engines = ["path_max", "brownian_bridge"]
         prev_eng = prev.get("peak_engine") if editing else None
         e_idx = engines.index(prev_eng) if prev_eng in engines else None
         peak_engine = st.selectbox(
-            "峰值引擎 peak_engine（必选）",
+            t("dlg.peak_engine"),
             engines,
             index=e_idx,
-            placeholder=START_CHOICE_PLACEHOLDER,
+            placeholder=ph,
             key="dlg_peak_engine",
-            help=(
-                "path_max=离散GBM+Merton跳跃路径最大值；"
-                "brownian_bridge=日端点间反射原理连续最大值（不含跳跃）"
-            ),
+            help=t("dlg.peak_engine.help"),
         )
 
         cal_opts = ["使用", "不使用"]
         prev_cal = prev.get("use_calibrated") if editing else None
-        cal_idx = (
-            0 if prev_cal is True else (1 if prev_cal is False else None)
-        )
+        cal_idx = 0 if prev_cal is True else (1 if prev_cal is False else None)
         cal_pick = st.radio(
-            "是否使用校准参数 Stage-1（必选）",
+            t("dlg.calibrated"),
             cal_opts,
             index=cal_idx,
             horizontal=True,
             key="dlg_use_cal",
-            help="使用：优先 output/ 再内置 JSON；不使用：默认先验。不因文件存在而自动勾选。",
+            format_func=_fmt_cal_opt,
+            help=t("dlg.calibrated.help"),
         )
 
         hr_opts = ["需要人工确认", "自动跳过"]
         prev_hr = prev.get("human_review") if editing else None
         hr_idx = 0 if prev_hr is True else (1 if prev_hr is False else None)
         hr_pick = st.radio(
-            "不确定证据是否人工确认（必选）",
+            t("dlg.human_review"),
             hr_opts,
             index=hr_idx,
             horizontal=True,
             key="dlg_human_review",
-            help="需要人工确认=低置信度证据先暂停；自动跳过=不打断流水线。",
+            format_func=_fmt_hr_opt,
+            help=t("dlg.human_review.help"),
         )
 
         use_calibrated = (
@@ -1503,31 +1540,39 @@ def start_setup_dialog() -> None:
         "human_review": human_review,
     }
     dialog_keys = START_SIMPLE_DIALOG_KEYS if simple else START_EXPERT_DIALOG_KEYS
-    dialog_missing = missing_start_choices(draft, keys=dialog_keys)
-    # pair_mode is a prerequisite for pair
+    dialog_missing = missing_start_choices(draft, keys=dialog_keys, lang=lang)
     if mode is None:
-        dialog_missing = ["货币对方式", *[x for x in dialog_missing if x != "货币对"]]
+        pair_label = start_field_label("pair", lang=lang)
+        dialog_missing = [
+            start_field_label("pair_mode", lang=lang),
+            *[x for x in dialog_missing if x != pair_label],
+        ]
 
     c1, c2 = st.columns(2)
     with c1:
-        confirmed = st.button("确认开始设置", type="primary", use_container_width=True)
+        confirmed = st.button(t("dlg.confirm"), type="primary", use_container_width=True)
     with c2:
-        if st.button("取消", use_container_width=True):
+        if st.button(t("dlg.cancel"), use_container_width=True):
             st.session_state.pop("_open_start_setup", None)
             st.rerun()
 
     if confirmed:
         if dialog_missing:
-            st.error(format_missing_start_message(dialog_missing))
+            st.error(format_missing_start_message(dialog_missing, lang=lang))
             return
         if bullish not in (base_opts or []):
-            st.error(format_missing_start_message(["看涨货币"]))
+            st.error(
+                format_missing_start_message(
+                    [start_field_label("bullish_currency", lang=lang)],
+                    lang=lang,
+                )
+            )
             return
         if simple:
             if rec is None and pair:
                 rec = recommend_algorithms(str(pair))
             if rec is None:
-                st.error("无法生成算法推荐，请先选定货币对。")
+                st.error(t("dlg.algo_fail"))
                 return
             peak_engine = rec.peak_engine
             use_calibrated = rec.use_calibrated
@@ -1555,13 +1600,11 @@ def start_setup_dialog() -> None:
             cfg_out["cluster_method"] = cluster_method or rec.cluster_method
             cfg_out["algo_recommend"] = rec.to_dict()
         else:
-            # Expert: clear prior auto-recommend so audit doesn't claim系统推荐
             cfg_out.pop("algo_recommend", None)
             for k in ("jump_model", "variance_reduction", "cluster_method"):
                 if k in prev and not simple:
-                    pass  # leave sidebar to choose
+                    pass
         st.session_state["start_cfg"] = cfg_out
-        # Reset pair-tied UI state when pair changes
         old_pair = (prev or {}).get("pair")
         if old_pair and old_pair != pair:
             st.session_state.pop("scenario_edits", None)
@@ -1574,26 +1617,56 @@ def start_setup_dialog() -> None:
         st.rerun()
 
 
-@st.dialog("还不能运行", on_dismiss=_dismiss_missing_start)
-def missing_start_dialog(missing_labels: list[str]) -> None:
-    """Popup when user hits Run without completing required start choices."""
-    st.warning(format_missing_start_message(missing_labels))
-    st.caption("请补全后再点「运行分析」。分档边界方式在主区「概率区间」选择。")
-    if st.button("打开开始设置", type="primary", use_container_width=True):
+@st.dialog("开始设置", width="large", on_dismiss=_dismiss_start_setup)
+def _start_setup_dialog_zh() -> None:
+    _start_setup_dialog_body()
+
+
+@st.dialog("Start setup", width="large", on_dismiss=_dismiss_start_setup)
+def _start_setup_dialog_en() -> None:
+    _start_setup_dialog_body()
+
+
+def start_setup_dialog() -> None:
+    if get_lang() == "en":
+        _start_setup_dialog_en()
+    else:
+        _start_setup_dialog_zh()
+
+
+def _missing_start_dialog_body(missing_labels: list[str]) -> None:
+    lang = get_lang()
+    st.warning(format_missing_start_message(missing_labels, lang=lang))
+    st.caption(t("dlg.missing.caption"))
+    if st.button(t("dlg.open_start"), type="primary", use_container_width=True):
         st.session_state["_open_start_setup"] = True
         st.session_state.pop("_show_missing_start", None)
         st.rerun()
-    if st.button("知道了", use_container_width=True):
+    if st.button(t("dlg.got_it"), use_container_width=True):
         st.session_state.pop("_show_missing_start", None)
         st.rerun()
+
+
+@st.dialog("还不能运行", on_dismiss=_dismiss_missing_start)
+def _missing_start_dialog_zh(missing_labels: list[str]) -> None:
+    _missing_start_dialog_body(missing_labels)
+
+
+@st.dialog("Can't run yet", on_dismiss=_dismiss_missing_start)
+def _missing_start_dialog_en(missing_labels: list[str]) -> None:
+    _missing_start_dialog_body(missing_labels)
+
+
+def missing_start_dialog(missing_labels: list[str]) -> None:
+    if get_lang() == "en":
+        _missing_start_dialog_en(missing_labels)
+    else:
+        _missing_start_dialog_zh(missing_labels)
 
 
 def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, dict]:
     st.sidebar.markdown(f"**{pair_name}**")
-    st.sidebar.caption(
-        "侧栏目录：①开始设置 → ②抓取 → ③蒙特卡洛 → "
-        "④映射 → ⑤情景 → ⑥证据 → ⑦规则 → ⑧数据源｜分档切点在主区"
-    )
+    st.sidebar.caption(t("side.toc"))
 
     start_cfg = st.session_state.get("start_cfg") or {}
     # peak_engine / human_review come from 开始设置（必选，无侧栏静默默认）
@@ -1604,7 +1677,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
     rec = AlgoRecommendation.from_dict(start_cfg.get("algo_recommend"))
 
     # ② 抓取
-    with st.sidebar.expander("② 抓取与判定", expanded=False):
+    with st.sidebar.expander(t("side.fetch"), expanded=False):
         use_news = st.checkbox("官方 / vault 头条", value=True)
         ai_research = st.checkbox(
             "AI 检索员",
@@ -1652,7 +1725,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         )
 
     # ③ 蒙特卡洛（分档切点在主区设置）
-    with st.sidebar.expander("③ 蒙特卡洛", expanded=False):
+    with st.sidebar.expander(t("side.mc"), expanded=False):
         n_sims = st.number_input("蒙特卡洛次数", 10_000, 500_000, base.n_sims, 10_000)
         trading_days = st.number_input("交易日窗口", 5, 252, base.trading_days, 1)
         seed = st.number_input("随机种子", 0, 10_000_000, base.seed, 1)
@@ -1741,7 +1814,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         cuts = tuple(base.bucket_pct_cuts)
 
     # ④ 映射
-    with st.sidebar.expander("④ 证据 → 参数映射", expanded=False):
+    with st.sidebar.expander(t("side.map"), expanded=False):
         a = st.slider("a：S→漂移", 0.0, 0.05, float(base.score_to_mu_a), 0.001, format="%.3f")
         b = st.slider("b：|S|→波动", 0.0, 0.15, float(base.score_to_sigma_b), 0.001, format="%.3f")
         logit_scale = st.slider("证据→情景 logit", 0.0, 0.3, float(base.evidence_logit_scale), 0.01)
@@ -1749,7 +1822,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         max_shift = st.slider("单情景最大位移", 0.0, 0.4, float(base.max_scenario_shift), 0.01)
 
     # ⑤ 情景：用下拉选一个，避免一长串滑块
-    with st.sidebar.expander("⑤ 情景先验", expanded=False):
+    with st.sidebar.expander(t("side.scenario"), expanded=False):
         sc_names = [sc.name for sc in base.scenarios]
         focus = st.selectbox("编辑哪个情景", sc_names, key="sc_focus")
         # Keep all scenario params in session so unfocused ones persist
@@ -1810,7 +1883,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         ]
 
     # ⑥ 证据：下拉选一条再编辑（不再套娃 expander）
-    with st.sidebar.expander("⑥ 模板证据计分卡", expanded=False):
+    with st.sidebar.expander(t("side.evidence"), expanded=False):
         tier_keys = list(SOURCE_TIER_POINTS.keys())
         sur_keys = list(SURPRISE_POINTS.keys())
         sco_keys = list(SCOPE_POINTS.keys())
@@ -1906,7 +1979,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             )
 
     # ⑦ 规则
-    with st.sidebar.expander("⑦ 强弱判定规则", expanded=False):
+    with st.sidebar.expander(t("side.rubric"), expanded=False):
         st.markdown(
             "`contrib = dir × strength × freshness × unpriced`  \n"
             "≤1 SLIGHT｜≤2 MODERATE｜>2 STRONG"
@@ -1919,7 +1992,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         st.markdown(rubric_markdown())
 
     # ⑧ 数据源状态
-    with st.sidebar.expander("⑧ 数据源状态", expanded=False):
+    with st.sidebar.expander(t("side.sources"), expanded=False):
         st.code(fetch_status_summary(), language=None)
         st.text(status_text())
 
@@ -2151,11 +2224,8 @@ def render_label_audit_section(
     # Anchor + prominent header (must stay above long report / charts)
     st.markdown('<div id="label-audit-section"></div>', unsafe_allow_html=True)
     st.markdown("---")
-    st.subheader("证据人工标注")
-    st.caption(
-        "对照模型方向填写你的判断；保存后可看同意率，也可用于重算权重。"
-        "无证据时仍可展开「怎么填？」并加载练习样例。"
-    )
+    st.subheader(t("audit.title"))
+    st.caption(t("audit.caption"))
 
     news_meta = news_meta or {}
     diag = diag or {}
@@ -2169,14 +2239,14 @@ def render_label_audit_section(
         diag.get("evidence_quality") or news_meta.get("evidence_quality") or ""
     )
 
-    with st.expander("怎么填？", expanded=True):
+    with st.expander(t("audit.how"), expanded=True):
         st.markdown(help_markdown(pair=pair, bullish=bullish))
         st.caption(
-            "允许值 — 方向："
-            + " / ".join(HUMAN_DIRECTIONS)
-            + "｜agree："
-            + " / ".join(AGREE_VALUES)
-            + "｜类别见下拉框（与模型词表一致）"
+            t(
+                "audit.allowed",
+                dirs=" / ".join(HUMAN_DIRECTIONS),
+                agrees=" / ".join(AGREE_VALUES),
+            )
         )
 
     # Source of statements: run evidence, or demo practice set
@@ -2195,11 +2265,11 @@ def render_label_audit_section(
                 news_keys_present=has_news_api(cfg),
             )
         )
-        st.markdown("**没有真实证据时，请先加载练习样例练手：**")
+        st.markdown(t("audit.no_rows"))
         c1, c2 = st.columns(2)
         with c1:
             if st.button(
-                "加载练习样例（演示标注）",
+                t("audit.load_demo"),
                 key="btn_load_demo_labels",
                 type="primary",
             ):
@@ -2220,8 +2290,8 @@ def render_label_audit_section(
         return
 
     if use_demo:
-        st.info("当前为**练习样例**（非本次运行证据）。标完可点下方「退出练习」回到真实列表。")
-        if st.button("退出练习样例", key="btn_exit_demo_labels"):
+        st.info(t("audit.demo_info"))
+        if st.button(t("audit.exit_demo"), key="btn_exit_demo_labels"):
             st.session_state["label_audit_use_demo"] = False
             st.session_state.pop("label_edits", None)
             st.session_state.pop("label_edit_fp", None)
@@ -2258,7 +2328,7 @@ def render_label_audit_section(
 
     b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button("一键按模型预填再改", key="btn_prefill_labels", help="把 model_* 复制到 human_*，再只改不同意的"):
+        if st.button(t("audit.prefill"), key="btn_prefill_labels", help=t("audit.prefill.help")):
             pref = prefill_from_model(base_df)
             edits_new = _init_label_edits_from_df(pref)
             st.session_state["label_edits"] = edits_new
@@ -2269,9 +2339,9 @@ def render_label_audit_section(
                 st.session_state[f"ag_{sid}"] = lab["agree"]
             st.rerun()
     with b2:
-        save_clicked = st.button("保存标注到 output/", key="btn_save_labels")
+        save_clicked = st.button(t("audit.save"), key="btn_save_labels")
     with b3:
-        clear_clicked = st.button("清空人工列", key="btn_clear_labels")
+        clear_clicked = st.button(t("audit.clear"), key="btn_clear_labels")
 
     if clear_clicked:
         st.session_state["label_edits"] = _init_label_edits_from_df(base_df)
@@ -2296,12 +2366,19 @@ def render_label_audit_section(
         with st.container(border=True):
             head = f"**{sid}** · {title}"
             if url:
-                st.markdown(f"{head}  \n[打开链接]({url})")
+                st.markdown(f"{head}  \n[{t('audit.open_link')}]({url})")
             else:
                 st.markdown(head)
             c_zh = category_label(mc) if mc else "—"
             md_zh = direction_label(md) if md else "未判定"
-            st.caption(f"模型只读 — 方向：`{md or '—'}`（{md_zh}）｜类别：{c_zh}")
+            st.caption(
+                t(
+                    "audit.model_ro",
+                    md=md or "—",
+                    md_zh=md_zh,
+                    cat=c_zh,
+                )
+            )
 
             prev_d = lab.get("human_direction", "")
             prev_a = lab.get("agree", "")
@@ -2309,20 +2386,20 @@ def render_label_audit_section(
             with c_d:
                 di = dir_opts.index(prev_d) if prev_d in dir_opts else 0
                 new_d = st.selectbox(
-                    "human_direction（你的方向）",
+                    t("audit.human_dir"),
                     dir_opts,
                     index=di,
-                    format_func=lambda x: "（未选）" if x == "" else direction_label(x),
+                    format_func=lambda x: t("audit.unset") if x == "" else direction_label(x),
                     key=f"hd_{sid}",
                 )
             with c_c:
                 prev_c = lab.get("human_category", "")
                 ci = cat_opts.index(prev_c) if prev_c in cat_opts else 0
                 new_c = st.selectbox(
-                    "human_category（你的类别）",
+                    t("audit.human_cat"),
                     cat_opts,
                     index=ci,
-                    format_func=lambda x: "（未选）" if x == "" else category_label(x),
+                    format_func=lambda x: t("audit.unset") if x == "" else category_label(x),
                     key=f"hc_{sid}",
                 )
             with c_a:
@@ -2334,11 +2411,11 @@ def render_label_audit_section(
                     cur_ag = prev_a or suggested
                 ai = agree_opts.index(cur_ag) if cur_ag in agree_opts else 0
                 new_a = st.selectbox(
-                    "agree（可自动）",
+                    t("audit.agree"),
                     agree_opts,
                     index=ai,
                     format_func=lambda x: (
-                        "（未选）"
+                        t("audit.unset")
                         if x == ""
                         else f"{x} — {AGREE_ZH.get(x, x)}"
                     ),
@@ -2366,16 +2443,16 @@ def render_label_audit_section(
 
     out_path = label_audit_path(pair)
     n_done = int((filled["human_direction"].astype(str).str.len() > 0).sum())
-    st.caption(f"已填方向 {n_done}/{len(filled)} · 保存路径：`{out_path}`")
+    st.caption(t("audit.filled", n=n_done, total=len(filled), path=out_path))
 
     # 抽检准确率 (= agree_rate) — visible whenever labels exist
     if stats["has_labels"]:
         m1, m2, m3, m4 = st.columns(4)
         if stats["agree_rate"] is not None:
-            m1.metric("抽检准确率", f"{100 * float(stats['agree_rate']):.0f}%")
-            m1.caption("= 同意率 yes/(yes+no)")
+            m1.metric(t("audit.spot_rate"), f"{100 * float(stats['agree_rate']):.0f}%")
+            m1.caption(t("audit.spot_rate.cap"))
         else:
-            m1.metric("抽检准确率", "—")
+            m1.metric(t("audit.spot_rate"), "—")
         m2.metric("一致 yes", int(stats["n_yes"]))
         m3.metric("不一致 no", int(stats["n_no"]))
         m4.metric("unsure", int(stats["n_unsure"]))
@@ -2471,8 +2548,12 @@ def render_label_audit_section(
 
 
 def main() -> None:
+    init_language()
     if not _require_password():
         return
+
+    # Language toggle at top of sidebar (persistent via session + ?lang=)
+    render_language_selector(location="sidebar", key="sidebar_ui_lang_select")
 
     # First visit: open 开始设置 once (no silent defaults)
     if "start_cfg" not in st.session_state and not st.session_state.get("_start_setup_shown"):
@@ -2490,10 +2571,7 @@ def main() -> None:
 
     if display_spec is None:
         st.title("FX Analyse")
-        st.warning(
-            "请先完成「开始设置」（侧栏 ①）：货币对、看涨货币、峰值引擎、"
-            "是否使用校准参数、不确定证据是否人工确认。"
-        )
+        st.warning(t("main.need_start"))
         with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
             render_api_settings_panel()
         if "last_report" not in st.session_state:
@@ -2539,11 +2617,11 @@ def main() -> None:
     # Explicit choice from 开始设置 — never auto-check because a JSON exists
     use_cal = start_cfg.get("use_calibrated")
     if use_cal is True:
-        st.sidebar.caption("校准参数：开始设置已选「使用」")
+        st.sidebar.caption(t("side.cal.use"))
     elif use_cal is False:
-        st.sidebar.caption("校准参数：开始设置已选「不使用」")
+        st.sidebar.caption(t("side.cal.skip"))
     else:
-        st.sidebar.caption("校准参数：尚未在开始设置中选择")
+        st.sidebar.caption(t("side.cal.unset"))
 
     cal_path: str | None = None
     cal_label = "default"
@@ -2568,25 +2646,19 @@ def main() -> None:
 
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
-    with st.sidebar.expander("⑨ 证据人工标注", expanded=False):
+    with st.sidebar.expander(t("side.label_audit"), expanded=False):
         if "last_report" in st.session_state:
             n_ev = len(st.session_state.get("last_auto_evidence") or [])
-            st.markdown(
-                "标注区在主区 **「本次分析审计」正下方**"
-                "（完整报告与流水线明细之上，不必滚到页底）。"
-            )
+            st.markdown(t("side.label_audit.has_run"))
             st.caption(
-                f"当前证据条数：{n_ev}"
-                + (" · 无证据时可点「加载练习样例」" if n_ev == 0 else "")
+                t("side.label_audit.n", n=n_ev)
+                + (t("side.label_audit.demo_hint") if n_ev == 0 else "")
             )
-            st.markdown("[↓ 跳到证据人工标注](#label-audit-section)")
+            st.markdown(t("side.label_audit.jump"))
         else:
-            st.caption(
-                "先点主区「运行分析」。标注区会出现在审计面板正下方；"
-                "即使没有新闻证据，也会显示「怎么填？」与「加载练习样例」。"
-            )
+            st.caption(t("side.label_audit.need_run"))
 
-    with st.sidebar.expander("⑩ 待你完成（云端）", expanded=True):
+    with st.sidebar.expander(t("side.todo"), expanded=True):
         from fx_report.config.api_config import has_news_api, load_config
         from fx_report.model.label_learn import MIN_LABELS_FOR_LEARN, fit_label_learned_params
 
@@ -2610,11 +2682,10 @@ def main() -> None:
     st.title(f"FX Analyse · {display_spec.pair}")
     if bullish_ok:
         st.caption(
-            f"分析口径：{analysis_spec.pair}（看涨 {bullish}）· "
-            "先看现价 → 自设概率区间 → 再运行蒙特卡洛"
+            t("main.caption_ok", pair=analysis_spec.pair, bull=bullish)
         )
     else:
-        st.caption("最高日高分档 · 七步情报流水线 · 请先完成侧栏「开始设置」")
+        st.caption(t("main.caption_need"))
 
     render_calib_trust_panel(
         analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
@@ -2627,10 +2698,7 @@ def main() -> None:
         api_opts = render_api_settings_panel()
 
     if not bullish_ok:
-        st.warning(
-            "请先在侧栏 ① 打开「开始设置」，选好货币对与看涨货币。"
-            "选好后立刻显示现价与分档设置。"
-        )
+        st.warning(t("main.need_start_short"))
         if "last_report" not in st.session_state:
             return
 
@@ -2661,34 +2729,31 @@ def main() -> None:
         st.markdown("---")
         c1, c2, c3, c4 = st.columns([1, 1, 1.0, 1.0])
         with c1:
-            start = st.date_input("窗口起点", value=date.today())
+            start = st.date_input(t("main.window_start"), value=date.today())
         with c2:
-            end = st.date_input("窗口终点", value=date.today() + timedelta(days=92))
+            end = st.date_input(t("main.window_end"), value=date.today() + timedelta(days=92))
         with c3:
             st.write("")
             can_run = bool(spot_row and spot_row.get("ok"))
             run = st.button(
-                "运行分析",
+                t("main.run"),
                 type="primary",
                 use_container_width=True,
                 disabled=not can_run,
-                help=None if can_run else "需先成功获取现价",
+                help=None if can_run else t("main.run.need_spot"),
             )
         with c4:
             st.write("")
             compare = st.button(
-                "双引擎对比",
+                t("main.compare"),
                 use_container_width=True,
                 disabled=not can_run,
-                help="path_max vs brownian_bridge（降采样次数，仅 MC）",
+                help=t("main.compare.help"),
             )
         if not can_run:
-            st.caption("现价未就绪时不能运行分析（分档与 MC 都依赖分析报价）。")
+            st.caption(t("main.no_spot"))
         elif "last_report" not in st.session_state and not run:
-            st.info(
-                "确认「开始设置」与概率区间后点「运行分析」。"
-                "侧栏 ②–⑧ 可调抓取与模型参数；API 可全空。"
-            )
+            st.info(t("main.ready_hint"))
 
         # —— 双引擎对比（MC-only，降采样）——
         if compare and can_run and spot_val is not None:
@@ -3316,12 +3381,7 @@ def main() -> None:
             st.warning(_thin)
     except Exception:
         pass
-    st.markdown(
-        "**↓ 证据人工标注在下方**"
-        "（紧随本审计面板；完整报告 / PDF 在更下面。"
-        "侧栏也可打开 ⑨。） · "
-        "[跳转到标注区](#label-audit-section)"
-    )
+    st.markdown(t("audit.jump_full"))
 
     # Labeling immediately after audit — before long charts / 900px report HTML
     render_label_audit_section(

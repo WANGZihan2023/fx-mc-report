@@ -122,6 +122,8 @@ streamlit run app.py
 
 **算法自动推荐**（`docs/algo_recommend.md`）：开始设置默认「简洁（推荐）」——只需货币对 + 看涨；系统按校准 JSON → engine_compare → 产品默认挑选引擎/跳跃/VR/聚类/校准/HITL，审计面板写明理由；可一键改用专家设置。
 
+**界面语言**：侧栏顶部或登录页可选 **中文 / English**（默认中文）；选择写入 `session_state` 与网址 `?lang=zh|en`，刷新仍保留。当前已覆盖密码门、开始设置、运行按钮、侧栏分区标题、证据标注等高流量文案；其余页面文案仍以中文为主，可继续按 key 扩展 `fx_report/ui/i18n.py`。
+
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）
 - **历史回测**折叠区：最多 30 行小回测，展示 hit rate / Brier / 明细表
