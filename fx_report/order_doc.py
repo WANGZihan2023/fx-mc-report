@@ -259,8 +259,7 @@ def extract_image_text(data: bytes) -> str:
     except ImportError as exc:
         raise ValueError(
             "图片 OCR 不可用（未安装 pytesseract）。"
-            "本机可：brew/apt 安装 tesseract 后 pip install pytesseract；"
-            "Docker/Railway 默认未装 tesseract（镜像体积大）。"
+            "本机可：brew/apt 安装 tesseract 后 pip install pytesseract。"
             "若已配置支持视觉的 LLM（如 OpenAI gpt-4o），将尝试云端识图；"
             "否则请上传可选中文字的 PDF，或手动填写开始设置。"
         ) from exc
@@ -274,17 +273,25 @@ def extract_image_text(data: bytes) -> str:
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
 
-    try:
-        # Prefer eng; chi_sim only if installed — avoid hard failure on missing lang packs
-        text = pytesseract.image_to_string(img, lang="eng")
-    except pytesseract.TesseractNotFoundError as exc:
-        raise ValueError(
-            "未找到系统 tesseract 可执行文件。"
-            "Docker/Railway 默认未安装（体积较大）。"
-            "可配置支持视觉的 LLM 后上传图片，或上传 PDF，或手动填写开始设置。"
-        ) from exc
-    except Exception as exc:
-        raise ValueError(f"OCR 失败：{exc}。请改用 PDF 或手动填写。") from exc
+    # Order tickets are usually Chinese; fall back to eng-only when the
+    # chi_sim language pack is missing rather than failing outright.
+    text = ""
+    last_exc: Exception | None = None
+    for lang in ("chi_sim+eng", "eng"):
+        try:
+            text = pytesseract.image_to_string(img, lang=lang)
+            last_exc = None
+            break
+        except pytesseract.TesseractNotFoundError as exc:
+            raise ValueError(
+                "未找到系统 tesseract 可执行文件。"
+                "本机可 brew install tesseract / apt install tesseract-ocr。"
+                "也可配置支持视觉的 LLM 后上传图片，或上传 PDF，或手动填写开始设置。"
+            ) from exc
+        except Exception as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise ValueError(f"OCR 失败：{last_exc}。请改用 PDF 或手动填写。") from last_exc
 
     cleaned = (text or "").strip()
     if not cleaned:

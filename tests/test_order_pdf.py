@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import io
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -47,6 +49,33 @@ Pair AUDUSD
 看涨 AUD
 分档切点: 0, 2, 4, 6
 """
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _order_uploader_types() -> list[str]:
+    """Accepted `type=` list of the order-ticket st.file_uploader, read from source.
+
+    Keyed on the widget key so the other uploaders (.env restore) are ignored.
+    """
+    src = (ROOT / "fx_report" / "ui" / "streamlit_app.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != "file_uploader":
+            continue
+        kwargs = {kw.arg: kw.value for kw in node.keywords}
+        key = kwargs.get("key")
+        if not (isinstance(key, ast.Constant) and key.value == "dlg_order_pdf"):
+            continue
+        types = kwargs.get("type")
+        assert isinstance(types, (ast.List, ast.Tuple)), "type= must be a literal list"
+        return [e.value for e in types.elts if isinstance(e, ast.Constant)]
+    raise AssertionError("order-ticket file_uploader (key=dlg_order_pdf) not found")
 
 
 def _tiny_png_bytes() -> bytes:
@@ -148,6 +177,33 @@ def test_extract_and_parse_tiny_pdf():
     assert pr.ok
     assert pr.pair == "USD/AUD"
     assert pr.bullish_currency == "USD"
+
+
+def test_order_uploader_accepts_images_unconditionally():
+    types = [x.lower() for x in _order_uploader_types()]
+    assert "pdf" in types
+    for ext in ("jpg", "jpeg", "png"):
+        assert ext in types, f"order uploader must accept {ext}"
+
+
+def test_order_upload_labels_mention_images():
+    from fx_report.ui.i18n import t
+
+    for lang in ("zh", "en"):
+        help_text = t("dlg.upload_pdf.help", lang=lang)
+        label = t("dlg.upload_pdf.label", lang=lang)
+        for token in ("JPG", "PNG"):
+            assert token in help_text.upper()
+        assert "PDF" in label.upper()
+
+
+def test_docker_image_installs_tesseract_for_cloud_ocr():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "tesseract-ocr" in dockerfile
+    assert "tesseract-ocr-chi-sim" in dockerfile
+    reqs = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
+    assert "pytesseract" in reqs
+    assert "pillow" in reqs
 
 
 def test_sniff_png_and_jpeg_magic():

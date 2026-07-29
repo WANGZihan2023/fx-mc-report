@@ -9,7 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # WeasyPrint / fontconfig
     FX_PDF_ENGINE=weasyprint
 
-# System libs for WeasyPrint (pango / cairo / gdk-pixbuf)
+# System libs for WeasyPrint (pango / cairo / gdk-pixbuf) plus tesseract so
+# JPEG/PNG order tickets can be OCR'd without needing a vision LLM.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
@@ -18,6 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     shared-mime-info \
     fonts-dejavu-core \
     fonts-liberation \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

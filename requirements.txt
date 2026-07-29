@@ -6,6 +6,6 @@ reportlab>=4.0
 weasyprint>=62
 pypdf>=4.0
 Pillow>=10.0
-# optional local OCR for order images (needs system tesseract binary)
+# OCR for JPEG/PNG order tickets; system tesseract binary is installed in the Dockerfile
 pytesseract>=0.3.10
 # optional Chromium path: playwright
