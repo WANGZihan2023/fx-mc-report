@@ -29,6 +29,17 @@ START_REQUIRED_LABELS: dict[str, str] = {
     "bucket_mode": "分档边界方式",
 }
 
+# 简洁（推荐）mode: only pair + bullish required in dialog; bucket at run.
+START_SIMPLE_DIALOG_KEYS: tuple[str, ...] = ("pair", "bullish_currency")
+START_SIMPLE_RUN_KEYS: tuple[str, ...] = ("pair", "bullish_currency", "bucket_mode")
+START_EXPERT_DIALOG_KEYS: tuple[str, ...] = (
+    "pair",
+    "bullish_currency",
+    "peak_engine",
+    "use_calibrated",
+    "human_review",
+)
+
 _PEAK_ENGINES = frozenset({"path_max", "brownian_bridge"})
 _BUCKET_MODES = frozenset({"相对现价", "绝对价位"})
 
@@ -127,6 +138,8 @@ def missing_start_choices(
     choices: Mapping[str, object],
     *,
     keys: Sequence[str] | None = None,
+    setup_mode: str | None = None,
+    include_bucket: bool = False,
 ) -> list[str]:
     """
     Return Chinese labels for required start fields that are still unset.
@@ -135,11 +148,24 @@ def missing_start_choices(
       pair, bullish_currency, peak_engine, use_calibrated,
       human_review, bucket_mode
 
+    ``setup_mode``: when ``keys`` is omitted, 简洁 mode only requires
+    pair + bullish (+ bucket if ``include_bucket``); 专家 requires the
+    full explicit set. Algo fields are auto-filled in 简洁 mode.
+
     Bool fields must be actual bool (not None). String fields must be
     non-empty and not the placeholder. peak_engine / bucket_mode must be
     one of the known options.
     """
-    check_keys = list(keys) if keys is not None else list(START_REQUIRED_LABELS.keys())
+    if keys is not None:
+        check_keys = list(keys)
+    elif setup_mode is not None:
+        from fx_report.model.algo_recommend import start_keys_for_mode
+
+        check_keys = list(
+            start_keys_for_mode(setup_mode, include_bucket=include_bucket)
+        )
+    else:
+        check_keys = list(START_REQUIRED_LABELS.keys())
     missing: list[str] = []
     for key in check_keys:
         label = START_REQUIRED_LABELS.get(key, key)

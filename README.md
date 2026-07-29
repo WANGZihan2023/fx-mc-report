@@ -118,7 +118,9 @@ streamlit run app.py
 同主题新闻默认 **事件聚类去重**（`docs/event_clustering.md`）：审计里看 `cluster_n` / `raw` / `dedup`；异常时看 `cluster_warnings`。  
 **不确定证据人机协同 + Active Learning**（`docs/human_review.md`、`docs/ecda_active_learning.md`）：UI 赋权前可暂停选利多/利空/中性/跳过；选点按不确定度+簇多样性；CLI 只记日志并 `--auto-skip-uncertain` 继续。  
 证据摘要 / 漂移监控：见 `docs/ecda_active_learning.md`。  
-**上传单子 PDF**（`docs/order_pdf.md`）：开始设置弹窗可解析老板单，预填货币对/看涨/分档；峰值引擎与校准等仍手选。
+**上传单子 PDF**（`docs/order_pdf.md`）：开始设置弹窗可解析老板单，预填货币对/看涨/分档；峰值引擎与校准等仍手选（专家模式）或由系统推荐（简洁模式）。  
+
+**算法自动推荐**（`docs/algo_recommend.md`）：开始设置默认「简洁（推荐）」——只需货币对 + 看涨；系统按校准 JSON → engine_compare → 产品默认挑选引擎/跳跃/VR/聚类/校准/HITL，审计面板写明理由；可一键改用专家设置。
 
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）

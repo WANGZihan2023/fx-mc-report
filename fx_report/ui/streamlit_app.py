@@ -27,6 +27,8 @@ from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
     START_CHOICE_PLACEHOLDER,
+    START_EXPERT_DIALOG_KEYS,
+    START_SIMPLE_DIALOG_KEYS,
     app_password_expected,
     bb_jump_compensate_warning,
     format_missing_start_message,
@@ -36,6 +38,12 @@ from fx_report.ui.ux_helpers import (
     pct_cuts_in_bounds,
     seed_pct_widget_value,
     should_heal_floor_clamp,
+)
+from fx_report.model.algo_recommend import (
+    AlgoRecommendation,
+    format_recommend_audit_zh,
+    is_simple_setup_mode,
+    recommend_algorithms,
 )
 from fx_report.news.fetch import fetch_status_summary
 from fx_report.market.fetch_data import fetch_market
@@ -1099,7 +1107,7 @@ def pick_pair_in_sidebar():
     with st.sidebar.expander("① 开始设置", expanded=True):
         cfg = st.session_state.get("start_cfg")
         if not cfg:
-            st.caption("尚未完成开始设置（货币对 / 看涨货币 / 峰值引擎等）。")
+            st.caption("尚未完成开始设置（货币对 / 看涨货币等）。")
         else:
             bull = cfg.get("bullish_currency") or "—"
             eng = cfg.get("peak_engine") or "—"
@@ -1107,10 +1115,22 @@ def pick_pair_in_sidebar():
             cal_s = "使用" if cal is True else ("不使用" if cal is False else "—")
             hr = cfg.get("human_review")
             hr_s = "人工确认" if hr is True else ("自动跳过" if hr is False else "—")
+            mode_s = "简洁（推荐）" if is_simple_setup_mode(cfg.get("setup_mode")) else "专家"
             st.markdown(
                 f"**{cfg.get('pair') or '—'}** · 看涨 **{bull}**  \n"
-                f"峰值引擎 `{eng}` · 校准 {cal_s} · 不确定证据 {hr_s}"
+                f"模式 `{mode_s}` · 峰值引擎 `{eng}` · 校准 {cal_s} · 不确定证据 {hr_s}"
             )
+            if is_simple_setup_mode(cfg.get("setup_mode")):
+                st.caption("本次算法由系统推荐（见结果页审计）。")
+                if st.button(
+                    "改用专家设置",
+                    use_container_width=True,
+                    key="btn_switch_expert",
+                    help="打开开始设置并切换到专家模式，可手选峰值引擎 / 校准 / HITL。",
+                ):
+                    st.session_state["_force_setup_mode"] = "专家"
+                    st.session_state["_open_start_setup"] = True
+                    st.rerun()
         if st.button("打开开始设置…", use_container_width=True, key="btn_open_start_setup"):
             st.session_state["_open_start_setup"] = True
             st.rerun()
@@ -1149,7 +1169,19 @@ def _start_cfg_choice_map(cfg: dict | None, *, bucket_mode: str | None) -> dict:
         "use_calibrated": cfg.get("use_calibrated"),
         "human_review": cfg.get("human_review"),
         "bucket_mode": bucket_mode,
+        "setup_mode": cfg.get("setup_mode") or "expert",
     }
+
+
+def _missing_for_start_cfg(cfg: dict | None, *, bucket_mode: str | None) -> list[str]:
+    """Validate required start fields according to 简洁 / 专家 mode."""
+    cfg = cfg or {}
+    mode = str(cfg.get("setup_mode") or "expert")
+    return missing_start_choices(
+        _start_cfg_choice_map(cfg, bucket_mode=bucket_mode),
+        setup_mode=mode,
+        include_bucket=True,
+    )
 
 
 def _dismiss_start_setup() -> None:
@@ -1230,17 +1262,48 @@ def _apply_order_pdf_bucket_hint(analysis_pair: str, mode_key: str, pct_key: str
 @st.dialog("开始设置", width="large", on_dismiss=_dismiss_start_setup)
 def start_setup_dialog() -> None:
     """
-    Modal for must-have start choices — no silent defaults.
-    Confirm writes session_state['start_cfg']; incomplete confirm shows inline error.
-    Optional: upload 单子 PDF to auto-fill pair / bullish / bucket hints.
+    Modal for must-have start choices.
+    简洁（推荐）：只需货币对 + 看涨（+ 可选单子 PDF）；算法由系统推荐。
+    专家：须手选峰值引擎 / 校准 / HITL（无静默默认）。
     """
     prev = st.session_state.get("start_cfg") or {}
     editing = bool(prev)
 
-    st.caption(
-        "开跑前请逐项选择；不预选默认项。也可上传单子 PDF 自动填入能识别的项；"
-        "峰值引擎 / 校准 / 人工确认仍须手选。确认后可在侧栏再次打开修改。"
+    setup_mode_opts = ["简洁（推荐）", "专家"]
+    force = st.session_state.pop("_force_setup_mode", None)
+    if force in setup_mode_opts:
+        prev_setup = force
+    elif editing and is_simple_setup_mode(prev.get("setup_mode")):
+        prev_setup = "简洁（推荐）"
+    elif editing and prev.get("setup_mode") == "expert":
+        prev_setup = "专家"
+    else:
+        prev_setup = "简洁（推荐）"
+    setup_idx = setup_mode_opts.index(prev_setup)
+    setup_pick = st.radio(
+        "设置模式",
+        setup_mode_opts,
+        index=setup_idx,
+        horizontal=True,
+        key="dlg_setup_mode",
+        help=(
+            "简洁：选定货币对与看涨后，系统自动推荐峰值引擎 / 跳跃 / 方差缩减 / "
+            "聚类 / 校准 / 人工确认；专家：以上项须手选，不会静默覆盖。"
+        ),
     )
+    simple = setup_pick == "简洁（推荐）"
+
+    if simple:
+        st.caption(
+            "简洁模式：只需货币对 + 看涨货币（可上传单子 PDF）。"
+            "算法由系统按校准 JSON → 引擎对比 → 产品默认推荐；"
+            "确认后可在侧栏点「改用专家设置」。"
+        )
+    else:
+        st.caption(
+            "专家模式：请逐项选择峰值引擎 / 校准 / 人工确认；不预选默认项。"
+            "也可上传单子 PDF 自动填入货币对与看涨；算法项仍须手选。"
+        )
 
     with st.expander("上传单子 PDF（可选）", expanded=not editing):
         uploaded = st.file_uploader(
@@ -1350,55 +1413,87 @@ def start_setup_dialog() -> None:
     else:
         st.caption("选定货币对后，再选看涨货币。")
 
-    engines = ["path_max", "brownian_bridge"]
-    prev_eng = prev.get("peak_engine") if editing else None
-    e_idx = engines.index(prev_eng) if prev_eng in engines else None
-    peak_engine = st.selectbox(
-        "峰值引擎 peak_engine（必选）",
-        engines,
-        index=e_idx,
-        placeholder=START_CHOICE_PLACEHOLDER,
-        key="dlg_peak_engine",
-        help=(
-            "path_max=离散GBM+Merton跳跃路径最大值；"
-            "brownian_bridge=日端点间反射原理连续最大值（不含跳跃）"
-        ),
-    )
+    # Preview / collect algorithm fields
+    rec: AlgoRecommendation | None = None
+    peak_engine: str | None = None
+    use_calibrated: bool | None = None
+    human_review: bool | None = None
+    jump_model: str | None = None
+    variance_reduction: str | None = None
+    cluster_method: str | None = None
 
-    cal_opts = ["使用", "不使用"]
-    prev_cal = prev.get("use_calibrated") if editing else None
-    cal_idx = (
-        0 if prev_cal is True else (1 if prev_cal is False else None)
-    )
-    cal_pick = st.radio(
-        "是否使用校准参数 Stage-1（必选）",
-        cal_opts,
-        index=cal_idx,
-        horizontal=True,
-        key="dlg_use_cal",
-        help="使用：优先 output/ 再内置 JSON；不使用：默认先验。不因文件存在而自动勾选。",
-    )
+    if simple:
+        if pair and not is_unset_choice(pair):
+            rec = recommend_algorithms(str(pair))
+            peak_engine = rec.peak_engine
+            use_calibrated = rec.use_calibrated
+            human_review = rec.human_review
+            jump_model = rec.jump_model
+            variance_reduction = rec.variance_reduction
+            cluster_method = rec.cluster_method
+            st.info(
+                "本次算法由系统推荐  \n"
+                f"· peak_engine=`{rec.peak_engine}`　jump_model=`{rec.jump_model}`　"
+                f"VR=`{rec.variance_reduction}`　cluster=`{rec.cluster_method}`  \n"
+                f"· 校准={'使用' if rec.use_calibrated else '不使用'}　"
+                f"不确定证据={'人工确认' if rec.human_review else '自动跳过'}  \n"
+                + "  \n".join(f"· {r}" for r in rec.reasons)
+            )
+            if st.button("改用专家设置", key="dlg_to_expert"):
+                st.session_state["_force_setup_mode"] = "专家"
+                st.rerun()
+        else:
+            st.caption("选定货币对后，将显示系统推荐的算法组合。")
+    else:
+        engines = ["path_max", "brownian_bridge"]
+        prev_eng = prev.get("peak_engine") if editing else None
+        e_idx = engines.index(prev_eng) if prev_eng in engines else None
+        peak_engine = st.selectbox(
+            "峰值引擎 peak_engine（必选）",
+            engines,
+            index=e_idx,
+            placeholder=START_CHOICE_PLACEHOLDER,
+            key="dlg_peak_engine",
+            help=(
+                "path_max=离散GBM+Merton跳跃路径最大值；"
+                "brownian_bridge=日端点间反射原理连续最大值（不含跳跃）"
+            ),
+        )
 
-    hr_opts = ["需要人工确认", "自动跳过"]
-    prev_hr = prev.get("human_review") if editing else None
-    hr_idx = 0 if prev_hr is True else (1 if prev_hr is False else None)
-    hr_pick = st.radio(
-        "不确定证据是否人工确认（必选）",
-        hr_opts,
-        index=hr_idx,
-        horizontal=True,
-        key="dlg_human_review",
-        help="需要人工确认=低置信度证据先暂停；自动跳过=不打断流水线。",
-    )
+        cal_opts = ["使用", "不使用"]
+        prev_cal = prev.get("use_calibrated") if editing else None
+        cal_idx = (
+            0 if prev_cal is True else (1 if prev_cal is False else None)
+        )
+        cal_pick = st.radio(
+            "是否使用校准参数 Stage-1（必选）",
+            cal_opts,
+            index=cal_idx,
+            horizontal=True,
+            key="dlg_use_cal",
+            help="使用：优先 output/ 再内置 JSON；不使用：默认先验。不因文件存在而自动勾选。",
+        )
 
-    use_calibrated = (
-        True if cal_pick == "使用" else (False if cal_pick == "不使用" else None)
-    )
-    human_review = (
-        True
-        if hr_pick == "需要人工确认"
-        else (False if hr_pick == "自动跳过" else None)
-    )
+        hr_opts = ["需要人工确认", "自动跳过"]
+        prev_hr = prev.get("human_review") if editing else None
+        hr_idx = 0 if prev_hr is True else (1 if prev_hr is False else None)
+        hr_pick = st.radio(
+            "不确定证据是否人工确认（必选）",
+            hr_opts,
+            index=hr_idx,
+            horizontal=True,
+            key="dlg_human_review",
+            help="需要人工确认=低置信度证据先暂停；自动跳过=不打断流水线。",
+        )
+
+        use_calibrated = (
+            True if cal_pick == "使用" else (False if cal_pick == "不使用" else None)
+        )
+        human_review = (
+            True
+            if hr_pick == "需要人工确认"
+            else (False if hr_pick == "自动跳过" else None)
+        )
 
     draft = {
         "pair": pair,
@@ -1407,13 +1502,7 @@ def start_setup_dialog() -> None:
         "use_calibrated": use_calibrated,
         "human_review": human_review,
     }
-    dialog_keys = (
-        "pair",
-        "bullish_currency",
-        "peak_engine",
-        "use_calibrated",
-        "human_review",
-    )
+    dialog_keys = START_SIMPLE_DIALOG_KEYS if simple else START_EXPERT_DIALOG_KEYS
     dialog_missing = missing_start_choices(draft, keys=dialog_keys)
     # pair_mode is a prerequisite for pair
     if mode is None:
@@ -1434,7 +1523,20 @@ def start_setup_dialog() -> None:
         if bullish not in (base_opts or []):
             st.error(format_missing_start_message(["看涨货币"]))
             return
-        st.session_state["start_cfg"] = {
+        if simple:
+            if rec is None and pair:
+                rec = recommend_algorithms(str(pair))
+            if rec is None:
+                st.error("无法生成算法推荐，请先选定货币对。")
+                return
+            peak_engine = rec.peak_engine
+            use_calibrated = rec.use_calibrated
+            human_review = rec.human_review
+            jump_model = rec.jump_model
+            variance_reduction = rec.variance_reduction
+            cluster_method = rec.cluster_method
+
+        cfg_out: dict[str, Any] = {
             "pair_mode": mode,
             "pair": pair,
             "custom_ticker": (custom_ticker or "").strip(),
@@ -1443,7 +1545,22 @@ def start_setup_dialog() -> None:
             "peak_engine": peak_engine,
             "use_calibrated": bool(use_calibrated),
             "human_review": bool(human_review),
+            "setup_mode": "simple" if simple else "expert",
         }
+        if simple and rec is not None:
+            cfg_out["jump_model"] = jump_model or rec.jump_model
+            cfg_out["variance_reduction"] = (
+                variance_reduction or rec.variance_reduction
+            )
+            cfg_out["cluster_method"] = cluster_method or rec.cluster_method
+            cfg_out["algo_recommend"] = rec.to_dict()
+        else:
+            # Expert: clear prior auto-recommend so audit doesn't claim系统推荐
+            cfg_out.pop("algo_recommend", None)
+            for k in ("jump_model", "variance_reduction", "cluster_method"):
+                if k in prev and not simple:
+                    pass  # leave sidebar to choose
+        st.session_state["start_cfg"] = cfg_out
         # Reset pair-tied UI state when pair changes
         old_pair = (prev or {}).get("pair")
         if old_pair and old_pair != pair:
@@ -1483,6 +1600,8 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
     peak_engine = str(start_cfg.get("peak_engine") or getattr(base, "peak_engine", "path_max"))
     _hr = start_cfg.get("human_review")
     pause_uncertain = bool(_hr) if isinstance(_hr, bool) else False
+    simple_mode = is_simple_setup_mode(start_cfg.get("setup_mode"))
+    rec = AlgoRecommendation.from_dict(start_cfg.get("algo_recommend"))
 
     # ② 抓取
     with st.sidebar.expander("② 抓取与判定", expanded=False):
@@ -1543,34 +1662,61 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "（点侧栏①修改）。"
         )
         _jm_opts = ["merton", "none"]
-        _jm_default = getattr(base, "jump_model", "merton")
-        _jm_idx = _jm_opts.index(_jm_default) if _jm_default in _jm_opts else 0
-        jump_model = st.selectbox(
-            "跳跃模型 jump_model",
-            _jm_opts,
-            index=_jm_idx,
-            help="merton=Cont–Tankov/Merton 复合泊松（对数正态跳跃）；none=关闭跳跃",
-        )
+        if simple_mode and (start_cfg.get("jump_model") or (rec and rec.jump_model)):
+            jump_model = str(
+                start_cfg.get("jump_model")
+                or (rec.jump_model if rec else "merton")
+            )
+            st.caption(
+                f"跳跃模型：系统推荐 `{jump_model}`（简洁模式；改用专家设置可手选）。"
+            )
+        else:
+            _jm_default = getattr(base, "jump_model", "merton")
+            _jm_idx = _jm_opts.index(_jm_default) if _jm_default in _jm_opts else 0
+            jump_model = st.selectbox(
+                "跳跃模型 jump_model",
+                _jm_opts,
+                index=_jm_idx,
+                help="merton=Cont–Tankov/Merton 复合泊松（对数正态跳跃）；none=关闭跳跃",
+            )
         jump_compensate = st.checkbox(
             "Merton 补偿子 jump_compensate",
             value=bool(getattr(base, "jump_compensate", False)),
             help="开启后日度对数漂移减 λ(E[e^J]−1)Δt；默认关以保持旧行为",
         )
         _vr_opts = ["none", "antithetic"]
-        _vr_default = "none"
-        # Prefer Stage-1 auto_tune / recommended_variance_reduction when present on weights
-        _vr_cand = getattr(base, "recommended_variance_reduction", None)
-        if not _vr_cand and isinstance(getattr(base, "calibration", None), dict):
-            _vr_cand = base.calibration.get("recommended_variance_reduction")
-        if _vr_cand in _vr_opts:
-            _vr_default = str(_vr_cand)
-        _vr_idx = _vr_opts.index(_vr_default)
-        variance_reduction = st.selectbox(
-            "方差缩减 variance_reduction",
-            _vr_opts,
-            index=_vr_idx,
-            help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
-        )
+        if simple_mode and (
+            start_cfg.get("variance_reduction")
+            or (rec and rec.variance_reduction)
+        ):
+            variance_reduction = str(
+                start_cfg.get("variance_reduction")
+                or (rec.variance_reduction if rec else "antithetic")
+            )
+            st.caption(
+                f"方差缩减：系统推荐 `{variance_reduction}`（简洁模式）。"
+            )
+        else:
+            _vr_default = "none"
+            # Prefer Stage-1 auto_tune / recommended_variance_reduction when present on weights
+            _vr_cand = getattr(base, "recommended_variance_reduction", None)
+            if not _vr_cand and isinstance(getattr(base, "calibration", None), dict):
+                _vr_cand = base.calibration.get("recommended_variance_reduction")
+            if _vr_cand in _vr_opts:
+                _vr_default = str(_vr_cand)
+            _vr_idx = _vr_opts.index(_vr_default)
+            variance_reduction = st.selectbox(
+                "方差缩减 variance_reduction",
+                _vr_opts,
+                index=_vr_idx,
+                help="none=当前行为；antithetic=对扩散增量做反变量配对（常用于降MC方差）",
+            )
+        if simple_mode:
+            _cm = str(
+                start_cfg.get("cluster_method")
+                or (rec.cluster_method if rec else "jaccard")
+            )
+            st.caption(f"事件聚类：系统推荐 `{_cm}`（简洁模式）。")
         if peak_engine == "brownian_bridge":
             st.info(
                 "连续峰值：日端点之间用反射原理 / 布朗桥（Shreve II）抽取路径内最大值；"
@@ -1806,6 +1952,10 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "use_label_learned_strength": use_label_learned,
         "pause_uncertain": bool(pause_uncertain),
         "variance_reduction": str(variance_reduction),
+        "cluster_method": str(
+            start_cfg.get("cluster_method")
+            or (rec.cluster_method if rec else "jaccard")
+        ),
         "llm_key": "",
         "llm_base": "",
         "llm_model": "",
@@ -2377,6 +2527,13 @@ def main() -> None:
     start_cfg = st.session_state.get("start_cfg") or {}
     if start_cfg.get("peak_engine") in ("path_max", "brownian_bridge"):
         base.peak_engine = str(start_cfg["peak_engine"])
+    if start_cfg.get("jump_model") in ("merton", "none"):
+        base.jump_model = str(start_cfg["jump_model"])
+    if start_cfg.get("variance_reduction") in ("none", "antithetic"):
+        try:
+            setattr(base, "recommended_variance_reduction", str(start_cfg["variance_reduction"]))
+        except Exception:
+            pass
 
     default_cal = resolve_calibrated_params_path(analysis_spec.pair)
     # Explicit choice from 开始设置 — never auto-check because a JSON exists
@@ -2402,6 +2559,8 @@ def main() -> None:
         # Keep user's explicit peak_engine over calibrated default when set in 开始设置
         if start_cfg.get("peak_engine") in ("path_max", "brownian_bridge"):
             base.peak_engine = str(start_cfg["peak_engine"])
+        if start_cfg.get("jump_model") in ("merton", "none"):
+            base.jump_model = str(start_cfg["jump_model"])
     elif use_cal is True:
         st.sidebar.caption("未找到校准 JSON，用默认先验")
     elif use_cal is False:
@@ -2533,11 +2692,9 @@ def main() -> None:
 
         # —— 双引擎对比（MC-only，降采样）——
         if compare and can_run and spot_val is not None:
-            missing_cmp = missing_start_choices(
-                _start_cfg_choice_map(
-                    st.session_state.get("start_cfg"),
-                    bucket_mode=bucket_mode_choice,
-                )
+            missing_cmp = _missing_for_start_cfg(
+                st.session_state.get("start_cfg"),
+                bucket_mode=bucket_mode_choice,
             )
             if missing_cmp:
                 st.session_state["_missing_start_labels"] = missing_cmp
@@ -2821,11 +2978,9 @@ def main() -> None:
             return
 
     if run:
-        missing = missing_start_choices(
-            _start_cfg_choice_map(
-                st.session_state.get("start_cfg"),
-                bucket_mode=bucket_mode_choice,
-            )
+        missing = _missing_for_start_cfg(
+            st.session_state.get("start_cfg"),
+            bucket_mode=bucket_mode_choice,
         )
         if missing:
             st.session_state["_missing_start_labels"] = missing
@@ -3100,8 +3255,26 @@ def main() -> None:
 
     st.info(
         f"**本次分析审计**  \n"
-        f"· peak_engine：`{peak_eng}`  \n"
+        + (
+            format_recommend_audit_zh(
+                (st.session_state.get("start_cfg") or {}).get("algo_recommend")
+            )
+            + "  \n"
+            if is_simple_setup_mode(
+                (st.session_state.get("start_cfg") or {}).get("setup_mode")
+            )
+            and (st.session_state.get("start_cfg") or {}).get("algo_recommend")
+            else (
+                "· 算法来源：专家设置（手选，非系统推荐）  \n"
+                if (st.session_state.get("start_cfg") or {}).get("setup_mode")
+                == "expert"
+                else ""
+            )
+        )
+        + f"· peak_engine：`{peak_eng}`  \n"
         f"· jump_model：`{jump_mdl}`　jump_compensate=`{jump_comp}`  \n"
+        f"· variance_reduction：`"
+        f"{(st.session_state.get('start_cfg') or {}).get('variance_reduction') or diag.get('variance_reduction') or news_meta.get('variance_reduction') or '—'}`  \n"
         f"· 参数来源：{cal_zh}  \n"
         f"{oos_line}"
         f"{agree_line}"
@@ -3116,7 +3289,7 @@ def main() -> None:
         f"cluster_n={counts.get('cluster_n', news_meta.get('cluster_n', 0))}　"
         f"raw={counts.get('evidence_raw_n', news_meta.get('evidence_raw_n', counts.get('evidence_n', 0)))}　"
         f"dedup={bool(counts.get('cluster_dedup_applied') or news_meta.get('cluster_dedup_applied'))}　"
-        f"cluster_method=`{news_meta.get('cluster_method') or counts.get('cluster_method') or 'jaccard'}`　"
+        f"cluster_method=`{news_meta.get('cluster_method') or counts.get('cluster_method') or (st.session_state.get('start_cfg') or {}).get('cluster_method') or 'jaccard'}`　"
         f"fetched/kept/classified="
         f"{counts.get('fetched', 0)}/{counts.get('kept', 0)}/{counts.get('classified', 0)}　"
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"
