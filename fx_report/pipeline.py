@@ -21,9 +21,11 @@ from typing import Any, Literal
 from fx_report.market.fetch_data import MarketSnapshot, calibrate_unpriced_from_market, fetch_market
 from fx_report.model.monte_carlo import MCResult, enforce_math_floor, run_mixture_monte_carlo
 from fx_report.news.cluster import (
+    ClusterMethod,
     assign_event_clusters,
     propagate_cluster_to_statements,
 )
+from fx_report.news.drift import DEFAULT_SOFT_ADAPT
 from fx_report.news.evidence import build_evidence_from_news
 from fx_report.news.fetch import (
     Headline,
@@ -636,6 +638,8 @@ def step4_evaluate_impact(
     statements: list[StoredStatement] | None = None,
     as_of_date: date | datetime | str | None = None,
     cluster_events: bool = True,
+    cluster_method: ClusterMethod = "jaccard",
+    soft_adapt_drift: bool = DEFAULT_SOFT_ADAPT,
 ) -> tuple[list[EvidenceItem], dict[str, Any]]:
     """
     4. 评估每条信息对货币对的影响（方向 / 类别 / 强弱输入）
@@ -646,6 +650,9 @@ def step4_evaluate_impact(
       fallback_warn — debug: use templates as-is, flag fallback_templates
     keep_templates: when news evidence non-empty, also append marked prior templates.
     cluster_events: assign EVT-* clusters and keep_strongest when summing S (default on).
+    cluster_method: jaccard (default) | tfidf (sklearn if available, else Jaccard).
+    soft_adapt_drift: if True and TV drift warns, soft-shrink over-represented
+      strengths toward neutral (default False — warn-only).
     """
     suggested_up = calibrate_unpriced_from_market(market.ret_1d, market.ret_5d)
     cfg = llm_cfg
@@ -756,6 +763,7 @@ def step4_evaluate_impact(
         evidence,
         enabled=bool(cluster_events),
         news_meta=meta,
+        cluster_method=cluster_method,
     )
     if statements:
         propagate_cluster_to_statements(evidence, statements)
@@ -768,6 +776,7 @@ def step4_evaluate_impact(
         meta["cluster_dedup_mode"] = "off"
 
     # Light drift monitor: category/direction mix vs rolling baseline → audit warn
+    # soft_adapt_drift default OFF: warn only; when ON, soft-shrink over-rep strengths
     from fx_report.news.drift import check_evidence_drift
 
     drift_report = check_evidence_drift(
@@ -775,6 +784,7 @@ def step4_evaluate_impact(
         pair=spec.pair,
         out_dir="output",
         update_baseline=True,
+        soft_adapt=bool(soft_adapt_drift),
     )
     meta["drift_meta"] = drift_report.to_dict()
     warn_list = list(cluster_meta.cluster_warnings or [])

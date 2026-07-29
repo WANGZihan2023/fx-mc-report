@@ -22,7 +22,17 @@ UI 展示 `AL优先#k` 与不确定度分数。
 | TV 距离 + 基线 EMA | `fx_report/news/drift.py` |
 | 基线文件 | `output/evidence_drift_baseline_{PAIR}.json` |
 
-每次 `step4` 后比较类别/方向分布 vs 滚动基线；TV≥0.40 → 写入 `cluster_warnings` 风格中文告警（审计面板黄色框）。首跑只播种基线，不告警。不改 S。
+每次 `step4` 后比较类别/方向分布 vs 滚动基线；TV≥0.40 → 写入 `cluster_warnings` 风格中文告警（审计面板黄色框）。首跑只播种基线，不告警。
+
+**默认：仅告警，不改 S**（`soft_adapt=False` / `step4(..., soft_adapt_drift=False)`）。
+
+### 可选 soft adaptation（默认关）
+
+开启后（`soft_adapt=True`）：若 TV 告警，对**相对基线过表示**的类别/方向条目做 strength soft-shrink（向中性拉低 |contrib|），并设 floor（默认不低于原 strength 的 55%）。
+
+- **不发明证据、不改方向、不加假标题**
+- 审计字段：`drift_adapted=true|false`、`adapt_changes[]`（id / before / after / shrink）、`adapt_note`
+- Streamlit「本次分析审计」会显示 `drift_adapted` 与适应说明
 
 ## 3. 证据摘要层
 

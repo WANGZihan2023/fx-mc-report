@@ -13,13 +13,27 @@
 
 ## 行为（生产默认）
 
-1. 对新闻证据标题做轻量 tokenization（无 sklearn）。
+1. 对新闻证据标题做轻量 tokenization（默认 **无 sklearn**）。
 2. Jaccard ≥ 0.45 且类别兼容 → 同一 `EVT-xx` 簇。
 3. 簇内 **代表（rep）** = `|direction×strength×freshness×unpriced|` 最大者；其余标 `dup`。
 4. 求和 S 时 **仅 rep / solo 计入**；UI/审计仍展示全部证据条。
-5. `news_meta` / 审计面板：`cluster_n` vs `evidence_raw_n`，`cluster_dedup_applied`。
+5. `news_meta` / 审计面板：`cluster_n` vs `evidence_raw_n`，`cluster_dedup_applied`，`cluster_method`。
 
 可选模式（测试/调参）：`soft_avg`、`soft_sqrt`、`off`（见 `cluster_score_mult`）。
+
+### 相似度方法：`cluster_method=jaccard|tfidf`
+
+| 方法 | 何时用 | 依赖 |
+|---|---|---|
+| **jaccard**（默认） | 生产稳健路径；标题短、近重复多 | 无 |
+| **tfidf** | 标题措辞变化大、词袋 Jaccard 漏合多；需更细语义近邻 | 可选 `scikit-learn`；未安装自动回退 Jaccard 并写入告警 |
+
+```python
+assign_event_clusters(items, cluster_method="tfidf")  # cosine 默认阈值 0.55
+step4_evaluate_impact(..., cluster_method="tfidf")
+```
+
+审计：`cluster_method` / `cluster_method_requested` / `similarity_threshold`。
 
 ## 诚实性
 

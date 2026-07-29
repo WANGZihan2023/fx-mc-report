@@ -203,6 +203,7 @@ def test_drift_tv_and_warn(tmp_path: Path) -> None:
     )
     assert r1.skipped_reason == "baseline_seeded"
     assert not r1.warn
+    assert r1.drift_adapted is False
 
     shifted = [
         _e("a", category="geopolitics", direction=-1),
@@ -221,6 +222,49 @@ def test_drift_tv_and_warn(tmp_path: Path) -> None:
     assert r2.warnings
     assert any("漂移" in w for w in r2.warnings)
     assert r2.tv_category >= 0.35 or r2.tv_direction >= 0.35
+    # default soft_adapt off → strengths unchanged, audit note present
+    assert r2.drift_adapted is False
+    assert "soft_adapt=off" in (r2.adapt_note or "")
+
+
+def test_soft_adapt_shrinks_overrepresented(tmp_path: Path) -> None:
+    base_items = [
+        _e("1", category="fed", direction=1, strength=2.0),
+        _e("2", category="fed", direction=1, strength=2.0),
+        _e("3", category="rba", direction=-1, strength=2.0),
+        _e("4", category="rba", direction=0, strength=2.0),
+    ]
+    check_evidence_drift(
+        base_items, pair="USD/AUD", out_dir=tmp_path, update_baseline=True
+    )
+    shifted = [
+        _e("a", category="geopolitics", direction=-1, strength=2.0),
+        _e("b", category="geopolitics", direction=-1, strength=2.0),
+        _e("c", category="china_iron", direction=-1, strength=2.0),
+        _e("d", category="china_iron", direction=-1, strength=2.0),
+    ]
+    r = check_evidence_drift(
+        shifted,
+        pair="USD/AUD",
+        out_dir=tmp_path,
+        tv_warn=0.35,
+        update_baseline=False,
+        soft_adapt=True,
+        soft_adapt_alpha=0.5,
+        soft_adapt_floor=0.5,
+    )
+    assert r.warn
+    assert r.drift_adapted
+    assert r.adapt_changes
+    assert all(c["strength_after"] < c["strength_before"] for c in r.adapt_changes)
+    assert all(
+        c["strength_after"] >= c["strength_before"] * 0.5 - 1e-9 for c in r.adapt_changes
+    )
+    assert all(e.direction == -1 for e in shifted)
+    assert any("软适应" in w for w in r.warnings)
+    d = r.to_dict()
+    assert d["drift_adapted"] is True
+    assert len(d["adapt_changes"]) == len(r.adapt_changes)
 
 
 def test_total_variation_bounds() -> None:

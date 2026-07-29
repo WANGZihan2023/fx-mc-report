@@ -31,8 +31,9 @@
 
 ## UI
 
-- 「跨对质量」：Holdout Brier、**Skill（Brier）**、可靠性 ECE；当前对可展开分档可靠性表。
-- 信任条 / 回测结果：同步展示 Skill；回测后可看可靠性表。
+- 「跨对质量」：Holdout Brier、**Skill（Brier）**、可靠性 ECE；当前对可看可靠性图（argmax 分箱：预测均值 vs 实际命中 + 理想对角线）与表。
+- 独立折叠 **「概率可靠性」**：当前分析对的 holdout 可靠性图 / 分箱表（有 `calib_oos_summary_*.json` 时）。
+- 信任条 / 回测结果：同步展示 Skill；回测后同样可看「概率可靠性（本次回测）」。
 
 ## 未做（刻意）
 

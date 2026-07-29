@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -422,25 +423,121 @@ def render_calib_trust_panel(pair: str, *, cal_loaded: bool, cal_path: str | Non
             f"可靠性 ECE={_fmt_num(hold.get('reliability_ece'))}"
         )
     rel = hold.get("reliability_buckets") or []
-    if rel:
-        with st.expander("可靠性（预测概率 vs 实际命中）", expanded=False):
-            st.caption("分档均值预测概率 vs 经验命中率（holdout）")
-            rel_df = pd.DataFrame(rel)
-            if not rel_df.empty:
-                show_rel = rel_df.rename(
+    if hold.get("reliability_argmax") or rel:
+        render_probability_reliability(
+            hold=hold,
+            title="可靠性（预测概率 vs 实际命中）",
+            expanded=False,
+        )
+    note = oos.get("note") or ""
+    src = oos.get("source") or ""
+    bits = [b for b in (src, note) if b]
+    if bits:
+        st.caption(" · ".join(bits))
+
+
+def _reliability_argmax_frame(rows: list[dict] | None) -> pd.DataFrame | None:
+    """Build Chinese-labeled predicted-vs-actual table from reliability_argmax bins."""
+    if not rows:
+        return None
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            n = float(r.get("n") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0 or n != n:
+            continue
+        mean_p = r.get("mean_p")
+        hit = r.get("hit_rate")
+        try:
+            mp = float(mean_p)
+            hr = float(hit)
+        except (TypeError, ValueError):
+            continue
+        if mp != mp or hr != hr:
+            continue
+        lo = r.get("bin_lo")
+        hi = r.get("bin_hi")
+        try:
+            label = f"{float(lo):.1f}–{float(hi):.1f}"
+        except (TypeError, ValueError):
+            label = "—"
+        out.append(
+            {
+                "概率分箱": label,
+                "预测概率均值": mp,
+                "实际命中率": hr,
+                "理想校准线": mp,
+                "n": int(n),
+            }
+        )
+    if not out:
+        return None
+    return pd.DataFrame(out)
+
+
+def render_probability_reliability(
+    *,
+    hold: dict | None,
+    title: str = "概率可靠性",
+    expanded: bool = False,
+    pair_label: str | None = None,
+) -> None:
+    """
+    Gneiting-style reliability: binned predicted vs actual + ECE.
+    Uses holdout (or live backtest summary) fields when present.
+    """
+    hold = hold or {}
+    argmax = hold.get("reliability_argmax") or []
+    buckets = hold.get("reliability_buckets") or []
+    ece = hold.get("reliability_ece")
+    if not argmax and not buckets and ece is None:
+        return
+
+    hdr = title if not pair_label else f"{title}（{pair_label}）"
+    with st.expander(hdr, expanded=expanded):
+        st.caption(
+            "可靠性图 / 分箱表：横轴为模型给出的预测概率，纵轴为实际命中率；"
+            "理想校准落在对角线上。数据来自校准 holdout / 回测 OOS（有则显示）。"
+        )
+        if ece is not None and ece == ece:
+            st.metric("可靠性 ECE", _fmt_num(float(ece)))
+
+        chart_df = _reliability_argmax_frame(list(argmax) if argmax else None)
+        if chart_df is not None and not chart_df.empty:
+            st.markdown("**可靠性图（argmax 概率分箱）**")
+            plot_df = chart_df.set_index("预测概率均值")[
+                ["实际命中率", "理想校准线"]
+            ]
+            st.line_chart(plot_df, use_container_width=True)
+            st.dataframe(
+                chart_df.rename(
+                    columns={
+                        "预测概率均值": "预测均值",
+                        "实际命中率": "实际命中",
+                        "理想校准线": "理想线",
+                    }
+                ).drop(columns=["理想线"], errors="ignore"),
+                hide_index=True,
+                use_container_width=True,
+            )
+        elif buckets:
+            st.markdown("**分档预测概率 vs 实际频率**")
+            st.dataframe(
+                pd.DataFrame(buckets).rename(
                     columns={
                         "bucket": "分档",
                         "mean_p": "预测均值",
                         "emp_rate": "实际命中",
                         "n": "n",
                     }
-                )
-                st.dataframe(show_rel, hide_index=True, use_container_width=True)
-    note = oos.get("note") or ""
-    src = oos.get("source") or ""
-    bits = [b for b in (src, note) if b]
-    if bits:
-        st.caption(" · ".join(bits))
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("暂无分箱可靠性数据（需先跑校准/回测写出 OOS 摘要）。")
 
 
 def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
@@ -523,21 +620,36 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
             except Exception:
                 oos_cur = None
             hold_cur = (oos_cur or {}).get("holdout") or {}
-            rel_b = hold_cur.get("reliability_buckets") or []
-            if rel_b:
+            if hold_cur.get("reliability_argmax") or hold_cur.get("reliability_buckets"):
                 st.markdown(f"**{current_pair} 可靠性（预测概率 vs 实际命中）**")
-                st.dataframe(
-                    pd.DataFrame(rel_b).rename(
-                        columns={
-                            "bucket": "分档",
-                            "mean_p": "预测均值",
-                            "emp_rate": "实际命中",
-                            "n": "n",
-                        }
-                    ),
-                    hide_index=True,
-                    use_container_width=True,
+                chart_df = _reliability_argmax_frame(
+                    list(hold_cur.get("reliability_argmax") or [])
                 )
+                if chart_df is not None and not chart_df.empty:
+                    st.line_chart(
+                        chart_df.set_index("预测概率均值")[
+                            ["实际命中率", "理想校准线"]
+                        ],
+                        use_container_width=True,
+                    )
+                    st.dataframe(
+                        chart_df.drop(columns=["理想校准线"], errors="ignore"),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                elif hold_cur.get("reliability_buckets"):
+                    st.dataframe(
+                        pd.DataFrame(hold_cur["reliability_buckets"]).rename(
+                            columns={
+                                "bucket": "分档",
+                                "mean_p": "预测均值",
+                                "emp_rate": "实际命中",
+                                "n": "n",
+                            }
+                        ),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
 
         if current_pair:
             st.caption(
@@ -553,6 +665,34 @@ def render_cross_pair_quality_board(*, current_pair: str | None = None) -> None:
                     f"Skill={_fmt_num(row.get('holdout_skill_brier'))} · "
                     f"n={_safe_int(row.get('holdout_n'))}"
                 )
+
+
+def render_current_pair_reliability_board(*, current_pair: str | None = None) -> None:
+    """Standalone「概率可靠性」expander for the active pair's calib OOS."""
+    if not current_pair:
+        return
+    try:
+        oos = load_calib_oos_summary(current_pair)
+    except Exception:
+        oos = None
+    hold = (oos or {}).get("holdout") or {}
+    if not (
+        hold.get("reliability_argmax")
+        or hold.get("reliability_buckets")
+        or hold.get("reliability_ece") is not None
+    ):
+        with st.expander("概率可靠性", expanded=False):
+            st.info(
+                f"当前对 **{current_pair}** 尚无 OOS 可靠性数据。"
+                "完成日校准或回测后会显示分箱表与可靠性图。"
+            )
+        return
+    render_probability_reliability(
+        hold=hold,
+        title="概率可靠性",
+        expanded=False,
+        pair_label=current_pair,
+    )
 
 
 def render_replay_summary_board(*, current_pair: str | None = None, out_dir: str = "output") -> None:
@@ -2321,6 +2461,7 @@ def main() -> None:
         analysis_spec.pair, cal_loaded=cal_loaded, cal_path=cal_path
     )
     render_cross_pair_quality_board(current_pair=analysis_spec.pair)
+    render_current_pair_reliability_board(current_pair=analysis_spec.pair)
     render_replay_summary_board(current_pair=analysis_spec.pair)
 
     with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
@@ -2501,6 +2642,7 @@ def main() -> None:
                         "skill_logloss": (bt.summary or {}).get("skill_logloss"),
                         "reliability_ece": (bt.summary or {}).get("reliability_ece"),
                         "reliability_buckets": (bt.summary or {}).get("reliability_buckets"),
+                        "reliability_argmax": (bt.summary or {}).get("reliability_argmax"),
                         "n": bt.n_rows,
                         "params": bt.params_source,
                         "engine": bt.peak_engine,
@@ -2545,23 +2687,17 @@ def main() -> None:
                 )
                 st.dataframe(pd.DataFrame(bt["table"]), hide_index=True, use_container_width=True)
                 rel_b = bt.get("reliability_buckets") or []
-                if rel_b:
-                    with st.expander("可靠性（预测概率 vs 实际命中）", expanded=False):
-                        st.dataframe(
-                            pd.DataFrame(rel_b).rename(
-                                columns={
-                                    "bucket": "分档",
-                                    "mean_p": "预测均值",
-                                    "emp_rate": "实际命中",
-                                    "n": "n",
-                                }
-                            ),
-                            hide_index=True,
-                            use_container_width=True,
-                        )
-                        ece = bt.get("reliability_ece")
-                        if ece is not None and ece == ece:
-                            st.caption(f"可靠性 ECE={float(ece):.4f}")
+                rel_a = bt.get("reliability_argmax") or []
+                if rel_b or rel_a or bt.get("reliability_ece") is not None:
+                    render_probability_reliability(
+                        hold={
+                            "reliability_buckets": rel_b,
+                            "reliability_argmax": rel_a,
+                            "reliability_ece": bt.get("reliability_ece"),
+                        },
+                        title="概率可靠性（本次回测）",
+                        expanded=False,
+                    )
                 hold = (bt.get("summary") or {}).get("holdout_oos") or {}
                 if hold.get("n"):
                     st.caption(
@@ -2939,6 +3075,29 @@ def main() -> None:
         else:
             ll_line = f"· 标签学习强度：未应用 — {ll.get('message') or '标注不足'}  \n"
 
+    drift_meta = dict(
+        diag.get("drift_meta")
+        or news_meta.get("drift_meta")
+        or counts.get("drift_meta")
+        or {}
+    )
+    drift_line = ""
+    if drift_meta:
+        tv_c = drift_meta.get("tv_category")
+        tv_d = drift_meta.get("tv_direction")
+        adapted = bool(drift_meta.get("drift_adapted"))
+        n_chg = len(drift_meta.get("adapt_changes") or [])
+        adapt_note = str(drift_meta.get("adapt_note") or "")
+        drift_line = (
+            f"· 证据漂移：TV类别={_fmt_num(tv_c if isinstance(tv_c, (int, float)) else None)}　"
+            f"TV方向={_fmt_num(tv_d if isinstance(tv_d, (int, float)) else None)}　"
+            f"drift_adapted=`{str(adapted).lower()}`"
+            + (f"（改 strength {n_chg} 条）" if adapted else "")
+            + "  \n"
+        )
+        if adapt_note:
+            drift_line += f"· 漂移适应说明：{adapt_note}  \n"
+
     st.info(
         f"**本次分析审计**  \n"
         f"· peak_engine：`{peak_eng}`  \n"
@@ -2948,6 +3107,7 @@ def main() -> None:
         f"{agree_line}"
         f"{human_line}"
         f"{ll_line}"
+        f"{drift_line}"
         f"· 证据分 S={diag.get('score_S', 0):+.3f}　"
         f"μ_shift={diag.get('mu_annual_shift', 0):+.4f}　"
         f"σ×={diag.get('sigma_mult_extra', 1):.3f}  \n"
@@ -2956,6 +3116,7 @@ def main() -> None:
         f"cluster_n={counts.get('cluster_n', news_meta.get('cluster_n', 0))}　"
         f"raw={counts.get('evidence_raw_n', news_meta.get('evidence_raw_n', counts.get('evidence_n', 0)))}　"
         f"dedup={bool(counts.get('cluster_dedup_applied') or news_meta.get('cluster_dedup_applied'))}　"
+        f"cluster_method=`{news_meta.get('cluster_method') or counts.get('cluster_method') or 'jaccard'}`　"
         f"fetched/kept/classified="
         f"{counts.get('fetched', 0)}/{counts.get('kept', 0)}/{counts.get('classified', 0)}　"
         f"fallback_templates={fb}　mode=`{mode_used}`　quality=`{eq}`  \n"

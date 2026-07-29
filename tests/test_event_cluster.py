@@ -14,6 +14,7 @@ from fx_report.news.cluster import (
     assign_event_clusters,
     detect_cluster_warnings,
     jaccard,
+    sklearn_available,
     tokenize_title,
 )
 
@@ -191,3 +192,32 @@ def test_warning_news_empty_and_429_related() -> None:
 def test_detect_cluster_warnings_standalone_no_invent() -> None:
     """Warnings only describe existing items — empty input without meta → no msgs."""
     assert detect_cluster_warnings([]) == []
+
+
+def test_cluster_method_jaccard_default_metadata() -> None:
+    items = [
+        _ev("N-01", "Fed signals hawkish hike after hot CPI print", strength=0.9),
+        _ev("N-02", "Fed signals hawkish hike after hot CPI print: markets", strength=0.7),
+    ]
+    meta = assign_event_clusters(items)
+    assert meta.cluster_method == "jaccard"
+    assert meta.cluster_method_requested == "jaccard"
+    assert meta.similarity_threshold == meta.jaccard_threshold
+
+
+def test_cluster_method_tfidf_or_fallback() -> None:
+    items = [
+        _ev("N-01", "Fed signals hawkish hike after hot CPI print", strength=0.9),
+        _ev("N-02", "Fed signals hawkish hike after hot CPI reading", strength=0.7),
+        _ev("N-03", "RBA holds rates steady as Aussie softens", category="rba", direction=-1),
+    ]
+    meta = assign_event_clusters(items, cluster_method="tfidf")
+    assert meta.cluster_method_requested == "tfidf"
+    if sklearn_available():
+        assert meta.cluster_method == "tfidf"
+        # Near-duplicate Fed titles should still merge under cosine
+        fed_ids = {e.cluster_id for e in items if e.category == "fed"}
+        assert len(fed_ids) == 1
+    else:
+        assert meta.cluster_method == "jaccard"
+        assert any("回退 Jaccard" in w for w in meta.cluster_warnings)

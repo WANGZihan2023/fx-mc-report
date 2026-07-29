@@ -2,7 +2,9 @@
 Event / topic clustering for news evidence (ECDA-style redundancy control).
 
 Same-theme headlines must not linearly stack into evidence score S.
-Pure-Python + optional numpy; no sklearn dependency.
+Default: pure-Python Jaccard on title tokens (no sklearn).
+Optional: TF-IDF + cosine when sklearn is installed (`cluster_method=tfidf`);
+falls back to Jaccard if sklearn is missing.
 
 Default production path: assign cluster_id, then keep_strongest within each cluster
 when aggregating S (non-reps still visible in audit with cluster_role=dup).
@@ -18,6 +20,7 @@ from typing import Any, Literal, Sequence
 from fx_report.model.weights import EvidenceItem
 
 DedupMode = Literal["keep_strongest", "soft_avg", "soft_sqrt", "off"]
+ClusterMethod = Literal["jaccard", "tfidf"]
 
 # Light English FX stopwords — keep tokens short and comparable across wires
 _STOP = frozenset(
@@ -61,11 +64,23 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
 
 # Near-duplicate threshold (Jaccard on title tokens)
 DEFAULT_JACCARD_THRESHOLD = 0.45
+# Cosine threshold for TF-IDF titles (slightly higher — denser scores)
+DEFAULT_TFIDF_COSINE_THRESHOLD = 0.55
+DEFAULT_CLUSTER_METHOD: ClusterMethod = "jaccard"
 
 # Anomaly thresholds (honest audit — no invented evidence)
 HEAVY_DEDUP_RATIO = 0.50  # dup / raw ≥ this → 去重过重
-NEAR_MISS_BAND = 0.08  # Jaccard in [threshold−band, threshold) → 可能漏合
+NEAR_MISS_BAND = 0.08  # sim in [threshold−band, threshold) → 可能漏合
 OVER_MERGE_MIN_SIZE = 2
+
+
+def sklearn_available() -> bool:
+    try:
+        import sklearn  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
 def tokenize_title(text: str) -> frozenset[str]:
@@ -103,6 +118,9 @@ class ClusterMeta:
     cluster_dedup_mode: DedupMode
     jaccard_threshold: float
     cluster_warnings: list[str] = field(default_factory=list)
+    cluster_method: ClusterMethod = "jaccard"
+    cluster_method_requested: ClusterMethod = "jaccard"
+    similarity_threshold: float = DEFAULT_JACCARD_THRESHOLD
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +131,9 @@ class ClusterMeta:
             "cluster_dedup_mode": self.cluster_dedup_mode,
             "jaccard_threshold": self.jaccard_threshold,
             "cluster_warnings": list(self.cluster_warnings or []),
+            "cluster_method": self.cluster_method,
+            "cluster_method_requested": self.cluster_method_requested,
+            "similarity_threshold": self.similarity_threshold,
         }
 
 
@@ -132,12 +153,15 @@ def detect_cluster_warnings(
     heavy_dedup_ratio: float = HEAVY_DEDUP_RATIO,
     near_miss_band: float = NEAR_MISS_BAND,
     news_meta: dict[str, Any] | None = None,
+    sim_matrix: list[list[float]] | None = None,
+    sim_label: str = "Jaccard",
 ) -> list[str]:
     """
     Detect clustering / evidence anomalies after assign_event_clusters.
 
     Returns Chinese messages for audit UI. Does not invent evidence — only
     flags patterns on already-assigned cluster fields + titles.
+    sim_matrix: optional n×n pairwise similarity (defaults to title Jaccard).
     """
     warnings: list[str] = []
     n = len(items)
@@ -184,8 +208,13 @@ def detect_cluster_warnings(
             + ("…" if len(over_cat) > 5 else "")
         )
 
-    # 2) Possible under-merge / near-miss: high Jaccard but not same cluster
-    tokens = [tokenize_title(e.title) for e in items]
+    # 2) Possible under-merge / near-miss: high similarity but not same cluster
+    if sim_matrix is None:
+        tokens = [tokenize_title(e.title) for e in items]
+        sim_matrix = [
+            [jaccard(tokens[i], tokens[j]) if i != j else 1.0 for j in range(n)]
+            for i in range(n)
+        ]
     near_miss: list[str] = []
     blocked: list[str] = []
     floor = max(0.0, threshold - near_miss_band)
@@ -195,14 +224,14 @@ def detect_cluster_warnings(
             cj = (items[j].cluster_id or "").strip()
             if ci and cj and ci == cj:
                 continue
-            jac = jaccard(tokens[i], tokens[j])
-            if jac <= 0:
+            sim = float(sim_matrix[i][j])
+            if sim <= 0:
                 continue
             id_pair = f"{items[i].id}/{items[j].id}"
-            if jac >= threshold and not _same_event_guard(items[i], items[j]):
-                blocked.append(f"{id_pair}(J={jac:.2f})")
-            elif floor <= jac < threshold and _same_event_guard(items[i], items[j]):
-                near_miss.append(f"{id_pair}(J={jac:.2f})")
+            if sim >= threshold and not _same_event_guard(items[i], items[j]):
+                blocked.append(f"{id_pair}({sim_label[0]}={sim:.2f})")
+            elif floor <= sim < threshold and _same_event_guard(items[i], items[j]):
+                near_miss.append(f"{id_pair}({sim_label[0]}={sim:.2f})")
     if near_miss:
         warnings.append(
             f"可能漏合（阈值边缘）：标题相近但未聚类 "
@@ -211,7 +240,7 @@ def detect_cluster_warnings(
         )
     if blocked:
         warnings.append(
-            f"可能漏合（类别阻隔）：Jaccard≥阈值但类别不同 "
+            f"可能漏合（类别阻隔）：{sim_label}≥阈值但类别不同 "
             f"{', '.join(blocked[:4])}"
             + ("…" if len(blocked) > 4 else "")
         )
@@ -260,42 +289,139 @@ def _related_news_warnings(news_meta: dict[str, Any]) -> list[str]:
     return out
 
 
+def _pairwise_jaccard(items: Sequence[EvidenceItem]) -> list[list[float]]:
+    tokens = [tokenize_title(e.title) for e in items]
+    n = len(items)
+    mat = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        mat[i][i] = 1.0
+        for j in range(i + 1, n):
+            s = jaccard(tokens[i], tokens[j])
+            mat[i][j] = s
+            mat[j][i] = s
+    return mat
+
+
+def _pairwise_tfidf_cosine(items: Sequence[EvidenceItem]) -> list[list[float]] | None:
+    """Return cosine similarity matrix, or None if sklearn unavailable."""
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError:
+        return None
+    texts = [(e.title or "").strip() or " " for e in items]
+    try:
+        vec = TfidfVectorizer(
+            lowercase=True,
+            token_pattern=r"[a-z0-9]{2,}",
+            stop_words=list(_STOP),
+            min_df=1,
+        )
+        x = vec.fit_transform(texts)
+        sim = cosine_similarity(x)
+    except Exception:
+        return None
+    n = len(items)
+    return [[float(sim[i, j]) for j in range(n)] for i in range(n)]
+
+
+def resolve_cluster_similarity(
+    items: Sequence[EvidenceItem],
+    *,
+    method: ClusterMethod = DEFAULT_CLUSTER_METHOD,
+    jaccard_threshold: float = DEFAULT_JACCARD_THRESHOLD,
+    tfidf_threshold: float = DEFAULT_TFIDF_COSINE_THRESHOLD,
+) -> tuple[ClusterMethod, list[list[float]], float, str]:
+    """
+    Build pairwise similarity + effective threshold.
+
+    Returns (effective_method, sim_matrix, threshold, sim_label).
+    tfidf requested without sklearn → Jaccard fallback.
+    """
+    requested = method if method in {"jaccard", "tfidf"} else "jaccard"
+    if requested == "tfidf":
+        mat = _pairwise_tfidf_cosine(items)
+        if mat is not None:
+            return "tfidf", mat, float(tfidf_threshold), "cosine"
+        # fallback
+        return (
+            "jaccard",
+            _pairwise_jaccard(items),
+            float(jaccard_threshold),
+            "Jaccard",
+        )
+    return (
+        "jaccard",
+        _pairwise_jaccard(items),
+        float(jaccard_threshold),
+        "Jaccard",
+    )
+
+
 def assign_event_clusters(
     items: list[EvidenceItem],
     *,
-    threshold: float = DEFAULT_JACCARD_THRESHOLD,
+    threshold: float | None = None,
     enabled: bool = True,
     detect_warnings: bool = True,
     news_meta: dict[str, Any] | None = None,
+    cluster_method: ClusterMethod = DEFAULT_CLUSTER_METHOD,
+    tfidf_threshold: float = DEFAULT_TFIDF_COSINE_THRESHOLD,
 ) -> ClusterMeta:
     """
-    Greedy single-linkage on title Jaccard; mutates items in place.
+    Greedy single-linkage on title similarity; mutates items in place.
+
+    cluster_method:
+      jaccard (default) — token-set Jaccard; no extra deps
+      tfidf — TF-IDF + cosine if sklearn available, else Jaccard fallback
 
     Sets cluster_id (EVT-01…), cluster_size, cluster_role (rep|dup|solo).
     Representative = highest |contrib|; tie → lower id (earlier N-01).
     When detect_warnings=True, fills cluster_warnings with Chinese anomaly notes.
     """
     n = len(items)
+    requested: ClusterMethod = (
+        cluster_method if cluster_method in {"jaccard", "tfidf"} else "jaccard"
+    )
+    jac_thr = DEFAULT_JACCARD_THRESHOLD if threshold is None else float(threshold)
+
     if not enabled or n == 0:
         for e in items:
             e.cluster_id = ""
             e.cluster_size = 1
             e.cluster_role = ""
+        eff_method: ClusterMethod = "jaccard"
+        eff_thr = jac_thr
+        if requested == "tfidf" and sklearn_available():
+            eff_method = "tfidf"
+            eff_thr = float(tfidf_threshold)
         meta = ClusterMeta(
             evidence_raw_n=n,
             cluster_n=n,
             cluster_dup_n=0,
             cluster_dedup_applied=False,
             cluster_dedup_mode="off",
-            jaccard_threshold=threshold,
+            jaccard_threshold=jac_thr,
+            cluster_method=eff_method,
+            cluster_method_requested=requested,
+            similarity_threshold=eff_thr,
         )
         if detect_warnings:
             meta.cluster_warnings = detect_cluster_warnings(
-                items, threshold=threshold, news_meta=news_meta
+                items, threshold=eff_thr, news_meta=news_meta
             )
         return meta
 
-    tokens = [tokenize_title(e.title) for e in items]
+    eff_method, sim_matrix, eff_thr, sim_label = resolve_cluster_similarity(
+        items,
+        method=requested,
+        jaccard_threshold=jac_thr,
+        tfidf_threshold=tfidf_threshold,
+    )
+    # Explicit threshold override applies to whichever method is active
+    if threshold is not None:
+        eff_thr = float(threshold)
+
     parent = list(range(n))
 
     def find(i: int) -> int:
@@ -313,7 +439,7 @@ def assign_event_clusters(
         for j in range(i + 1, n):
             if not _same_event_guard(items[i], items[j]):
                 continue
-            if jaccard(tokens[i], tokens[j]) >= threshold:
+            if sim_matrix[i][j] >= eff_thr:
                 union(i, j)
 
     # Map root → members
@@ -355,12 +481,23 @@ def assign_event_clusters(
         cluster_dup_n=dup_n,
         cluster_dedup_applied=dup_n > 0,
         cluster_dedup_mode="keep_strongest",
-        jaccard_threshold=threshold,
+        jaccard_threshold=jac_thr,
+        cluster_method=eff_method,
+        cluster_method_requested=requested,
+        similarity_threshold=eff_thr,
     )
     if detect_warnings:
         meta.cluster_warnings = detect_cluster_warnings(
-            items, threshold=threshold, news_meta=news_meta
+            items,
+            threshold=eff_thr,
+            news_meta=news_meta,
+            sim_matrix=sim_matrix,
+            sim_label=sim_label,
         )
+        if requested == "tfidf" and eff_method != "tfidf":
+            meta.cluster_warnings.append(
+                "cluster_method=tfidf 请求但未安装 sklearn，已回退 Jaccard"
+            )
     return meta
 
 
