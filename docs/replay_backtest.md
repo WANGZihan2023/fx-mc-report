@@ -108,6 +108,9 @@ python run_cli.py replay-backtest \
 Streamlit 中新增了 `历史时点回放` 卡片：
 
 - 只建议跑 2-5 个日期的小样本
+- **默认省钱模式**：强制关闭 AI 检索员与 Tavily/Brave（侧栏「AI 检索员」无效）
+- 证据优先 **GDELT + 磁盘缓存**（`output/.cache/gdelt/`），近窗才用 NewsAPI；AI/Tavily 仅用于当日 Live
+- 可选勾选「允许历史启用 AI 检索（贵…）」才开启昂贵路径（默认 OFF）
 - 若新闻保真度有限，会弹出警告
 - 结果表会展示 `historical_news_quality`
 
@@ -120,13 +123,23 @@ Streamlit 中新增了 `历史时点回放` 卡片：
   - 至少一个时点 `historical_news_quality=date_filtered`
   - 且同一时点 `evidence_n > 0`
 
+## 成本策略（Live vs 历史）
+
+| 路径 | AI 检索员 | Tavily/Brave | 新闻证据 |
+|------|-----------|--------------|----------|
+| **当日 Live**（侧栏可开） | 可用 | 可用 | RSS + 搜索 + NewsAPI |
+| **历史回放 / UI 回测**（默认） | 关 | 关 | GDELT+缓存 + 近窗 NewsAPI + inbox |
+
+CLI：`replay-backtest` 同样默认省钱；`--as_of` / 历史路径在 pipeline 内也会关掉 AI。
+若确需昂贵覆盖：`--allow-historical-ai`（UI 对应勾选框）。
+
 ## 建议用法
 
-1. 先用小样本（2-3 个日期）做 smoke
+1. 优先在 UI「历史时点回放」跑小样本（2-3 个日期）做 smoke
 2. 无 NewsAPI KEY 时可先跑：`python scripts/smoke_gdelt_historical.py`
 3. 先看 `历史冻结回放总览` 或 `python run_cli.py replay-summary --out output`
 4. 如果结果仍是 `历史新闻是否工作=no`，不要把“回放能跑通”误当成“历史新闻已接通”
-5. 优先关闭大规模 `ai_research` 期待，因为历史模式里它会被诚实禁用
+5. 默认不要开历史 AI：Live 才用 Tavily；重复回放会吃到 GDELT/NewsAPI 磁盘缓存
 6. 可选：每日把 RSS 归档进 inbox，减轻对在线源的依赖：
    `python scripts/daily_inbox_snapshot.py --dry-run`
 7. 如果需要更高新闻保真度，后续可再接入更长归档供应商

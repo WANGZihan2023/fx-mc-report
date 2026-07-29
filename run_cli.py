@@ -65,7 +65,12 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         "--ai-research",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="步骤3启用 AI 检索员（LLM脑迭代拟词 + Tavily/Brave/NewsAPI/GoogleNews手）；--no-ai-research 关闭",
+        help=(
+            "步骤3启用 AI 检索员（LLM脑 + Tavily/Brave/NewsAPI/GoogleNews手）；"
+            "--no-ai-research 关闭。"
+            "注意：replay-backtest / 带 as_of 的历史回放默认省钱模式，会强制关闭 AI+Tavily"
+            "（除非另加 --allow-historical-ai）。"
+        ),
     )
     p.add_argument(
         "--calibrated-params",
@@ -201,6 +206,9 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
 def _cmd_replay_backtest(args: argparse.Namespace) -> int:
     from fx_report.model.replay_backtest import run_replay_backtest
 
+    allow_hist_ai = bool(getattr(args, "allow_historical_ai", False))
+    # Cheap by default: ignore --ai-research unless expensive override is set.
+    replay_ai = bool(args.ai_research) if allow_hist_ai else False
     try:
         result = run_replay_backtest(
             args.pair,
@@ -223,7 +231,8 @@ def _cmd_replay_backtest(args: argparse.Namespace) -> int:
             template_policy=args.template_policy,
             no_news=args.no_news,
             no_fulltext=args.no_fulltext,
-            ai_research=args.ai_research,
+            ai_research=replay_ai,
+            allow_historical_ai=allow_hist_ai,
             calibrated_params_path=args.calibrated_params,
             use_label_learned_strength=bool(args.use_label_learned_strength),
             max_dates=args.max_dates,
@@ -395,13 +404,27 @@ def main() -> int:
     bt_p.add_argument("--quiet", action="store_true")
     bt_p.set_defaults(func=_cmd_backtest)
 
-    replay_p = sub.add_parser("replay-backtest", help="历史时点冻结回放：全流水线预测 vs 后验实现")
+    replay_p = sub.add_parser(
+        "replay-backtest",
+        help=(
+            "历史时点冻结回放：全流水线预测 vs 后验实现"
+            "（默认省钱：关闭 AI/Tavily；证据靠 GDELT+缓存）"
+        ),
+    )
     _add_pipeline_args(replay_p)
     replay_p.add_argument("--start", required=True, help="回放起点，如 2024-01-01")
     replay_p.add_argument("--end", required=True, help="回放终点，如 2024-06-30")
     replay_p.add_argument("--step", type=int, default=7, help="按多少个自然日抽一个 as_of")
     replay_p.add_argument("--n-sims", type=int, default=2_000)
     replay_p.add_argument("--max-dates", type=int, default=None, help="最多跑几个 as_of（UI/烟测可限速）")
+    replay_p.add_argument(
+        "--allow-historical-ai",
+        action="store_true",
+        help=(
+            "昂贵覆盖：允许历史回放启用 AI 检索员/Tavily"
+            "（默认关闭；可能引入非历史网页信息）"
+        ),
+    )
     replay_p.set_defaults(func=_cmd_replay_backtest)
 
     replay_sum_p = sub.add_parser("replay-summary", help="汇总 output/ 下历史冻结回放结果")

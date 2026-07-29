@@ -611,10 +611,15 @@ def run_ai_research(
     max_rounds: int = DEFAULT_MAX_ROUNDS,
     target_keep: int = DEFAULT_TARGET_KEEP,
     as_of_date: date | datetime | str | None = None,
+    allow_historical: bool = False,
 ) -> AIResearchResult:
     """
     AI 检索员主入口（迭代人工式）：
       白名单 → 多轮「拟 query → 搜索手 → 挑选」→ LLM 收成语句（仅真 URL）
+
+    Historical as_of: disabled by default (no Tavily/Brave burn). Pass
+    ``allow_historical=True`` only for explicit expensive overrides — search
+    results are still live-web and may leak non-historical info.
     """
     cfg = load_config()
     need_ids = info_need_ids or list(spec.default_drivers)
@@ -622,7 +627,7 @@ def run_ai_research(
     paid_search = has_paid_search_api(cfg)
     llm = llm_cfg or resolve_llm_config()
 
-    if as_of_date is not None:
+    if as_of_date is not None and not allow_historical:
         return AIResearchResult(
             headlines=[],
             hits=[],
@@ -652,6 +657,13 @@ def run_ai_research(
         "errors": [],
         "limitation": None,
     }
+    if as_of_date is not None and allow_historical:
+        meta["allow_historical"] = True
+        meta["historical_warning"] = (
+            "已显式允许历史时点启用 AI 检索：Tavily/Brave 仍为实时搜索，"
+            "可能引入 as_of 之后的非历史信息；仅调试用，默认应关闭。"
+        )
+        meta["limitation"] = meta["historical_warning"]
 
     if llm and not paid_search:
         meta["limitation"] = (

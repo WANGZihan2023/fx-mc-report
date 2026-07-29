@@ -824,6 +824,7 @@ def fetch_historical_headlines_for_pair(
     gdelt_skipped_outside_window = gdelt_start is None
     gdelt_errors: list[str] = []
     gdelt_http_status: int | None = None
+    gdelt_from_cache = False
     gdelt_query = gdelt_query_for_pair(spec.pair)
     if gdelt_start is not None:
         gdelt_meta: dict[str, Any] = {}
@@ -843,6 +844,8 @@ def fetch_historical_headlines_for_pair(
         status = gdelt_meta.get("http_status")
         if isinstance(status, int):
             gdelt_http_status = status
+        if gdelt_meta.get("from_cache"):
+            gdelt_from_cache = True
 
     # Prefer the widest date-filtered lookback actually used (NewsAPI or GDELT).
     effective_candidates: list[int] = []
@@ -936,6 +939,7 @@ def fetch_historical_headlines_for_pair(
         "gdelt_outside_window": bool(gdelt_skipped_outside_window),
         "gdelt_error": gdelt_errors[0] if gdelt_errors else None,
         "gdelt_http_status": gdelt_http_status,
+        "gdelt_from_cache": bool(gdelt_from_cache),
         "gdelt_query": gdelt_query,
         "inbox_dated_hits": inbox_dated_hits,
         "historical_news_quality": "date_filtered" if date_filtered else "limited",

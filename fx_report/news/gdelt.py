@@ -8,9 +8,12 @@ start/end into that window; out-of-window requests are skipped with a note.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import quote_plus, urlencode
@@ -23,6 +26,7 @@ GDELT_MAX_HISTORY_DAYS = 90
 GDELT_DOC_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_MAX_RECORDS = 75  # API allows up to 250; keep replay fetches light
 _GDELT_SLEEP = time.sleep
+_GDELT_MEM_CACHE: dict[str, list[dict[str, Any]]] = {}
 
 # Pair-relevant boolean queries (DOC API: OR + quoted phrases).
 PAIR_GDELT_QUERIES: dict[str, str] = {
@@ -75,6 +79,64 @@ def gdelt_query_for_pair(pair: str) -> str:
     tokens = key.replace("/", " ").split()
     parts = [t for t in tokens if t] + ["Fed", "FX", "currency"]
     return "(" + " OR ".join(parts) + ")"
+
+
+def _gdelt_cache_dir() -> Path:
+    override = (os.environ.get("FX_GDELT_CACHE") or "").strip()
+    if override:
+        return Path(override)
+    # output/ is gitignored; keeps ArtList pages across UI replay re-runs
+    return Path(__file__).resolve().parents[2] / "output" / ".cache" / "gdelt"
+
+
+def _gdelt_cache_key(
+    query: str,
+    *,
+    start: date,
+    end: date,
+    limit: int,
+) -> str:
+    raw = "|".join(
+        [
+            query.strip(),
+            start.isoformat(),
+            end.isoformat(),
+            str(int(limit)),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+
+def _gdelt_cache_get(key: str) -> list[dict[str, Any]] | None:
+    if key in _GDELT_MEM_CACHE:
+        return list(_GDELT_MEM_CACHE[key])
+    path = _gdelt_cache_dir() / f"{key}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    arts = data.get("articles") if isinstance(data, dict) else None
+    if not isinstance(arts, list):
+        return None
+    payload = [a for a in arts if isinstance(a, dict)]
+    _GDELT_MEM_CACHE[key] = list(payload)
+    return list(payload)
+
+
+def _gdelt_cache_put(key: str, articles: list[dict[str, Any]]) -> None:
+    payload = [a for a in articles if isinstance(a, dict)]
+    _GDELT_MEM_CACHE[key] = list(payload)
+    try:
+        root = _gdelt_cache_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        (root / f"{key}.json").write_text(
+            json.dumps({"articles": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _gdelt_stamp(d: date, *, end_of_day: bool = False) -> str:
@@ -226,6 +288,7 @@ def fetch_gdelt_doc(
                 "start": None,
                 "end": None,
                 "raw_count": 0,
+                "from_cache": False,
                 "url_host": "api.gdeltproject.org",
             }
         )
@@ -243,6 +306,22 @@ def fetch_gdelt_doc(
         return []
 
     maxrecords = max(1, min(int(limit), GDELT_MAX_RECORDS))
+    if call_meta is not None:
+        call_meta["query"] = q
+        call_meta["start"] = start.isoformat()
+        call_meta["end"] = end.isoformat()
+
+    cache_key = _gdelt_cache_key(q, start=start, end=end, limit=maxrecords)
+    cached = _gdelt_cache_get(cache_key)
+    if cached is not None:
+        if call_meta is not None:
+            call_meta["from_cache"] = True
+            call_meta["raw_count"] = len(cached)
+            call_meta["http_status"] = 200
+        return _headlines_from_gdelt_articles(
+            cached, limit, start=start, end=end
+        )
+
     params = {
         "query": q,
         "mode": "ArtList",
@@ -254,10 +333,6 @@ def fetch_gdelt_doc(
     }
     # urlencode quote_via=quote_plus for query safety
     url = f"{GDELT_DOC_ENDPOINT}?{urlencode(params, quote_via=quote_plus)}"
-    if call_meta is not None:
-        call_meta["query"] = q
-        call_meta["start"] = start.isoformat()
-        call_meta["end"] = end.isoformat()
 
     data, err, status = _gdelt_request_json(url, timeout, max_retries=2)
     if call_meta is not None:
@@ -272,9 +347,13 @@ def fetch_gdelt_doc(
         # Empty / no-match responses may omit articles or return {}
         if call_meta is not None:
             call_meta["raw_count"] = 0
+        # Cache empty successful responses too (avoid re-hitting GDELT on miss).
+        _gdelt_cache_put(cache_key, [])
         return []
+    payload = [a for a in articles if isinstance(a, dict)]
+    _gdelt_cache_put(cache_key, payload)
     if call_meta is not None:
-        call_meta["raw_count"] = len(articles)
+        call_meta["raw_count"] = len(payload)
     return _headlines_from_gdelt_articles(
-        articles, limit, start=start, end=end
+        payload, limit, start=start, end=end
     )

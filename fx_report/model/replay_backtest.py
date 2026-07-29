@@ -70,7 +70,8 @@ def run_replay_backtest(
     template_policy: str = "off",
     no_news: bool = False,
     no_fulltext: bool = False,
-    ai_research: bool = True,
+    ai_research: bool = False,
+    allow_historical_ai: bool = False,
     calibrated_params_path: str | Path | None = None,
     use_label_learned_strength: bool = False,
     max_dates: int | None = None,
@@ -86,6 +87,9 @@ def run_replay_backtest(
     display_spec = get_pair(pair)
     bullish = (bullish_currency or display_spec.base).strip().upper()
     analysis_spec = resolve_pair_for_bullish(display_spec, bullish)
+
+    # Belt-and-suspenders: replay is historical → cheap unless explicit override.
+    effective_ai = bool(ai_research) and bool(allow_historical_ai)
 
     history_days = max(lookback * 6, 400, days * 3)
     future_end = end + timedelta(days=max(days * 3, 120))
@@ -132,7 +136,8 @@ def run_replay_backtest(
             template_policy=template_policy,  # type: ignore[arg-type]
             no_news=no_news,
             no_fulltext=no_fulltext,
-            ai_research=ai_research,
+            ai_research=effective_ai,
+            allow_historical_ai=bool(allow_historical_ai),
             out_dir=None,
             verbose=False,
             bullish_currency=bullish,
@@ -218,9 +223,12 @@ def run_replay_backtest(
         "mean_brier": float(table["brier"].mean()),
         "mean_skill_brier": float(table["skill_brier"].mean()),
         "historical_news_quality_counts": table["historical_news_quality"].value_counts().to_dict(),
+        "cheap_historical": not bool(allow_historical_ai),
+        "allow_historical_ai": bool(allow_historical_ai),
         "note": (
             "价格历史按 as_of 真冻结；历史新闻仅使用可日期过滤来源"
             "（NewsAPI、GDELT DOC）与本地 inbox。"
+            "默认省钱模式：AI 检索员 / Tavily 关闭。"
             "若 quality=limited，表示该时点新闻证据并非完整历史信息集。"
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),

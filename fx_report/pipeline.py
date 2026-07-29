@@ -437,6 +437,7 @@ def step3_collect_and_store_statements(
     max_items: int = 30,
     skip_news: bool = False,
     ai_research: bool = True,
+    allow_historical_ai: bool = False,
     llm_cfg: LLMConfig | None = None,
     vol_estimator: str = "window",
     ewma_lambda: float = 0.94,
@@ -445,8 +446,17 @@ def step3_collect_and_store_statements(
     """
     3. 按信息需求抓取，并存储有影响的语句
     （行情 + 官方/RSS 头条 + 可选 AI 检索员；供赋权 / References / 数学分析）
+
+    Historical (`as_of_date` set): AI / Tavily stay OFF unless
+    ``allow_historical_ai=True`` (expensive; may inject non-historical web hits).
     """
     meta: dict[str, Any] = {"ai_research": None}
+    cheap_hist = as_of_date is not None and not allow_historical_ai
+    effective_ai = bool(ai_research) and not cheap_hist
+    if as_of_date is not None:
+        meta["cheap_historical"] = bool(cheap_hist)
+        meta["allow_historical_ai"] = bool(allow_historical_ai)
+
     market = fetch_market(
         spec,
         lookback_days=lookback_days,
@@ -493,11 +503,13 @@ def step3_collect_and_store_statements(
                 max_items=max_items,
             )
             meta.update(hist_meta)
+            meta["cheap_historical"] = bool(cheap_hist)
+            meta["allow_historical_ai"] = bool(allow_historical_ai)
         else:
             headlines = fetch_headlines_for_pair(spec, max_items=max_items)
 
         # AI 检索员：白名单投行页 + 搜索 API + LLM 抽取展望（像人工补搜）
-        if ai_research and as_of_date is None:
+        if effective_ai and as_of_date is None:
             try:
                 from fx_report.news.ai_research import run_ai_research
 
@@ -517,12 +529,40 @@ def step3_collect_and_store_statements(
                         seen.add(key)
             except Exception as e:
                 meta["ai_research"] = {"enabled": True, "errors": [f"ai_research_failed:{e}"]}
-        elif ai_research and as_of_date is not None:
+        elif effective_ai and as_of_date is not None and allow_historical_ai:
+            try:
+                from fx_report.news.ai_research import run_ai_research
+
+                ai = run_ai_research(
+                    spec,
+                    info_need_ids=[n.id for n in info_needs],
+                    llm_cfg=llm_cfg,
+                    max_headlines=12,
+                    as_of_date=as_of_date,
+                    allow_historical=True,
+                )
+                meta["ai_research"] = ai.meta
+                seen = {(h.title or "").strip().lower() for h in headlines}
+                for h in ai.headlines:
+                    key = (h.title or "").strip().lower()
+                    if key and key not in seen:
+                        headlines.insert(0, h)
+                        seen.add(key)
+            except Exception as e:
+                meta["ai_research"] = {
+                    "enabled": True,
+                    "allow_historical": True,
+                    "errors": [f"ai_research_failed:{e}"],
+                }
+        elif as_of_date is not None and not effective_ai:
             meta["ai_research"] = {
                 "enabled": False,
                 "historical_disabled": True,
+                "cheap_historical": True,
                 "limitation": (
-                    "历史回放已禁用 AI researcher；当前搜索/白名单页无法保证回到当时信息集。"
+                    "历史回放默认省钱模式：已禁用 AI 检索员与 Tavily/Brave；"
+                    "证据靠 GDELT+磁盘缓存+近窗 NewsAPI/inbox。"
+                    "仅当显式 allow_historical_ai 时才可开启（贵且可能引入非历史信息）。"
                 ),
             }
 
@@ -1083,6 +1123,7 @@ def run_pipeline(
     no_news: bool = False,
     no_fulltext: bool = False,
     ai_research: bool = True,
+    allow_historical_ai: bool = False,
     llm_cfg: LLMConfig | None = None,
     out_dir: str | Path | None = "output",
     verbose: bool = True,
@@ -1216,8 +1257,15 @@ def run_pipeline(
         label = DRIVER_CATALOG[n.id].label if n.id in DRIVER_CATALOG else n.id
         say(f"  · [{label}] {n.need}")
 
-    # 3
-    say("【3/7】抓取并存储有影响的语句" + ("（含 AI 检索员）" if ai_research and not no_news else ""))
+    # 3 — historical as_of defaults to cheap (no AI/Tavily) unless allow_historical_ai
+    cheap_hist = as_of_date is not None and not allow_historical_ai
+    effective_ai = bool(ai_research) and not cheap_hist
+    if as_of_date is not None and cheap_hist:
+        say("  → cheap_historical=ON（AI 检索员 / Tavily 关闭；证据靠 GDELT+缓存）")
+    say(
+        "【3/7】抓取并存储有影响的语句"
+        + ("（含 AI 检索员）" if effective_ai and not no_news else "")
+    )
     market, statements, headlines, step3_meta = step3_collect_and_store_statements(
         spec,
         info_needs,
@@ -1225,6 +1273,7 @@ def run_pipeline(
         max_items=30,
         skip_news=no_news,
         ai_research=ai_research,
+        allow_historical_ai=allow_historical_ai,
         llm_cfg=llm_cfg,
         vol_estimator=getattr(base, "vol_estimator", "window"),
         ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),

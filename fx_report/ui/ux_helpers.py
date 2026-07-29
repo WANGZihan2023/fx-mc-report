@@ -210,3 +210,30 @@ def format_missing_start_message(
 ) -> str:
     """Popup copy listing what the user still needs to pick (localized)."""
     return format_missing_message(list(missing_labels), lang=lang)
+
+
+def resolve_replay_ai_research(
+    *,
+    allow_historical_ai: bool = False,
+    sidebar_ai_research: bool | None = None,
+) -> bool:
+    """Historical / freeze-replay cost policy for UI (and tests).
+
+    Default = cheap: AI researcher + Tavily/Brave stay OFF regardless of the
+    live sidebar toggle. Only an explicit expensive override may re-enable AI;
+    if ``sidebar_ai_research`` is passed, override still requires it True.
+    """
+    if not allow_historical_ai:
+        return False
+    if sidebar_ai_research is None:
+        return True
+    return bool(sidebar_ai_research)
+
+
+def cheap_historical_mode(
+    *,
+    as_of_date: object | None,
+    allow_historical_ai: bool = False,
+) -> bool:
+    """True when a historical as_of run should force the quota-saving path."""
+    return as_of_date is not None and not bool(allow_historical_ai)

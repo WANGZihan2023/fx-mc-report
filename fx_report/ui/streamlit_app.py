@@ -43,6 +43,7 @@ from fx_report.ui.ux_helpers import (
     missing_start_choices,
     password_accepted,
     pct_cuts_in_bounds,
+    resolve_replay_ai_research,
     seed_pct_widget_value,
     should_heal_floor_clamp,
 )
@@ -2936,6 +2937,26 @@ def main() -> None:
                 "按历史 as_of 冻结跑完整流水线，再对照未来窗口实际最高价。"
                 "UI 仅建议跑 2-5 个时点的小样本；若历史新闻仅能部分还原，会明确显示限制。"
             )
+            st.info(
+                "**历史回测自动省钱模式**：已强制关闭 AI 检索员与 Tavily/Brave 网页搜索，"
+                "侧栏「AI 检索员」开关在此无效。证据优先 GDELT + 磁盘缓存"
+                "（`output/.cache/gdelt/`），近窗才用 NewsAPI；AI/Tavily 仅用于当日 Live 报告。"
+            )
+            allow_hist_ai = st.checkbox(
+                "允许历史启用 AI 检索（贵，且可能引入非历史信息）",
+                value=False,
+                key="replay_allow_historical_ai",
+                help=(
+                    "默认关闭。勾选后才会调用 AI 检索员 / Tavily，"
+                    "可能把 as_of 之后的实时网页结果混进回放，仅调试用。"
+                ),
+            )
+            if allow_hist_ai:
+                st.warning(
+                    "已开启昂贵覆盖：历史回放将调用 AI/Tavily，可能消耗配额且污染历史信息集。"
+                )
+            else:
+                st.caption("🔒 历史回测已自动关闭 AI 检索员与网页搜索以省配额。")
             rp1, rp2, rp3, rp4 = st.columns(4)
             with rp1:
                 replay_start = st.date_input(
@@ -2960,6 +2981,10 @@ def main() -> None:
                 st.write("")
                 run_replay = st.button("运行历史时点回放", use_container_width=True)
             if run_replay:
+                replay_ai = resolve_replay_ai_research(
+                    allow_historical_ai=bool(allow_hist_ai),
+                    sidebar_ai_research=bool(news_opts.get("ai_research", True)),
+                )
                 try:
                     with st.spinner("历史时点回放中…"):
                         replay = run_replay_backtest(
@@ -2983,7 +3008,8 @@ def main() -> None:
                             template_policy=str(news_opts.get("template_policy") or "off"),
                             no_news=not bool(news_opts.get("use_news", True)),
                             no_fulltext=not bool(news_opts.get("fetch_fulltext", True)),
-                            ai_research=bool(news_opts.get("ai_research", True)),
+                            ai_research=replay_ai,
+                            allow_historical_ai=bool(allow_hist_ai),
                             calibrated_params_path=cal_path if cal_loaded else None,
                             use_label_learned_strength=bool(news_opts.get("use_label_learned_strength")),
                             max_dates=int(replay_max_dates),
