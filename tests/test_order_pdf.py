@@ -1,19 +1,22 @@
-"""Order / 单子 PDF parsing — synthetic text fixtures (no copyrighted PDFs)."""
+"""Order / 单子 PDF+image parsing — synthetic fixtures (no copyrighted PDFs)."""
 
 from __future__ import annotations
 
 import io
+from unittest.mock import patch
 
 import pytest
 
-from fx_report.order_pdf import (
+from fx_report.order_doc import (
     ORDER_PDF_ALWAYS_MANUAL,
     ORDER_PDF_FILLABLE,
     extract_pdf_text,
     order_pdf_from_dict,
+    parse_order_document,
     parse_order_pdf,
     parse_order_text,
     preview_lines,
+    sniff_document_kind,
 )
 from fx_report.ui.ux_helpers import START_REQUIRED_LABELS
 
@@ -44,6 +47,14 @@ Pair AUDUSD
 看涨 AUD
 分档切点: 0, 2, 4, 6
 """
+
+
+def _tiny_png_bytes() -> bytes:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 16), color=(255, 255, 255)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def test_parse_usdaud_fills_pair_bullish_absolute_mode():
@@ -137,3 +148,63 @@ def test_extract_and_parse_tiny_pdf():
     assert pr.ok
     assert pr.pair == "USD/AUD"
     assert pr.bullish_currency == "USD"
+
+
+def test_sniff_png_and_jpeg_magic():
+    png = _tiny_png_bytes()
+    assert sniff_document_kind(png, "x.png") == "image"
+    assert sniff_document_kind(b"%PDF-1.4\n", "a.pdf") == "pdf"
+    # minimal JPEG SOI
+    assert sniff_document_kind(b"\xff\xd8\xff\xe0" + b"\x00" * 20, "a.jpg") == "image"
+    assert sniff_document_kind(b"not-a-file", "x.bin") == "unknown"
+
+
+def test_parse_image_with_mocked_ocr_text():
+    png = _tiny_png_bytes()
+    with patch("fx_report.order_doc.extract_image_text", return_value=SAMPLE_ORDER):
+        r = parse_order_document(png, filename="order.png", use_llm=False)
+    assert r.ok
+    assert r.pair == "USD/AUD"
+    assert r.bullish_currency == "USD"
+    assert r.source == "ocr"
+    assert r.barrier == pytest.approx(1.45)
+
+
+def test_image_ocr_unavailable_does_not_invent_fields():
+    png = _tiny_png_bytes()
+    with (
+        patch(
+            "fx_report.order_doc.extract_image_text",
+            side_effect=ValueError(
+                "图片 OCR 不可用（未安装 pytesseract）。Docker/Railway 默认未装 tesseract。"
+            ),
+        ),
+        patch("fx_report.order_doc.llm_vision_order_text", return_value=None),
+    ):
+        r = parse_order_document(png, filename="order.jpeg", use_llm=True)
+    assert r.ok is False
+    assert r.pair is None
+    assert r.bullish_currency is None
+    assert r.barrier is None
+    assert r.strike is None
+    assert "OCR" in (r.error or "") or "图片" in (r.error or "")
+
+
+def test_image_vision_fallback_then_heuristic():
+    png = _tiny_png_bytes()
+    with (
+        patch(
+            "fx_report.order_doc.extract_image_text",
+            side_effect=ValueError("未找到系统 tesseract 可执行文件。"),
+        ),
+        patch(
+            "fx_report.order_doc.llm_vision_order_text",
+            return_value="USD/AUD\nbullish: USD\nBarrier: 1.45\nStrike: 1.48\n",
+        ),
+        patch("fx_report.order_doc.llm_assist_order_text", return_value=None),
+    ):
+        r = parse_order_document(png, filename="shot.jpg", use_llm=True)
+    assert r.ok
+    assert r.pair == "USD/AUD"
+    assert r.bullish_currency == "USD"
+    assert "vision" in r.source

@@ -17,10 +17,10 @@ import streamlit as st
 
 from fx_report.config.api_config import status_text
 from fx_report.ui.api_panel import render_api_settings_panel
-from fx_report.order_pdf import (
-    OrderPdfParse,
-    order_pdf_from_dict,
-    parse_order_pdf,
+from fx_report.order_doc import (
+    OrderDocParse,
+    order_doc_from_dict,
+    parse_order_document,
     preview_lines,
 )
 from fx_report.ui.i18n import (
@@ -1222,7 +1222,7 @@ def _dismiss_missing_start() -> None:
     st.session_state.pop("_missing_start_labels", None)
 
 
-def _apply_order_pdf_to_dialog_state(result: OrderPdfParse) -> None:
+def _apply_order_pdf_to_dialog_state(result: OrderDocParse) -> None:
     """
     Seed start-setup widget keys from a confident PDF parse.
 
@@ -1349,7 +1349,7 @@ def _start_setup_dialog_body() -> None:
     with st.expander(t("dlg.upload_pdf"), expanded=not editing):
         uploaded = st.file_uploader(
             t("dlg.upload_pdf.label"),
-            type=["pdf"],
+            type=["pdf", "jpg", "jpeg", "png"],
             key="dlg_order_pdf",
             help=t("dlg.upload_pdf.help"),
         )
@@ -1358,14 +1358,16 @@ def _start_setup_dialog_body() -> None:
             file_id = f"{uploaded.name}:{len(raw)}:{hash(raw[:4096])}"
             if st.session_state.get("_order_pdf_file_id") != file_id:
                 with st.spinner(t("dlg.pdf.parsing")):
-                    result = parse_order_pdf(raw, use_llm=True)
+                    result = parse_order_document(
+                        raw, filename=uploaded.name, use_llm=True
+                    )
                 st.session_state["_order_pdf_file_id"] = file_id
                 st.session_state["order_pdf_result"] = result.to_dict()
                 if result.ok:
                     _apply_order_pdf_to_dialog_state(result)
                 st.rerun()
 
-        pdf_res = order_pdf_from_dict(st.session_state.get("order_pdf_result"))
+        pdf_res = order_doc_from_dict(st.session_state.get("order_pdf_result"))
         if pdf_res is not None:
             if not pdf_res.ok:
                 st.error(pdf_res.error or t("dlg.pdf.fail"))

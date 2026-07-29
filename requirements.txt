@@ -5,4 +5,7 @@ certifi>=2024.0.0
 reportlab>=4.0
 weasyprint>=62
 pypdf>=4.0
+Pillow>=10.0
+# optional local OCR for order images (needs system tesseract binary)
+pytesseract>=0.3.10
 # optional Chromium path: playwright

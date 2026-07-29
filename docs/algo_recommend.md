@@ -1,6 +1,6 @@
 # 算法自动推荐（简洁模式）
 
-默认路径只需 **货币对 + 看涨货币**（可选上传单子 PDF）；系统自动挑选
+默认路径只需 **货币对 + 看涨货币**（可选上传单子 PDF/图片）；系统自动挑选
 `peak_engine` / `jump_model` / `variance_reduction` / `cluster_method` /
 `use_calibrated` / `human_review`，并在审计面板写明中文理由。
 
