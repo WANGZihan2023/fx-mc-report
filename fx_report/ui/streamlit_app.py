@@ -38,6 +38,7 @@ from fx_report.ui.ux_helpers import (
     START_SIMPLE_DIALOG_KEYS,
     app_password_expected,
     bb_jump_compensate_warning,
+    format_cheap_historical_caption,
     format_missing_start_message,
     is_unset_choice,
     missing_start_choices,
@@ -1711,7 +1712,11 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "新闻有证据时也合并模板（标记为先验）",
             value=False,
         )
-        max_news_ev = st.slider("最多头条证据条数", 3, 20, 10, 1)
+        max_news_ev = st.slider("最多头条证据条数", 3, 40, 10, 1)
+        st.caption(
+            "仅影响当日 Live 报告证据池上限；历史回放仍走省钱路径，不会为此虚构证据。"
+            "步骤3抓取池会按约 3× 比例放大（上限约 90）。"
+        )
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
         use_label_learned = st.checkbox(
             "使用标签学习到的强度",
@@ -3027,10 +3032,53 @@ def main() -> None:
                 summary = rp["summary"]
                 table_df = pd.DataFrame(rp["table"])
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("argmax hit", f"{100 * float(summary.get('argmax_hit_rate', 0)):.1f}%")
-                m2.metric("mean Brier", f"{float(summary.get('mean_brier', float('nan'))):.4f}")
-                m3.metric("mean Skill", f"{float(summary.get('mean_skill_brier', float('nan'))):.4f}")
-                m4.metric("n", int(summary.get("n_rows", 0)))
+                m1.metric("命中率 argmax", f"{100 * float(summary.get('argmax_hit_rate', 0)):.1f}%")
+                m2.metric("平均 Brier", f"{float(summary.get('mean_brier', float('nan'))):.4f}")
+                m3.metric("平均 Skill", f"{float(summary.get('mean_skill_brier', float('nan'))):.4f}")
+                m4.metric("时点数 n", int(summary.get("n_rows", 0)))
+                # Observability: cheap mode / AI / sources / cache
+                sample_meta = {}
+                if not table_df.empty:
+                    last = table_df.iloc[-1]
+                    sample_meta = {
+                        "cheap_historical": summary.get("cheap_historical", True),
+                        "allow_historical_ai": summary.get("allow_historical_ai", False),
+                        "gdelt_hits": int(last["gdelt_hits"]) if "gdelt_hits" in table_df.columns else None,
+                        "newsapi_hits": int(last["newsapi_hits"]) if "newsapi_hits" in table_df.columns else None,
+                        "inbox_dated_hits": (
+                            int(last["inbox_dated_hits"]) if "inbox_dated_hits" in table_df.columns else None
+                        ),
+                        "gdelt_from_cache": (
+                            bool(last["gdelt_from_cache"]) if "gdelt_from_cache" in table_df.columns else False
+                        ),
+                        "newsapi_from_cache": (
+                            bool(last["newsapi_from_cache"]) if "newsapi_from_cache" in table_df.columns else False
+                        ),
+                        "providers_used": (
+                            [
+                                p
+                                for p in str(
+                                    last["providers_used"] if "providers_used" in table_df.columns else ""
+                                ).split(",")
+                                if p
+                            ]
+                        ),
+                    }
+                st.caption(
+                    "观测｜"
+                    + format_cheap_historical_caption(
+                        sample_meta,
+                        cheap_historical=bool(summary.get("cheap_historical", True)),
+                    )
+                    + f"｜合计 GDELT命中={summary.get('gdelt_hits_sum', '—')} "
+                    f"NewsAPI命中={summary.get('newsapi_hits_sum', '—')} "
+                    f"缓存命中行={summary.get('cache_hit_rows', '—')}"
+                )
+                st.caption(
+                    "磁盘缓存目录：`output/.cache/gdelt/`、`output/.cache/newsapi/`"
+                    "（失败/空结果短 TTL，成功命中约 7 天；可用环境变量 "
+                    "`FX_GDELT_CACHE` / `FX_NEWSAPI_CACHE` 改路径）。"
+                )
                 quality_counts = summary.get("historical_news_quality_counts") or {}
                 if quality_counts.get("limited"):
                     st.warning(
@@ -3051,6 +3099,11 @@ def main() -> None:
                         "skill_brier",
                         "evidence_n",
                         "historical_news_quality",
+                        "cheap_historical",
+                        "gdelt_hits",
+                        "newsapi_hits",
+                        "gdelt_from_cache",
+                        "newsapi_from_cache",
                     )
                     if c in table_df.columns
                 ]
@@ -3261,6 +3314,8 @@ def main() -> None:
                 f"AI 检索员迭代 {len([r for r in (ai_meta.get('rounds') or []) if r.get('action')=='search'])} 轮，"
                 f"精选 {ai_meta.get('kept_hits', 0)} 条原料 → 产出 {ai_meta.get('headlines_out', 0)}。"
             )
+    if news_meta.get("historical_mode") or news_meta.get("cheap_historical") is not None:
+        note_bits.append(format_cheap_historical_caption(news_meta))
     if bb_caveat:
         note_bits.append(str(bb_caveat))
     elif peak_eng == "brownian_bridge":

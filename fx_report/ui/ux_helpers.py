@@ -237,3 +237,76 @@ def cheap_historical_mode(
 ) -> bool:
     """True when a historical as_of run should force the quota-saving path."""
     return as_of_date is not None and not bool(allow_historical_ai)
+
+
+def format_cheap_historical_caption(
+    meta: Mapping[str, object] | None,
+    *,
+    cheap_historical: bool | None = None,
+) -> str:
+    """Chinese one-liner for UI / audit: cheap mode, AI, sources, cache hits."""
+    m: Mapping[str, object] = meta or {}
+    if cheap_historical is None:
+        if "cheap_historical" in m:
+            cheap = bool(m.get("cheap_historical"))
+        elif m.get("historical_mode"):
+            cheap = not bool(m.get("allow_historical_ai"))
+        else:
+            cheap = False
+    else:
+        cheap = bool(cheap_historical)
+
+    if cheap:
+        ai_bit = "AI强制关"
+    else:
+        ai_meta = m.get("ai_research")
+        if isinstance(ai_meta, dict):
+            ai_bit = "AI开" if ai_meta.get("enabled") else "AI关"
+        elif m.get("allow_historical_ai"):
+            ai_bit = "AI允许"
+        else:
+            ai_bit = "AI关"
+
+    bits: list[str] = []
+    gdelt_n = m.get("gdelt_hits")
+    newsapi_n = m.get("newsapi_hits")
+    inbox_n = m.get("inbox_dated_hits")
+    if gdelt_n is not None:
+        bits.append(f"GDELT={int(gdelt_n)}")  # type: ignore[arg-type]
+    if newsapi_n is not None:
+        bits.append(f"NewsAPI={int(newsapi_n)}")  # type: ignore[arg-type]
+    if inbox_n is not None:
+        bits.append(f"inbox={int(inbox_n)}")  # type: ignore[arg-type]
+    providers = m.get("providers_used")
+    if not bits and isinstance(providers, (list, tuple)) and providers:
+        bits.append("来源=" + "+".join(str(p) for p in providers))
+
+    cache_bits: list[str] = []
+    if m.get("gdelt_from_cache"):
+        cache_bits.append("GDELT缓存命中")
+    if m.get("newsapi_from_cache"):
+        cache_bits.append("NewsAPI缓存命中")
+    cache_s = "｜".join(cache_bits) if cache_bits else "缓存未命中/未用"
+
+    sources_s = "+".join(bits) if bits else "来源无命中"
+    return (
+        f"cheap_historical={'ON' if cheap else 'OFF'}｜{ai_bit}｜"
+        f"{sources_s}｜{cache_s}"
+    )
+
+
+def step3_pool_size(max_news: int, *, historical: bool = False) -> int:
+    """Headline pool for step3 relative to evidence cap (live can go higher)."""
+    n = max(1, int(max_news))
+    if historical:
+        # Keep historical cheap/light: modest pool, still >= evidence cap.
+        return max(n, min(40, max(25, n * 2)))
+    # Live: raise with slider (UI up to 40/50); keep a floor of 30.
+    return max(30, min(90, n * 3))
+
+
+def refs_statement_cap(max_news: int | None = None) -> int:
+    """Markdown References slice — align with raised live evidence caps."""
+    if max_news is None:
+        return 50
+    return max(25, min(50, int(max_news) * 2))

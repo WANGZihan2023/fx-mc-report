@@ -111,8 +111,9 @@ Streamlit 中新增了 `历史时点回放` 卡片：
 - **默认省钱模式**：强制关闭 AI 检索员与 Tavily/Brave（侧栏「AI 检索员」无效）
 - 证据优先 **GDELT + 磁盘缓存**（`output/.cache/gdelt/`），近窗才用 NewsAPI；AI/Tavily 仅用于当日 Live
 - 可选勾选「允许历史启用 AI 检索（贵…）」才开启昂贵路径（默认 OFF）
+- 结果区会显示中文观测行：`cheap_historical=ON/OFF`、AI 是否强制关、GDELT/NewsAPI/inbox 命中、缓存命中
 - 若新闻保真度有限，会弹出警告
-- 结果表会展示 `historical_news_quality`
+- 结果表会展示 `historical_news_quality` 以及命中/缓存列
 
 另外新增 `历史冻结回放总览`：
 
@@ -132,6 +133,35 @@ Streamlit 中新增了 `历史时点回放` 卡片：
 
 CLI：`replay-backtest` 同样默认省钱；`--as_of` / 历史路径在 pipeline 内也会关掉 AI。
 若确需昂贵覆盖：`--allow-historical-ai`（UI 对应勾选框）。
+
+### 网络 vs 本地
+
+| 资源 | 网络？ | 说明 |
+|------|--------|------|
+| 历史价格（yfinance / ECB 等） | 通常要 | 首次拉序列；本地无缓存时必连网 |
+| GDELT DOC | 要（可缓存） | 免费无 KEY；命中写入 `output/.cache/gdelt/` |
+| NewsAPI | 要 KEY + 网 | 开发者档约近 29 天；缓存 `output/.cache/newsapi/` |
+| inbox | 本地 | `inbox/` 截止 as_of 的文件，无网也可 |
+| AI / Tavily | 要（默认关） | 仅 Live 或显式 `--allow-historical-ai` |
+
+无网时：若磁盘缓存与 inbox 已有数据，回放仍可能跑通（质量取决于缓存是否覆盖目标窗口）；否则新闻端多为 `limited`。
+
+### 磁盘缓存（省配额）
+
+- 目录（默认，均在 gitignore 的 `output/` 下）：
+  - `output/.cache/gdelt/` — GDELT ArtList
+  - `output/.cache/newsapi/` — NewsAPI everything
+- 环境变量覆盖：`FX_GDELT_CACHE` / `FX_NEWSAPI_CACHE`
+- TTL：**成功有文约 7 天**；**空结果约 1 小时**；**失败/429 约 15 分钟**（不会把错误空结果永久钉死）
+- 重复回放同一窗口应看到 UI/日志里的「缓存命中」
+
+### 省钱小贴士
+
+1. UI 回放只跑 2–3 个时点；不要默认勾「允许历史启用 AI」
+2. Live 才开 AI 检索员 + Tavily；历史靠 GDELT/缓存
+3. 可先 `python scripts/smoke_gdelt_historical.py`（无需 NewsAPI KEY）验证窗口
+4. 可选每日 `python scripts/daily_inbox_snapshot.py` 减轻对在线源依赖
+5. 侧栏「最多头条证据条数」主要放大 **Live** 证据池；历史仍走省钱路径，不会因此虚构链接
 
 ## 建议用法
 

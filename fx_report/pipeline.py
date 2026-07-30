@@ -37,6 +37,11 @@ from fx_report.news.llm import LLMConfig, resolve_llm_config
 from fx_report.market.pair_drivers import DRIVER_CATALOG, describe_pair_factors, info_needs_for_drivers
 from fx_report.market.pairs import PairSpec, get_pair, make_custom_pair, resolve_pair_for_bullish
 from fx_report.report.text import build_diagnostics, build_report_markdown
+from fx_report.ui.ux_helpers import (
+    format_cheap_historical_caption,
+    refs_statement_cap,
+    step3_pool_size,
+)
 from fx_report.report.torchcast import (
     TorchcastReport,
     build_torchcast_report,
@@ -976,10 +981,11 @@ def step7_build_report(
     needs_md = "\n".join(
         f"| {n.id} | {n.need} | {n.why} | {n.sources} |" for n in info_needs
     )
+    ref_cap = refs_statement_cap(int(news_meta.get("max_news") or len(weighted) or 10))
     refs_md = "\n".join(
         f"{i}. [{s.source}] {s.statement[:160]}"
         + (f" — {s.url}" if s.url else "")
-        for i, s in enumerate(statements[:25], 1)
+        for i, s in enumerate(statements[:ref_cap], 1)
     )
     weights_md = "\n".join(
         f"| {w.evidence.id} | {w.evidence.strength_label} | {w.weight_contrib:+.3f} | {w.impact_note} |"
@@ -1266,11 +1272,12 @@ def run_pipeline(
         "【3/7】抓取并存储有影响的语句"
         + ("（含 AI 检索员）" if effective_ai and not no_news else "")
     )
+    step3_items = step3_pool_size(max_news, historical=as_of_date is not None)
     market, statements, headlines, step3_meta = step3_collect_and_store_statements(
         spec,
         info_needs,
         lookback_days=lookback,
-        max_items=30,
+        max_items=step3_items,
         skip_news=no_news,
         ai_research=ai_research,
         allow_historical_ai=allow_historical_ai,
@@ -1280,9 +1287,11 @@ def run_pipeline(
         as_of_date=as_of_date,
     )
     say(f"  → 行情 {market.source} spot={market.spot:.5f}")
-    say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条")
+    say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条｜step3_pool={step3_items}")
     if step3_meta.get("low_rel_skipped"):
         say(f"  → 低相关头条跳过 {step3_meta['low_rel_skipped']} 条")
+    if as_of_date is not None:
+        say(f"  → {format_cheap_historical_caption(step3_meta, cheap_historical=cheap_hist)}")
     ai_meta = step3_meta.get("ai_research") or {}
     if ai_meta:
         rounds = ai_meta.get("rounds") or []
@@ -1335,11 +1344,26 @@ def run_pipeline(
         "newsapi_error",
         "newsapi_http_status",
         "newsapi_from_cache",
+        "gdelt_enabled",
+        "gdelt_hits",
+        "gdelt_from",
+        "gdelt_from_requested",
+        "gdelt_from_clamped",
+        "gdelt_outside_window",
+        "gdelt_error",
+        "gdelt_http_status",
+        "gdelt_from_cache",
+        "gdelt_query",
+        "inbox_dated_hits",
+        "cheap_historical",
+        "allow_historical_ai",
         "historical_news_quality",
         "limitation",
     ):
         if k in step3_meta and k not in news_meta:
             news_meta[k] = step3_meta[k]
+    news_meta["max_news"] = int(max_news)
+    news_meta["step3_pool"] = int(step3_items)
     news_meta["calibrated_params"] = cal_source
     say(
         f"  → 证据 {len(evidence)} 条｜mode={news_meta.get('mode')}｜"

@@ -165,6 +165,7 @@ def run_replay_backtest(
         skill_brier = float("nan") if not np.isfinite(base_brier) or base_brier <= 0 else 1.0 - (brier / base_brier)
         evidence_n = int((result.news_meta or {}).get("evidence_n", len(result.weighted)))
         hist_quality = str((result.news_meta or {}).get("historical_news_quality") or "limited")
+        nm = result.news_meta or {}
         row: dict[str, Any] = {
             "as_of": as_of.isoformat(),
             "requested_as_of": target.isoformat(),
@@ -182,9 +183,16 @@ def run_replay_backtest(
             "skill_brier": skill_brier,
             "evidence_n": evidence_n,
             "historical_news_quality": hist_quality,
-            "historical_news_note": (result.news_meta or {}).get("limitation") or "",
+            "historical_news_note": nm.get("limitation") or "",
+            "cheap_historical": bool(nm.get("cheap_historical", not allow_historical_ai)),
+            "gdelt_hits": int(nm.get("gdelt_hits") or 0),
+            "newsapi_hits": int(nm.get("newsapi_hits") or 0),
+            "inbox_dated_hits": int(nm.get("inbox_dated_hits") or 0),
+            "gdelt_from_cache": bool(nm.get("gdelt_from_cache")),
+            "newsapi_from_cache": bool(nm.get("newsapi_from_cache")),
+            "providers_used": ",".join(str(p) for p in (nm.get("providers_used") or [])),
             "template_policy": template_policy,
-            "evidence_quality": (result.news_meta or {}).get("evidence_quality"),
+            "evidence_quality": nm.get("evidence_quality"),
             "history_source": history_source,
             "history_notes": " | ".join(history_notes[:3]),
             "peak_engine": peak_engine,
@@ -225,6 +233,18 @@ def run_replay_backtest(
         "historical_news_quality_counts": table["historical_news_quality"].value_counts().to_dict(),
         "cheap_historical": not bool(allow_historical_ai),
         "allow_historical_ai": bool(allow_historical_ai),
+        "gdelt_hits_sum": int(table["gdelt_hits"].sum()) if "gdelt_hits" in table.columns else 0,
+        "newsapi_hits_sum": int(table["newsapi_hits"].sum()) if "newsapi_hits" in table.columns else 0,
+        "cache_hit_rows": (
+            int(
+                (
+                    table["gdelt_from_cache"].fillna(False).astype(bool)
+                    | table["newsapi_from_cache"].fillna(False).astype(bool)
+                ).sum()
+            )
+            if {"gdelt_from_cache", "newsapi_from_cache"}.issubset(table.columns)
+            else 0
+        ),
         "note": (
             "价格历史按 as_of 真冻结；历史新闻仅使用可日期过滤来源"
             "（NewsAPI、GDELT DOC）与本地 inbox。"
