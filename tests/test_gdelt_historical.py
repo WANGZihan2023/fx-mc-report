@@ -53,7 +53,11 @@ def test_parse_gdelt_seendate():
     assert _parse_gdelt_seendate(None) is None
 
 
-def test_fetch_gdelt_doc_parses_artlist(monkeypatch):
+def test_fetch_gdelt_doc_parses_artlist(monkeypatch, tmp_path):
+    from fx_report.news.gdelt import _GDELT_MEM_CACHE
+
+    monkeypatch.setenv("FX_GDELT_CACHE", str(tmp_path))
+    _GDELT_MEM_CACHE.clear()
     payload = {
         "articles": [
             {
@@ -96,7 +100,12 @@ def test_fetch_gdelt_doc_parses_artlist(monkeypatch):
     assert "RBA" in headlines[0].title
 
 
-def test_fetch_gdelt_doc_surfaces_429(monkeypatch):
+def test_fetch_gdelt_doc_surfaces_429(monkeypatch, tmp_path):
+    from fx_report.news.gdelt import _GDELT_MEM_CACHE
+
+    monkeypatch.setenv("FX_GDELT_CACHE", str(tmp_path))
+    _GDELT_MEM_CACHE.clear()
+
     def fake_request(url, timeout, *, max_retries=2):
         return None, "HTTP 429: Too Many Requests", 429
 

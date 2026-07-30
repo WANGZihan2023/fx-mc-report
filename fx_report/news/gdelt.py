@@ -159,6 +159,7 @@ def _gdelt_normalize_envelope(data: Any) -> dict[str, Any] | None:
         "status": status,
         "error": data.get("error"),
         "cached_at": data.get("cached_at"),
+        "http_status": data.get("http_status"),
     }
 
 
@@ -218,6 +219,7 @@ def _gdelt_cache_put(
     *,
     status: str = "ok",
     error: str | None = None,
+    http_status: int | None = None,
 ) -> None:
     payload = [a for a in articles if isinstance(a, dict)]
     if status not in {"ok", "empty", "error"}:
@@ -228,6 +230,7 @@ def _gdelt_cache_put(
         "articles": payload,
         "status": status,
         "error": error,
+        "http_status": http_status,
         "cached_at": datetime.now(timezone.utc).isoformat(),
     }
     _GDELT_MEM_CACHE[key] = dict(envelope)
@@ -423,9 +426,9 @@ def fetch_gdelt_doc(
             call_meta["cache_status"] = envelope.get("status")
             if envelope.get("status") == "error":
                 call_meta["error"] = envelope.get("error") or "cached_error"
-                call_meta["http_status"] = None
+                call_meta["http_status"] = envelope.get("http_status")
             else:
-                call_meta["http_status"] = 200
+                call_meta["http_status"] = envelope.get("http_status") or 200
         if envelope.get("status") == "error":
             return []
         return _headlines_from_gdelt_articles(
@@ -451,7 +454,9 @@ def fetch_gdelt_doc(
         if call_meta is not None:
             call_meta["error"] = err
         # Short TTL negative cache — avoid hammering, but do not pin forever.
-        _gdelt_cache_put(cache_key, [], status="error", error=err)
+        _gdelt_cache_put(
+            cache_key, [], status="error", error=err, http_status=status
+        )
         return []
     assert data is not None
     articles = data.get("articles") if isinstance(data, dict) else None
@@ -460,13 +465,13 @@ def fetch_gdelt_doc(
         if call_meta is not None:
             call_meta["raw_count"] = 0
         # Short TTL for empty (window may fill; do not pin miss forever).
-        _gdelt_cache_put(cache_key, [], status="empty")
+        _gdelt_cache_put(cache_key, [], status="empty", http_status=status)
         return []
     payload = [a for a in articles if isinstance(a, dict)]
     if not payload:
-        _gdelt_cache_put(cache_key, [], status="empty")
+        _gdelt_cache_put(cache_key, [], status="empty", http_status=status)
     else:
-        _gdelt_cache_put(cache_key, payload, status="ok")
+        _gdelt_cache_put(cache_key, payload, status="ok", http_status=status)
     if call_meta is not None:
         call_meta["raw_count"] = len(payload)
     return _headlines_from_gdelt_articles(
