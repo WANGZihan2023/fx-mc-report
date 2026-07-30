@@ -26,7 +26,13 @@ GDELT_MAX_HISTORY_DAYS = 90
 GDELT_DOC_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_MAX_RECORDS = 75  # API allows up to 250; keep replay fetches light
 _GDELT_SLEEP = time.sleep
-_GDELT_MEM_CACHE: dict[str, list[dict[str, Any]]] = {}
+# Mem cache stores envelope dicts (articles + status + cached_at), not bare lists.
+_GDELT_MEM_CACHE: dict[str, dict[str, Any]] = {}
+
+# Disk/memory cache TTLs — never pin empty/error forever (retry after short cool-down).
+GDELT_CACHE_TTL_OK_S = 7 * 24 * 3600  # successful hits with articles
+GDELT_CACHE_TTL_EMPTY_S = 3600  # ok-but-empty (window may fill later)
+GDELT_CACHE_TTL_ERROR_S = 15 * 60  # HTTP/parse failures (negative cache)
 
 # Pair-relevant boolean queries (DOC API: OR + quoted phrases).
 PAIR_GDELT_QUERIES: dict[str, str] = {
@@ -107,32 +113,129 @@ def _gdelt_cache_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
-def _gdelt_cache_get(key: str) -> list[dict[str, Any]] | None:
-    if key in _GDELT_MEM_CACHE:
-        return list(_GDELT_MEM_CACHE[key])
-    path = _gdelt_cache_dir() / f"{key}.json"
-    if not path.is_file():
-        return None
+def _gdelt_cache_ttl_s(status: str) -> int:
+    if status == "error":
+        return GDELT_CACHE_TTL_ERROR_S
+    if status == "empty":
+        return GDELT_CACHE_TTL_EMPTY_S
+    return GDELT_CACHE_TTL_OK_S
+
+
+def _gdelt_envelope_fresh(envelope: dict[str, Any]) -> bool:
+    """Return False when TTL expired (caller should re-fetch)."""
+    status = str(envelope.get("status") or "ok")
+    # Legacy bare-article caches (no cached_at): keep non-empty; expire empty so
+    # we do not forever pin a past miss.
+    cached_at_raw = envelope.get("cached_at")
+    arts = envelope.get("articles")
+    if not isinstance(arts, list):
+        return False
+    if not cached_at_raw:
+        if status == "error":
+            return False
+        return len(arts) > 0
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        cached_at = datetime.fromisoformat(str(cached_at_raw).replace("Z", "+00:00"))
+        if cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - cached_at.astimezone(timezone.utc)).total_seconds()
     except Exception:
+        return len(arts) > 0 and status != "error"
+    return age <= float(_gdelt_cache_ttl_s(status))
+
+
+def _gdelt_normalize_envelope(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
         return None
-    arts = data.get("articles") if isinstance(data, dict) else None
+    arts = data.get("articles")
     if not isinstance(arts, list):
         return None
     payload = [a for a in arts if isinstance(a, dict)]
-    _GDELT_MEM_CACHE[key] = list(payload)
-    return list(payload)
+    status = data.get("status")
+    if status not in {"ok", "empty", "error"}:
+        status = "empty" if not payload else "ok"
+    return {
+        "articles": payload,
+        "status": status,
+        "error": data.get("error"),
+        "cached_at": data.get("cached_at"),
+    }
 
 
-def _gdelt_cache_put(key: str, articles: list[dict[str, Any]]) -> None:
+def _gdelt_cache_get(key: str) -> list[dict[str, Any]] | None:
+    """Return articles on fresh hit; None on miss/expired. Errors yield [] + from_cache via caller."""
+    envelope: dict[str, Any] | None = None
+    if key in _GDELT_MEM_CACHE:
+        envelope = _gdelt_normalize_envelope(_GDELT_MEM_CACHE[key])
+    else:
+        path = _gdelt_cache_dir() / f"{key}.json"
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        envelope = _gdelt_normalize_envelope(data)
+        if envelope is not None:
+            _GDELT_MEM_CACHE[key] = dict(envelope)
+    if envelope is None:
+        return None
+    if not _gdelt_envelope_fresh(envelope):
+        _GDELT_MEM_CACHE.pop(key, None)
+        return None
+    # Signal error-cache hits with a sentinel via call_meta in fetch; return articles list.
+    # Attach status on a private attribute via wrapping — callers use _gdelt_cache_get_ex.
+    return list(envelope["articles"])
+
+
+def _gdelt_cache_get_ex(key: str) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """Like _gdelt_cache_get but also returns the envelope (for status/error)."""
+    envelope: dict[str, Any] | None = None
+    if key in _GDELT_MEM_CACHE:
+        envelope = _gdelt_normalize_envelope(_GDELT_MEM_CACHE[key])
+    else:
+        path = _gdelt_cache_dir() / f"{key}.json"
+        if not path.is_file():
+            return None, None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None, None
+        envelope = _gdelt_normalize_envelope(data)
+        if envelope is not None:
+            _GDELT_MEM_CACHE[key] = dict(envelope)
+    if envelope is None:
+        return None, None
+    if not _gdelt_envelope_fresh(envelope):
+        _GDELT_MEM_CACHE.pop(key, None)
+        return None, None
+    return list(envelope["articles"]), envelope
+
+
+def _gdelt_cache_put(
+    key: str,
+    articles: list[dict[str, Any]],
+    *,
+    status: str = "ok",
+    error: str | None = None,
+) -> None:
     payload = [a for a in articles if isinstance(a, dict)]
-    _GDELT_MEM_CACHE[key] = list(payload)
+    if status not in {"ok", "empty", "error"}:
+        status = "empty" if not payload else "ok"
+    if status == "ok" and not payload:
+        status = "empty"
+    envelope: dict[str, Any] = {
+        "articles": payload,
+        "status": status,
+        "error": error,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _GDELT_MEM_CACHE[key] = dict(envelope)
     try:
         root = _gdelt_cache_dir()
         root.mkdir(parents=True, exist_ok=True)
         (root / f"{key}.json").write_text(
-            json.dumps({"articles": payload}, ensure_ascii=False),
+            json.dumps(envelope, ensure_ascii=False),
             encoding="utf-8",
         )
     except Exception:
@@ -312,12 +415,19 @@ def fetch_gdelt_doc(
         call_meta["end"] = end.isoformat()
 
     cache_key = _gdelt_cache_key(q, start=start, end=end, limit=maxrecords)
-    cached = _gdelt_cache_get(cache_key)
-    if cached is not None:
+    cached, envelope = _gdelt_cache_get_ex(cache_key)
+    if cached is not None and envelope is not None:
         if call_meta is not None:
             call_meta["from_cache"] = True
             call_meta["raw_count"] = len(cached)
-            call_meta["http_status"] = 200
+            call_meta["cache_status"] = envelope.get("status")
+            if envelope.get("status") == "error":
+                call_meta["error"] = envelope.get("error") or "cached_error"
+                call_meta["http_status"] = None
+            else:
+                call_meta["http_status"] = 200
+        if envelope.get("status") == "error":
+            return []
         return _headlines_from_gdelt_articles(
             cached, limit, start=start, end=end
         )
@@ -340,6 +450,8 @@ def fetch_gdelt_doc(
     if err:
         if call_meta is not None:
             call_meta["error"] = err
+        # Short TTL negative cache — avoid hammering, but do not pin forever.
+        _gdelt_cache_put(cache_key, [], status="error", error=err)
         return []
     assert data is not None
     articles = data.get("articles") if isinstance(data, dict) else None
@@ -347,11 +459,14 @@ def fetch_gdelt_doc(
         # Empty / no-match responses may omit articles or return {}
         if call_meta is not None:
             call_meta["raw_count"] = 0
-        # Cache empty successful responses too (avoid re-hitting GDELT on miss).
-        _gdelt_cache_put(cache_key, [])
+        # Short TTL for empty (window may fill; do not pin miss forever).
+        _gdelt_cache_put(cache_key, [], status="empty")
         return []
     payload = [a for a in articles if isinstance(a, dict)]
-    _gdelt_cache_put(cache_key, payload)
+    if not payload:
+        _gdelt_cache_put(cache_key, [], status="empty")
+    else:
+        _gdelt_cache_put(cache_key, payload, status="ok")
     if call_meta is not None:
         call_meta["raw_count"] = len(payload)
     return _headlines_from_gdelt_articles(

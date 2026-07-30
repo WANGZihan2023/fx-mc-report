@@ -393,3 +393,90 @@ def test_pipeline_evidence_n_positive_for_clamped_as_of_20260713(monkeypatch):
     assert news_meta["historical_news_quality"] == "date_filtered"
     assert len(evidence) > 0
     assert news_meta["evidence_n"] > 0
+
+
+def test_newsapi_failed_response_short_ttl(tmp_path, monkeypatch):
+    """429/errors are negative-cached briefly; after TTL we retry HTTP."""
+    import json
+    from io import BytesIO
+
+    from fx_report.news.fetch import (
+        NEWSAPI_CACHE_TTL_ERROR_S,
+        NEWSAPI_CACHE_TTL_OK_S,
+        _NEWSAPI_MEM_CACHE,
+        _newsapi_cache_key,
+    )
+
+    hits = {"n": 0}
+
+    def boom(url: str, timeout: int = 20):
+        hits["n"] += 1
+        raise HTTPError(
+            url,
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=BytesIO(b'{"code":"rateLimited"}'),
+        )
+
+    monkeypatch.setattr("fx_report.news.fetch._http_json", boom)
+    monkeypatch.setattr("fx_report.news.fetch._NEWSAPI_SLEEP", lambda _s: None)
+    _NEWSAPI_MEM_CACHE.clear()
+    monkeypatch.setattr(
+        "fx_report.news.fetch._newsapi_cache_dir",
+        lambda: tmp_path / "newsapi_cache",
+    )
+
+    start, end = date(2026, 7, 1), date(2026, 7, 13)
+    meta1: dict = {}
+    assert (
+        fetch_newsapi(
+            "RBA",
+            {"NEWSAPI_KEY": "test-key"},
+            limit=5,
+            start_date=start,
+            end_date=end,
+            call_meta=meta1,
+        )
+        == []
+    )
+    assert hits["n"] >= 1
+    first_hits = hits["n"]
+
+    meta2: dict = {}
+    assert (
+        fetch_newsapi(
+            "RBA",
+            {"NEWSAPI_KEY": "test-key"},
+            limit=5,
+            start_date=start,
+            end_date=end,
+            call_meta=meta2,
+        )
+        == []
+    )
+    assert hits["n"] == first_hits  # served from error cache
+    assert meta2.get("from_cache") is True
+
+    key = _newsapi_cache_key("RBA", start=start, end=end, domains=False)
+    path = tmp_path / "newsapi_cache" / f"{key}.json"
+    env = json.loads(path.read_text(encoding="utf-8"))
+    assert env["status"] == "error"
+    env["cached_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    path.write_text(json.dumps(env), encoding="utf-8")
+    _NEWSAPI_MEM_CACHE.clear()
+
+    meta3: dict = {}
+    assert (
+        fetch_newsapi(
+            "RBA",
+            {"NEWSAPI_KEY": "test-key"},
+            limit=5,
+            start_date=start,
+            end_date=end,
+            call_meta=meta3,
+        )
+        == []
+    )
+    assert hits["n"] > first_hits
+    assert NEWSAPI_CACHE_TTL_ERROR_S < NEWSAPI_CACHE_TTL_OK_S

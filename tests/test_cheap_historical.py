@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from unittest.mock import patch
 
@@ -125,3 +126,70 @@ def test_gdelt_disk_cache_hit_miss(tmp_path, monkeypatch):
     assert meta2.get("from_cache") is True
     assert len(h2) == 1
     assert h2[0].title == h1[0].title
+
+
+def test_gdelt_failed_response_short_ttl_not_forever(tmp_path, monkeypatch):
+    """Errors get a short negative cache; after TTL expiry we re-fetch."""
+    from datetime import datetime, timedelta, timezone
+
+    import fx_report.news.gdelt as gdelt_mod
+
+    monkeypatch.setenv("FX_GDELT_CACHE", str(tmp_path))
+    _GDELT_MEM_CACHE.clear()
+    hits = {"n": 0}
+
+    def fake_request(url, timeout, *, max_retries=2):
+        hits["n"] += 1
+        return None, "HTTP 429: Too Many Requests", 429
+
+    monkeypatch.setattr("fx_report.news.gdelt._gdelt_request_json", fake_request)
+
+    start, end = date(2026, 6, 29), date(2026, 7, 13)
+    q = "RBA OR AUDUSD"
+    meta1: dict = {}
+    assert fetch_gdelt_doc(q, start_date=start, end_date=end, limit=10, call_meta=meta1) == []
+    assert hits["n"] == 1
+    assert meta1.get("error")
+    key = _gdelt_cache_key(q, start=start, end=end, limit=10)
+    path = tmp_path / f"{key}.json"
+    assert path.is_file()
+    env = json.loads(path.read_text(encoding="utf-8"))
+    assert env.get("status") == "error"
+
+    # Within TTL: serve from cache (no second HTTP)
+    _GDELT_MEM_CACHE.clear()
+    meta2: dict = {}
+    assert fetch_gdelt_doc(q, start_date=start, end_date=end, limit=10, call_meta=meta2) == []
+    assert hits["n"] == 1
+    assert meta2.get("from_cache") is True
+
+    # Expire the envelope → miss → HTTP again
+    env["cached_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    path.write_text(json.dumps(env), encoding="utf-8")
+    _GDELT_MEM_CACHE.clear()
+    meta3: dict = {}
+    assert fetch_gdelt_doc(q, start_date=start, end_date=end, limit=10, call_meta=meta3) == []
+    assert hits["n"] == 2
+    assert meta3.get("from_cache") is False
+    assert gdelt_mod.GDELT_CACHE_TTL_ERROR_S < gdelt_mod.GDELT_CACHE_TTL_OK_S
+
+
+def test_format_cheap_historical_caption():
+    from fx_report.ui.ux_helpers import format_cheap_historical_caption, step3_pool_size
+
+    cap = format_cheap_historical_caption(
+        {
+            "cheap_historical": True,
+            "gdelt_hits": 3,
+            "newsapi_hits": 1,
+            "inbox_dated_hits": 0,
+            "gdelt_from_cache": True,
+        }
+    )
+    assert "cheap_historical=ON" in cap
+    assert "AI强制关" in cap
+    assert "GDELT=3" in cap
+    assert "GDELT缓存命中" in cap
+    assert step3_pool_size(10, historical=False) == 30
+    assert step3_pool_size(40, historical=False) == 90
+    assert step3_pool_size(10, historical=True) >= 10

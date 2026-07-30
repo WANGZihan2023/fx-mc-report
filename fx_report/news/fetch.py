@@ -341,9 +341,63 @@ def fetch_google_news_rss(pair: str, limit: int = 12) -> list[Headline]:
 _NEWSAPI_DOMAINS = (
     "reuters.com,bloomberg.com,wsj.com,ft.com,afr.com,cnbc.com,federalreserve.gov"
 )
-_NEWSAPI_MEM_CACHE: dict[str, list[dict[str, Any]]] = {}
+# Mem cache stores envelope dicts (articles + status + cached_at).
+_NEWSAPI_MEM_CACHE: dict[str, dict[str, Any]] = {}
 # Injectable sleep for unit tests (avoid real waits on 429 backoff).
 _NEWSAPI_SLEEP: Callable[[float], None] = time.sleep
+
+# Disk/memory cache TTLs — never pin empty/error forever.
+NEWSAPI_CACHE_TTL_OK_S = 7 * 24 * 3600
+NEWSAPI_CACHE_TTL_EMPTY_S = 3600
+NEWSAPI_CACHE_TTL_ERROR_S = 15 * 60
+
+
+def _newsapi_cache_ttl_s(status: str) -> int:
+    if status == "error":
+        return NEWSAPI_CACHE_TTL_ERROR_S
+    if status == "empty":
+        return NEWSAPI_CACHE_TTL_EMPTY_S
+    return NEWSAPI_CACHE_TTL_OK_S
+
+
+def _newsapi_envelope_fresh(envelope: dict[str, Any]) -> bool:
+    status = str(envelope.get("status") or "ok")
+    cached_at_raw = envelope.get("cached_at")
+    arts = envelope.get("articles")
+    if not isinstance(arts, list):
+        return False
+    if not cached_at_raw:
+        if status == "error":
+            return False
+        return len(arts) > 0
+    try:
+        cached_at = datetime.fromisoformat(str(cached_at_raw).replace("Z", "+00:00"))
+        if cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - cached_at.astimezone(timezone.utc)).total_seconds()
+    except Exception:
+        return len(arts) > 0 and status != "error"
+    return age <= float(_newsapi_cache_ttl_s(status))
+
+
+def _newsapi_normalize_envelope(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    arts = data.get("articles")
+    if not isinstance(arts, list):
+        return None
+    payload = [a for a in arts if isinstance(a, dict)]
+    status = data.get("status")
+    if status not in {"ok", "empty", "error"}:
+        status = "empty" if not payload else "ok"
+    return {
+        "articles": payload,
+        "status": status,
+        "error": data.get("error"),
+        "cached_at": data.get("cached_at"),
+        "http_status": data.get("http_status"),
+        "used_domains": data.get("used_domains"),
+    }
 
 
 def _newsapi_cache_dir() -> Path:
@@ -399,31 +453,64 @@ def _headlines_from_articles(articles: list[Any], limit: int) -> list[Headline]:
     return out
 
 
-def _newsapi_cache_get(key: str) -> list[dict[str, Any]] | None:
+def _newsapi_cache_get_ex(
+    key: str,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    envelope: dict[str, Any] | None = None
     if key in _NEWSAPI_MEM_CACHE:
-        return list(_NEWSAPI_MEM_CACHE[key])
-    path = _newsapi_cache_dir() / f"{key}.json"
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    arts = data.get("articles") if isinstance(data, dict) else None
-    if not isinstance(arts, list):
-        return None
-    _NEWSAPI_MEM_CACHE[key] = list(arts)
-    return list(arts)
+        envelope = _newsapi_normalize_envelope(_NEWSAPI_MEM_CACHE[key])
+    else:
+        path = _newsapi_cache_dir() / f"{key}.json"
+        if not path.is_file():
+            return None, None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None, None
+        envelope = _newsapi_normalize_envelope(data)
+        if envelope is not None:
+            _NEWSAPI_MEM_CACHE[key] = dict(envelope)
+    if envelope is None:
+        return None, None
+    if not _newsapi_envelope_fresh(envelope):
+        _NEWSAPI_MEM_CACHE.pop(key, None)
+        return None, None
+    return list(envelope["articles"]), envelope
 
 
-def _newsapi_cache_put(key: str, articles: list[dict[str, Any]]) -> None:
-    payload = list(articles)
-    _NEWSAPI_MEM_CACHE[key] = payload
+def _newsapi_cache_get(key: str) -> list[dict[str, Any]] | None:
+    arts, _env = _newsapi_cache_get_ex(key)
+    return arts
+
+
+def _newsapi_cache_put(
+    key: str,
+    articles: list[dict[str, Any]],
+    *,
+    status: str = "ok",
+    error: str | None = None,
+    http_status: int | None = None,
+    used_domains: bool | None = None,
+) -> None:
+    payload = [a for a in articles if isinstance(a, dict)]
+    if status not in {"ok", "empty", "error"}:
+        status = "empty" if not payload else "ok"
+    if status == "ok" and not payload:
+        status = "empty"
+    envelope: dict[str, Any] = {
+        "articles": payload,
+        "status": status,
+        "error": error,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "http_status": http_status,
+        "used_domains": used_domains,
+    }
+    _NEWSAPI_MEM_CACHE[key] = dict(envelope)
     try:
         root = _newsapi_cache_dir()
         root.mkdir(parents=True, exist_ok=True)
         (root / f"{key}.json").write_text(
-            json.dumps({"articles": payload}, ensure_ascii=False),
+            json.dumps(envelope, ensure_ascii=False),
             encoding="utf-8",
         )
     except Exception:
@@ -517,12 +604,18 @@ def fetch_newsapi(
         key = _newsapi_cache_key(
             query, start=start, end=end, domains=use_domains
         )
-        cached = _newsapi_cache_get(key)
-        if cached is not None:
+        cached, envelope = _newsapi_cache_get_ex(key)
+        if cached is not None and envelope is not None:
             if call_meta is not None:
                 call_meta["from_cache"] = True
-                call_meta["used_domains"] = use_domains
+                call_meta["used_domains"] = envelope.get("used_domains", use_domains)
                 call_meta["total_results"] = len(cached)
+                call_meta["cache_status"] = envelope.get("status")
+                if envelope.get("status") == "error":
+                    call_meta["error"] = envelope.get("error") or "cached_error"
+                    call_meta["http_status"] = envelope.get("http_status")
+            if envelope.get("status") == "error":
+                return []
             return _headlines_from_articles(cached, limit)
 
     timeout = timeout_s(cfg)
@@ -575,12 +668,29 @@ def fetch_newsapi(
         key = _newsapi_cache_key(
             query, start=start, end=end, domains=use_domains
         )
-        _newsapi_cache_put(key, articles)
+        put_status = "empty" if not articles else "ok"
+        _newsapi_cache_put(
+            key,
+            articles,
+            status=put_status,
+            http_status=status,
+            used_domains=use_domains,
+        )
         return _headlines_from_articles(articles, limit)
 
     if call_meta is not None:
         call_meta["error"] = last_error or "empty_or_failed"
         call_meta["http_status"] = last_status
+    # Short TTL negative cache on the unrestricted key (shared miss).
+    err_key = _newsapi_cache_key(query, start=start, end=end, domains=False)
+    _newsapi_cache_put(
+        err_key,
+        [],
+        status="error",
+        error=last_error or "empty_or_failed",
+        http_status=last_status,
+        used_domains=False,
+    )
     return []
 
 
