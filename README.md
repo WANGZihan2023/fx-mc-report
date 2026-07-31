@@ -165,7 +165,8 @@ Key 本机默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env`
 
 ## 输出
 
-主交付物为 **FX Analyse 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、证据库、What to Watch），落在 `output/{PAIR}_fx_analyse.pdf`。  
+主交付物为 **FX Analyse 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、**证据库/References（含引用摘录）**、What to Watch），落在 `output/{PAIR}_fx_analyse.pdf`。  
+Live 默认「最多头条证据条数」**30**（可到 50）；有 `TAVILY_API_KEY` 时 AI 检索员目标约 **40** 条真实链接。详见 `docs/ai_research.md`。  
 Markdown 仍写入 `output/{PAIR}_report.md` 作调试副本。
 
 macOS 需 Homebrew 的 pango/gobject（本机一般已有）；脚本会设置 `DYLD_FALLBACK_LIBRARY_PATH`。若 WeasyPrint 不可用，自动回退 ReportLab。

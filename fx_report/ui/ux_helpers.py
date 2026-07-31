@@ -301,12 +301,12 @@ def step3_pool_size(max_news: int, *, historical: bool = False) -> int:
     if historical:
         # Keep historical cheap/light: modest pool, still >= evidence cap.
         return max(n, min(40, max(25, n * 2)))
-    # Live: raise with slider (UI up to 40/50); keep a floor of 30.
-    return max(30, min(90, n * 3))
+    # Live: raise with slider (UI up to 50); floor 40, ceiling 120 for richer refs.
+    return max(40, min(120, n * 3))
 
 
 def refs_statement_cap(max_news: int | None = None) -> int:
-    """Markdown References slice — align with raised live evidence caps."""
+    """Markdown References slice — align with raised live evidence caps (40–80)."""
     if max_news is None:
-        return 50
-    return max(25, min(50, int(max_news) * 2))
+        return 80
+    return max(40, min(80, int(max_news) * 2))

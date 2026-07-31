@@ -58,7 +58,7 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         default="off",
         help="新闻证据为空时：off=不用模板；prior_only=标记降权模板；fallback_warn=调试告警回退",
     )
-    p.add_argument("--max-news", type=int, default=10)
+    p.add_argument("--max-news", type=int, default=30)
     p.add_argument("--mode", choices=["hybrid", "llm", "rules"], default="hybrid")
     p.add_argument("--no-fulltext", action="store_true")
     p.add_argument(

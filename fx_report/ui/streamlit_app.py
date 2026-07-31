@@ -1712,10 +1712,11 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "新闻有证据时也合并模板（标记为先验）",
             value=False,
         )
-        max_news_ev = st.slider("最多头条证据条数", 3, 40, 10, 1)
+        max_news_ev = st.slider("最多头条证据条数", 3, 50, 30, 1)
         st.caption(
-            "仅影响当日 Live 报告证据池上限；历史回放仍走省钱路径，不会为此虚构证据。"
-            "步骤3抓取池会按约 3× 比例放大（上限约 90）。"
+            "Live 默认 30（可到 50）：目标约 40–80 条带引用摘录的 References。"
+            "步骤3抓取池约 3×（上限约 120）。历史回放仍走省钱路径，不烧 Tavily、不虚构证据。"
+            "请保持「AI 检索员」开启并配置 TAVILY_API_KEY 以接近 Torchcast 体量。"
         )
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
         use_label_learned = st.checkbox(
@@ -3008,7 +3009,7 @@ def main() -> None:
                             jump_model=str(getattr(weights, "jump_model", "merton")),
                             jump_compensate=bool(getattr(weights, "jump_compensate", False)),
                             mode=str(news_opts.get("classify_mode") or "hybrid"),
-                            max_news=int(news_opts.get("max_news_ev") or 10),
+                            max_news=int(news_opts.get("max_news_ev") or 30),
                             keep_templates=bool(news_opts.get("keep_templates")),
                             template_policy=str(news_opts.get("template_policy") or "off"),
                             no_news=not bool(news_opts.get("use_news", True)),

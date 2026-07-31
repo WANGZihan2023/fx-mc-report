@@ -42,5 +42,15 @@
 | `TAVILY_API_KEY` 或 `BRAVE_SEARCH_API_KEY` | 手（强烈建议） |
 | `NEWSAPI_KEY` | 手 + 常规新闻头条 |
 
-推荐组合：**DeepSeek + Tavily**。  
+推荐组合：**DeepSeek + Tavily**。有 Tavily 时默认约 **7 轮 / target_keep≈40**，配合侧栏「最多头条证据条数」默认 **30**（可到 50），Live 报告目标约 **40–80** 条可展示 References（仍不编造 URL）。历史回放默认省钱：不烧 Tavily。  
 代码：`fx_report/news/ai_research.py`，由 `pipeline.step3_collect_and_store_statements` 调用。
+
+## References / 证据库呈现
+
+PDF/HTML **Evidence Base · 证据库** 每条显示：
+
+1. 证据 ID + 强弱标签 + 标题  
+2. **引用**摘录（优先 `summary` 抽取句，否则 headline description / note）  
+3. 来源链接（优先稳定 URL；Google News 跳转尽量解析；软探测 404 则去掉超链并标「链接可能失效」）
+
+诚实约定不变：不发明 URL、不用模板灌水凑条数。

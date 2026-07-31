@@ -56,7 +56,11 @@ BANK_PUBLIC_URLS: dict[str, list[tuple[str, str]]] = {
 }
 
 DEFAULT_MAX_ROUNDS = 4
-DEFAULT_TARGET_KEEP = 10
+DEFAULT_TARGET_KEEP = 20
+# When Tavily/Brave present: aim for Torchcast-like volume (still real URLs only)
+TAVILY_MAX_ROUNDS = 7
+TAVILY_TARGET_KEEP = 40
+TAVILY_SEARCH_LIMIT = 8
 
 
 @dataclass
@@ -148,18 +152,37 @@ def _seed_queries(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
     q = [
         f"{pair} forecast outlook bank",
         f"{spec.base} {spec.quote} FX outlook MUFG OR ING OR UBS OR Goldman",
+        f"{pair} central bank policy outlook",
+        f"{spec.base} {spec.quote} currency forecast Reuters OR Bloomberg",
     ]
     if "oil" in info_need_ids or "geopolitics" in info_need_ids:
         q.append(f"{pair} oil geopolitics dollar")
+        q.append(f"geopolitical risk USD safe haven {spec.quote}")
     if "china_iron" in info_need_ids:
         q.append("iron ore price Australia dollar AUD")
+        q.append("China steel demand iron ore AUD")
+    if "china_growth" in info_need_ids:
+        q.append("China stimulus growth yuan CNH FX")
     if "rba" in info_need_ids:
         q.append("RBA cash rate AUD USD outlook")
     if "fed" in info_need_ids or "cpi" in info_need_ids:
         q.append("Fed rate hike odds CPI USD")
+        q.append("US inflation CPI Federal Reserve dollar")
     if "pboc" in info_need_ids:
         q.append("PBOC yuan CNH outlook")
-    return q[:6]
+    if "ecb" in info_need_ids:
+        q.append("ECB rates EUR USD outlook")
+    if "boj" in info_need_ids:
+        q.append("BOJ policy JPY USD outlook")
+    # Dedup preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in q:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out[:12]
 
 
 def _whitelist_urls(spec: PairSpec) -> list[tuple[str, str]]:
@@ -408,6 +431,50 @@ def _allowed_urls(hits: list[ResearchHit]) -> set[str]:
     return {h.url.strip() for h in hits if (h.url or "").strip().startswith("http")}
 
 
+def _rank_hits_for_refs(hits: list[ResearchHit]) -> list[ResearchHit]:
+    """Prefer URL+snippet and stable providers over bare / fragile Google News links."""
+    from fx_report.news.urls import is_fragile_url, provider_stability_rank
+
+    def key(h: ResearchHit) -> tuple:
+        has_url = 0 if (h.url or "").startswith("http") else 1
+        snip_len = len((h.snippet or "").strip())
+        has_snip = 0 if snip_len >= 40 else 1
+        fragile = 1 if is_fragile_url(h.url) else 0
+        return (
+            has_url,
+            has_snip,
+            fragile,
+            provider_stability_rank(h.provider),
+            -snip_len,
+        )
+
+    return sorted(hits, key=key)
+
+
+def live_research_budget(cfg: dict[str, str] | None = None) -> dict[str, int]:
+    """
+    Live-report keep/rounds budget. Historical cheap path must not call this
+    with Tavily burning — pipeline already disables AI there.
+    """
+    cfg = cfg or load_config()
+    hands = search_hands_available(cfg)
+    rich = bool(hands.get("tavily") or hands.get("brave"))
+    if rich:
+        return {
+            "max_rounds": TAVILY_MAX_ROUNDS,
+            "target_keep": TAVILY_TARGET_KEEP,
+            "search_limit": TAVILY_SEARCH_LIMIT,
+            "max_headlines": TAVILY_TARGET_KEEP,
+        }
+    # NewsAPI / free RSS only — modest bump over legacy 10
+    return {
+        "max_rounds": DEFAULT_MAX_ROUNDS + 1,
+        "target_keep": DEFAULT_TARGET_KEEP,
+        "search_limit": 6,
+        "max_headlines": max(DEFAULT_TARGET_KEEP, 24),
+    }
+
+
 def _llm_plan_next_query(
     spec: PairSpec,
     need_ids: list[str],
@@ -607,9 +674,9 @@ def run_ai_research(
     *,
     info_need_ids: list[str] | None = None,
     llm_cfg: LLMConfig | None = None,
-    max_headlines: int = 12,
-    max_rounds: int = DEFAULT_MAX_ROUNDS,
-    target_keep: int = DEFAULT_TARGET_KEEP,
+    max_headlines: int | None = None,
+    max_rounds: int | None = None,
+    target_keep: int | None = None,
     as_of_date: date | datetime | str | None = None,
     allow_historical: bool = False,
 ) -> AIResearchResult:
@@ -620,8 +687,19 @@ def run_ai_research(
     Historical as_of: disabled by default (no Tavily/Brave burn). Pass
     ``allow_historical=True`` only for explicit expensive overrides — search
     results are still live-web and may leak non-historical info.
+
+    When Tavily/Brave Key present, default target_keep/rounds rise toward
+    ~40 displayable refs (still no invented URLs).
     """
     cfg = load_config()
+    budget = live_research_budget(cfg)
+    if max_headlines is None:
+        max_headlines = int(budget["max_headlines"])
+    if max_rounds is None:
+        max_rounds = int(budget["max_rounds"])
+    if target_keep is None:
+        target_keep = int(budget["target_keep"])
+    search_limit = int(budget["search_limit"])
     need_ids = info_need_ids or list(spec.default_drivers)
     hands = search_hands_available(cfg)
     paid_search = has_paid_search_api(cfg)
@@ -649,6 +727,9 @@ def run_ai_research(
         "llm": bool(llm),
         "hands": hands,
         "paid_search": paid_search,
+        "target_keep": target_keep,
+        "max_rounds": max_rounds,
+        "max_headlines": max_headlines,
         "queries": [],
         "rounds": [],
         "whitelist_ok": 0,
@@ -737,11 +818,13 @@ def run_ai_research(
         tried_queries.append(query)
         meta["queries"].append(query)
 
-        round_hits, used = execute_search(query, cfg, limit=6)
+        round_hits, used = execute_search(query, cfg, limit=search_limit)
         round_hits = _dedupe_hits(round_hits)
         # drop already kept
         kept_keys = {(h.url or h.title).strip().lower() for h in kept}
         fresh = [h for h in round_hits if (h.url or h.title).strip().lower() not in kept_keys]
+        # Prefer URL+snippet / stable providers when presenting to LLM or fallback keep
+        fresh = _rank_hits_for_refs(fresh)
         all_hits.extend(fresh)
 
         selected: list[ResearchHit] = []
@@ -751,7 +834,9 @@ def run_ai_research(
             )
             selected = [fresh[i] for i in idxs if 0 <= i < len(fresh)]
         elif fresh:
-            selected = [h for h in fresh if (h.url or "").startswith("http")][:4]
+            selected = [h for h in fresh if (h.url or "").startswith("http")][
+                : min(6, max(4, target_keep - len(kept)))
+            ]
 
         kept.extend(selected)
         meta["rounds"].append(
@@ -768,7 +853,7 @@ def run_ai_research(
         if not fresh:
             meta["errors"].append(f"no_search_hits:{query[:50]}")
 
-    kept = _dedupe_hits(kept)
+    kept = _rank_hits_for_refs(_dedupe_hits(kept))
     all_hits = _dedupe_hits(all_hits)
     meta["search_hits"] = len(all_hits)
     meta["kept_hits"] = len(kept)
@@ -809,5 +894,14 @@ def run_ai_research(
     if not honest:
         honest = _hits_to_headlines(kept, max_n=max_headlines)
 
+    def _hl_key(h: Headline) -> tuple:
+        from fx_report.news.urls import is_fragile_url, provider_stability_rank
+
+        has_url = 0 if (h.url or "").startswith("http") else 1
+        has_snip = 0 if len((h.summary or "").strip()) >= 40 else 1
+        fragile = 1 if is_fragile_url(h.url) else 0
+        return (has_url, has_snip, fragile, provider_stability_rank(h.provider))
+
+    honest = sorted(honest, key=_hl_key)
     meta["headlines_out"] = len(honest[:max_headlines])
     return AIResearchResult(headlines=honest[:max_headlines], hits=kept, meta=meta)

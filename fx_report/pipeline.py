@@ -440,6 +440,7 @@ def step3_collect_and_store_statements(
     *,
     lookback_days: int = 60,
     max_items: int = 30,
+    ai_cap: int | None = None,
     skip_news: bool = False,
     ai_research: bool = True,
     allow_historical_ai: bool = False,
@@ -454,6 +455,9 @@ def step3_collect_and_store_statements(
 
     Historical (`as_of_date` set): AI / Tavily stay OFF unless
     ``allow_historical_ai=True`` (expensive; may inject non-historical web hits).
+
+    ``ai_cap``: AI 检索员 keep/headline 上限（通常等于 max_news 证据条数，
+    勿与 step3 抓取池 max_items 混用，以免过度烧 Tavily）。
     """
     meta: dict[str, Any] = {"ai_research": None}
     cheap_hist = as_of_date is not None and not allow_historical_ai
@@ -461,6 +465,14 @@ def step3_collect_and_store_statements(
     if as_of_date is not None:
         meta["cheap_historical"] = bool(cheap_hist)
         meta["allow_historical_ai"] = bool(allow_historical_ai)
+
+    # Align AI volume with evidence slider, not the 3× headline pool.
+    from fx_report.news.ai_research import live_research_budget
+
+    budget = live_research_budget()
+    ai_keep = int(ai_cap) if ai_cap is not None else int(budget["target_keep"])
+    ai_keep = max(ai_keep, int(budget["target_keep"]) if as_of_date is None else ai_keep)
+    ai_keep = min(max(12, ai_keep), 50)  # hard ceiling: useful refs, not credit burn
 
     market = fetch_market(
         spec,
@@ -522,7 +534,8 @@ def step3_collect_and_store_statements(
                     spec,
                     info_need_ids=[n.id for n in info_needs],
                     llm_cfg=llm_cfg,
-                    max_headlines=12,
+                    max_headlines=ai_keep,
+                    target_keep=ai_keep,
                 )
                 meta["ai_research"] = ai.meta
                 # 去重后合并：AI 结果优先展示在前半，便于步骤4看到投行展望
@@ -542,7 +555,8 @@ def step3_collect_and_store_statements(
                     spec,
                     info_need_ids=[n.id for n in info_needs],
                     llm_cfg=llm_cfg,
-                    max_headlines=12,
+                    max_headlines=min(ai_keep, 20),
+                    target_keep=min(ai_keep, 20),
                     as_of_date=as_of_date,
                     allow_historical=True,
                 )
@@ -802,6 +816,20 @@ def step4_evaluate_impact(
     )
     meta["summary_meta"] = summary_meta
 
+    # Live only: resolve fragile Google News wrappers + soft-check dead links.
+    # Historical cheap path skips network (no Tavily burn / latency).
+    if as_of_date is None and evidence:
+        from fx_report.news.urls import sanitize_evidence_urls
+
+        meta["url_hygiene"] = sanitize_evidence_urls(
+            evidence,
+            soft_check=True,
+            max_checks=min(40, max(12, len(evidence))),
+            timeout=1.8,
+        )
+    else:
+        meta["url_hygiene"] = {"skipped": True, "reason": "historical_or_empty"}
+
     # ECDA-style event clustering: same-theme headlines → one cluster before S
     # Pass quality/limitation so empty-news / 429 land in cluster_warnings (same ZH style).
     cluster_meta = assign_event_clusters(
@@ -981,12 +1009,21 @@ def step7_build_report(
     needs_md = "\n".join(
         f"| {n.id} | {n.need} | {n.why} | {n.sources} |" for n in info_needs
     )
-    ref_cap = refs_statement_cap(int(news_meta.get("max_news") or len(weighted) or 10))
-    refs_md = "\n".join(
-        f"{i}. [{s.source}] {s.statement[:160]}"
-        + (f" — {s.url}" if s.url else "")
-        for i, s in enumerate(statements[:ref_cap], 1)
-    )
+    ref_cap = refs_statement_cap(int(news_meta.get("max_news") or len(weighted) or 30))
+    # Prefer evidence-base rows with quoted excerpts (Torchcast-like); fall back to statements
+    from fx_report.report.evidence_refs import format_reference_markdown_row
+
+    if weights.evidence:
+        refs_md = "\n".join(
+            format_reference_markdown_row(w.evidence, index=i)
+            for i, w in enumerate(weighted[:ref_cap], 1)
+        )
+    else:
+        refs_md = "\n".join(
+            f"{i}. [{s.source}] 「{(s.statement or '')[:160]}」"
+            + (f" — {s.url}" if s.url else "")
+            for i, s in enumerate(statements[:ref_cap], 1)
+        )
     weights_md = "\n".join(
         f"| {w.evidence.id} | {w.evidence.strength_label} | {w.weight_contrib:+.3f} | {w.impact_note} |"
         for w in weighted
@@ -1024,9 +1061,11 @@ def step7_build_report(
 
 ---
 
-## References（来自步骤3存储语句）
+## References / 证据库（id · 引用摘录 · 来源链接）
 
 {refs_md if refs_md else "_（无存储语句）_"}
+
+_每条尽量含「引用」摘录（来自 summary/snippet，非编造）。失效链接已去掉超链并标注「链接可能失效」。_
 
 _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
 """
@@ -1123,7 +1162,7 @@ def run_pipeline(
     jump_model: str = "merton",
     jump_compensate: bool = False,
     mode: ClassifyMode = "hybrid",
-    max_news: int = 10,
+    max_news: int = 30,
     keep_templates: bool = False,
     template_policy: TemplatePolicy = "off",
     no_news: bool = False,
@@ -1278,6 +1317,7 @@ def run_pipeline(
         info_needs,
         lookback_days=lookback,
         max_items=step3_items,
+        ai_cap=max_news,
         skip_news=no_news,
         ai_research=ai_research,
         allow_historical_ai=allow_historical_ai,

@@ -190,6 +190,6 @@ def test_format_cheap_historical_caption():
     assert "AI强制关" in cap
     assert "GDELT=3" in cap
     assert "GDELT缓存命中" in cap
-    assert step3_pool_size(10, historical=False) == 30
-    assert step3_pool_size(40, historical=False) == 90
+    assert step3_pool_size(10, historical=False) == 40
+    assert step3_pool_size(40, historical=False) == 120
     assert step3_pool_size(10, historical=True) >= 10

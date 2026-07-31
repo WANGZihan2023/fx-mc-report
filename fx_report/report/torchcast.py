@@ -20,6 +20,7 @@ from typing import Any, Sequence
 from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec
+from fx_report.report.evidence_refs import evidence_link_meta, evidence_quote
 
 # ---------------------------------------------------------------------------
 # Colors (Torchcast palette)
@@ -603,6 +604,26 @@ h1.question {{
   font-size: 8pt;
   word-break: break-all;
 }}
+.ev-quote {{
+  margin: 4px 0 2px 0;
+  padding: 4px 8px;
+  border-left: 3px solid {GOLD_SOFT};
+  color: {MUTED};
+  font-size: 8.5pt;
+  font-style: italic;
+  line-height: 1.4;
+}}
+.ev-quote-label {{
+  font-style: normal;
+  font-size: 7.5pt;
+  color: #8A7A50;
+  margin-right: 4px;
+  letter-spacing: 0.02em;
+}}
+.ev-link-warn {{
+  color: #8A5A3A;
+  font-size: 7.5pt;
+}}
 .watch-title-page {{
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 22pt;
@@ -720,25 +741,35 @@ def render_html(report: TorchcastReport) -> str:
         rows = []
         for e in items:
             lab = (e.strength_label or "MODERATE").upper()
-            note_raw = e.note or ""
-            url = ""
-            m2 = re.search(r"(https?://\S+)", note_raw)
-            if m2:
-                url = m2.group(1).rstrip("｜|)")
-            link = (
-                f'<div class="ev-links"><a href="{_esc(url)}">{_esc(url)}</a></div>'
-                if url
-                else ""
-            )
-            note_show = ""
-            if note_raw and not url:
-                note_show = f" — {_esc(note_raw)}"
+            quote = evidence_quote(e)
+            link_meta = evidence_link_meta(e)
+            url = link_meta.get("url") or ""
+            quote_html = ""
+            if quote:
+                quote_html = (
+                    f'<div class="ev-quote">'
+                    f'<span class="ev-quote-label">引用</span>'
+                    f"「{_esc(quote)}」"
+                    f"</div>"
+                )
+            if url:
+                link = (
+                    f'<div class="ev-links"><a href="{_esc(url)}">{_esc(url)}</a></div>'
+                )
+            elif link_meta.get("label_zh"):
+                link = (
+                    f'<div class="ev-links ev-link-warn">'
+                    f"{_esc(str(link_meta['label_zh']))}"
+                    f"</div>"
+                )
+            else:
+                link = ""
             rows.append(
                 f'<div class="ev-item">'
                 f'<span class="cite">{_esc(e.id)}</span> '
                 f'<span class="badge">{_esc(lab)}</span> '
                 f"{_esc(_evidence_display_title(e))}"
-                f"{note_show}"
+                f"{quote_html}"
                 f"{link}"
                 f"</div>"
             )
@@ -746,10 +777,10 @@ def render_html(report: TorchcastReport) -> str:
 
     evidence_html = (
         '<div class="evidence-box">'
-        f'<div class="section-label">Evidence Base</div>'
-        + ev_block("Higher", report.higher_evidence)
-        + ev_block("Lower", report.lower_evidence)
-        + ev_block("Context", report.context_evidence)
+        f'<div class="section-label">Evidence Base · 证据库 / References</div>'
+        + ev_block("Higher · 上行", report.higher_evidence)
+        + ev_block("Lower · 下行", report.lower_evidence)
+        + ev_block("Context · 背景", report.context_evidence)
         + "</div>"
     )
 
@@ -946,10 +977,6 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     muted = colors.HexColor(MUTED)
     rule = colors.HexColor(RULE)
 
-    def strip_html(s: str) -> str:
-        s = re.sub(r"<[^>]+>", "", s)
-        return html.unescape(s)
-
     def cite_rl(s: str) -> str:
         # Convert [[ID]] or existing cite spans to ReportLab font tags
         s = re.sub(r"<span class=\"cite\">([^<]+)</span>", r"<font backColor='#F3E7C4' size='7'> \1 </font>", s)
@@ -1093,9 +1120,9 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         story.append(Paragraph(_esc(n.lede), styles["Lede"]))
         story.append(Paragraph(cite_rl(n.body), styles["Body"]))
 
-    # Evidence
+    # Evidence / References (id · claim/quote · source link)
     story.append(Spacer(1, 8))
-    story.append(Paragraph("EVIDENCE BASE", styles["SecLabel"]))
+    story.append(Paragraph("EVIDENCE BASE · 证据库 / REFERENCES", styles["SecLabel"]))
 
     def add_ev_group(title: str, items: list[EvidenceItem]) -> None:
         if not items:
@@ -1103,19 +1130,33 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         story.append(Paragraph(title, styles["TcWatchH"]))
         for e in items:
             lab = (e.strength_label or "MODERATE").upper()
-            body = f"<font backColor='#F3E7C4' size='7'> { _esc(e.id) } </font> <font backColor='#3D7A6A' color='white' size='7'> {lab} </font> {_esc(_evidence_display_title(e))}"
-            if e.note:
-                note = strip_html(e.note)
-                if _has_cjk(note):
-                    note = f"source_tier={e.source_tier or 'n/a'}; surprise={e.surprise or 'n/a'}"
-                if len(note) > 220:
-                    note = note[:217] + "…"
-                body += f"<br/><font color='#6B6B6B' size='7'>{_esc(note)}</font>"
+            body = (
+                f"<font backColor='#F3E7C4' size='7'> { _esc(e.id) } </font> "
+                f"<font backColor='#3D7A6A' color='white' size='7'> {lab} </font> "
+                f"{_esc(_evidence_display_title(e))}"
+            )
+            quote = evidence_quote(e)
+            if quote:
+                body += (
+                    f"<br/><font color='#6B6B6B' size='8'><i>"
+                    f"引用 「{_esc(quote)}」"
+                    f"</i></font>"
+                )
+            link_meta = evidence_link_meta(e)
+            url = link_meta.get("url") or ""
+            if url:
+                body += f"<br/><font color='#2B5C9E' size='7'><u>{_esc(url)}</u></font>"
+            elif link_meta.get("label_zh"):
+                body += (
+                    f"<br/><font color='#8A5A3A' size='7'>"
+                    f"{_esc(str(link_meta['label_zh']))}"
+                    f"</font>"
+                )
             story.append(Paragraph(body, styles["TcEv"]))
 
-    add_ev_group("Higher", report.higher_evidence)
-    add_ev_group("Lower", report.lower_evidence)
-    add_ev_group("Context", report.context_evidence)
+    add_ev_group("Higher · 上行", report.higher_evidence)
+    add_ev_group("Lower · 下行", report.lower_evidence)
+    add_ev_group("Context · 背景", report.context_evidence)
 
     # What to watch
     story.append(Paragraph("WHAT TO WATCH", styles["TcCenterBig"]))
