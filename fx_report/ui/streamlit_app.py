@@ -31,6 +31,7 @@ from fx_report.ui.i18n import (
     start_field_label,
     t,
 )
+from fx_report.format_rate import format_rate, rate_input_format, rate_input_step
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
@@ -790,12 +791,8 @@ def _horizon(start: date, end: date) -> str:
 
 
 def _fmt_px(x: float) -> str:
-    ax = abs(x)
-    if ax >= 100:
-        return f"{x:.3f}"
-    if ax >= 10:
-        return f"{x:.4f}"
-    return f"{x:.5f}"
+    """Display FX rate / price with default 6 decimal places."""
+    return format_rate(x)
 
 
 def _spot_cache_key(pair: str) -> str:
@@ -920,9 +917,9 @@ def render_bucket_editor(
     if hint.get("barrier") is not None or hint.get("strike") is not None:
         bits = []
         if hint.get("barrier") is not None:
-            bits.append(f"Barrier={float(hint['barrier']):g}")
+            bits.append(f"Barrier={format_rate(hint['barrier'])}")
         if hint.get("strike") is not None:
-            bits.append(f"Strike={float(hint['strike']):g}")
+            bits.append(f"Strike={format_rate(hint['strike'])}")
         st.caption("单子价位参考（请核对后再改切点）：" + " · ".join(bits))
 
     if pct_key not in st.session_state:
@@ -1050,7 +1047,7 @@ def render_bucket_editor(
             abs_edges = tuple(float(x) for x in st.session_state[abs_key])  # type: ignore[assignment]
     else:
         abss: list[float] = []
-        step = 0.0001 if (spot is not None and spot < 10) else 0.01
+        step = rate_input_step(spot)
         for i, col in enumerate(cols):
             with col:
                 abss.append(
@@ -1060,7 +1057,7 @@ def render_bucket_editor(
                             min_value=0.0,
                             max_value=1_000_000.0,
                             step=step,
-                            format="%.5f",
+                            format=rate_input_format(),
                             key=f"abs_cut_{analysis_pair}_{i}",
                             help="直接填分析报价的绝对价位（汇率水平）。",
                         )

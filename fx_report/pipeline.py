@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from fx_report.format_rate import format_rate
 from fx_report.market.fetch_data import MarketSnapshot, calibrate_unpriced_from_market, fetch_market
 from fx_report.model.monte_carlo import MCResult, enforce_math_floor, run_mixture_monte_carlo
 from fx_report.news.cluster import (
@@ -488,7 +489,7 @@ def step3_collect_and_store_statements(
         StoredStatement(
             id="MKT-SPOT",
             statement=(
-                f"{spec.pair} 现价 {market.spot:.5f}；"
+                f"{spec.pair} 现价 {format_rate(market.spot)}；"
                 f"日波动 {market.sigma_daily:.4%}；年化波动 {market.sigma_annual:.2%}；"
                 f"来源 {market.source}"
             ),
@@ -1330,7 +1331,7 @@ def run_pipeline(
         ewma_lambda=float(getattr(base, "ewma_lambda", 0.94)),
         as_of_date=as_of_date,
     )
-    say(f"  → 行情 {market.source} spot={market.spot:.5f}")
+    say(f"  → 行情 {market.source} spot={format_rate(market.spot)}")
     say(f"  → 存储语句 {len(statements)} 条｜头条 {len(headlines)} 条｜step3_pool={step3_items}")
     if step3_meta.get("low_rel_skipped"):
         say(f"  → 低相关头条跳过 {step3_meta['low_rel_skipped']} 条")

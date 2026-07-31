@@ -41,11 +41,13 @@ class MCResult:
 
 
 def bucket_labels_from_edges(edges: Sequence[float]) -> list[str]:
+    from fx_report.format_rate import format_rate
+
     e = list(edges)
-    labels = [f"< {e[0]}"]
+    labels = [f"< {format_rate(e[0])}"]
     for i in range(len(e) - 1):
-        labels.append(f"{e[i]} to {e[i+1]}")
-    labels.append(f">= {e[-1]}")
+        labels.append(f"{format_rate(e[i])} to {format_rate(e[i + 1])}")
+    labels.append(f">= {format_rate(e[-1])}")
     return labels
 
 

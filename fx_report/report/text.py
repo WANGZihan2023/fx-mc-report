@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fx_report.format_rate import format_rate
 from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.strength import label_strength, rubric_markdown
@@ -62,7 +63,7 @@ def build_report_markdown(
         for s in scenarios_adj
     )
     raw_rows = "\n".join(f"| {k} | {_pct(v)} |" for k, v in mc.raw_probs.items())
-    edge_s = " / ".join(f"{x:.4f}" for x in bucket_edges)
+    edge_s = " / ".join(format_rate(x) for x in bucket_edges)
 
     md = f"""# FX ANALYSE · 情报报告（多货币对引擎）
 
@@ -90,8 +91,8 @@ def build_report_markdown(
 | 字段 | 值 |
 |------|-----|
 | 货币对 | {pair} |
-| 现价（分析口径） | {market.spot:.5f} |
-| 源端原始报价 | {market.provider_raw:.5f} |
+| 现价（分析口径） | {format_rate(market.spot)} |
+| 源端原始报价 | {format_rate(market.provider_raw)} |
 | 行情来源 | {market.source} |
 | 日波动 σ_d | {market.sigma_daily:.4%} |
 | 年化 σ | {market.sigma_annual:.2%} |
@@ -103,7 +104,7 @@ def build_report_markdown(
 | 近20日涨跌 | {f"{100*market.ret_20d:+.2f}%" if market.ret_20d is not None else "N/A"} |
 | 20D/60D 年化波动 | {f"{(market.sigma_20d_ann or 0)*100:.2f}% / {(market.sigma_60d_ann or 0)*100:.2f}%" if market.sigma_60d_ann else "N/A"} |
 | 历史代码 / 现价代码 | {market.history_ticker} / {market.spot_ticker}{"（代理）" if market.used_proxy else ""} |
-| CNH−CNY 价差 | {f"{market.cnh_cny_basis:+.4f}" if market.cnh_cny_basis is not None else "N/A"} |
+| CNH−CNY 价差 | {format_rate(market.cnh_cny_basis, signed=True, na="N/A")} |
 
 **数据说明：** {"；".join(market.notes) if market.notes else "无额外备注"}
 
@@ -121,9 +122,9 @@ def build_report_markdown(
 
 ## 执行摘要
 
-起点 **{pair} ≈ {market.spot:.5f}**。{mc.trading_days} 个交易日、**{mc.n_sims:,}** 次情景混合蒙特卡洛（峰值引擎 `{getattr(mc, "peak_engine", weights.peak_engine)}`），证据分 **S={score:+.2f}** 校准权重与参数（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）。
+起点 **{pair} ≈ {format_rate(market.spot)}**。{mc.trading_days} 个交易日、**{mc.n_sims:,}** 次情景混合蒙特卡洛（峰值引擎 `{getattr(mc, "peak_engine", weights.peak_engine)}`），证据分 **S={score:+.2f}** 校准权重与参数（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）。
 
-最可能：**`{top}`（{_pct(top_p)}）**。峰值分位 P50={mc.percentiles['p50']:.5f}，P90={mc.percentiles['p90']:.5f}，P95={mc.percentiles['p95']:.5f}。
+最可能：**`{top}`（{_pct(top_p)}）**。峰值分位 P50={format_rate(mc.percentiles['p50'])}，P90={format_rate(mc.percentiles['p90'])}，P95={format_rate(mc.percentiles['p95'])}。
 
 数学地板：严格低于起点的最高价区间归零后归一化。
 

@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
+from fx_report.format_rate import format_rate
 from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec
@@ -202,9 +203,9 @@ def _build_narratives(
         )
 
     floor_body = (
-        f"With a starting {market.pair} spot rate of approximately {market.spot:.4f} "
+        f"With a starting {market.pair} spot rate of approximately {format_rate(market.spot)} "
         f"on the forecast date, the daily high exchange rate cannot mathematically resolve "
-        f"below {floor:.4g} during the forecast horizon [[C-1]]. Consequently, probabilities "
+        f"below {format_rate(floor)} during the forecast horizon [[C-1]]. Consequently, probabilities "
         f"for buckets entirely below the spot floor are set at 0.0%. {engine_phrase}. "
         f"This modeling uses daily exchange-rate history "
         f"from {market.history_start} to {market.history_end}, applying an estimated daily "
@@ -239,8 +240,8 @@ def _build_narratives(
             title="Mathematical Floor and Quantitative Baseline",
             direction="up",
             lede=(
-                f"The starting spot rate of {market.spot:.4f} mathematically prevents "
-                f"the highest daily high from resolving below {floor:.4g}."
+                f"The starting spot rate of {format_rate(market.spot)} mathematically prevents "
+                f"the highest daily high from resolving below {format_rate(floor)}."
             ),
             body=floor_body,
         ),
@@ -334,13 +335,14 @@ def build_torchcast_report(
         f"The highest daily high exchange rate of {_pair_english(market.pair)} between "
         f"{start.strftime('%B %d, %Y')}, and {end.strftime('%B %d, %Y')}, is projected to "
         f"most likely peak in <strong>{_esc(top)}</strong>, carrying a {_pct(top_p)} probability. "
-        f"Because the starting spot rate is {market.spot:.4f}, the exchange rate cannot "
+        f"Because the starting spot rate is {format_rate(market.spot)}, the exchange rate cannot "
         f"mathematically peak below the floor bucket during this {mc.trading_days}-trading-day "
         f"window <span class=\"cite\">C-1</span>. Remaining likelihood is split across intermediate "
         f"ranges, driven by counter-balancing forces captured in the evidence score "
         f"S={score:+.2f} (μ shift {mu_shift:+.2%} ann., σ ×{sigma_extra:.3f}). "
-        f"Peak path percentiles: P50={mc.percentiles.get('p50', 0):.4f}, "
-        f"P90={mc.percentiles.get('p90', 0):.4f}, P95={mc.percentiles.get('p95', 0):.4f}."
+        f"Peak path percentiles: P50={format_rate(mc.percentiles.get('p50', 0))}, "
+        f"P90={format_rate(mc.percentiles.get('p90', 0))}, "
+        f"P95={format_rate(mc.percentiles.get('p95', 0))}."
     )
 
     return TorchcastReport(
