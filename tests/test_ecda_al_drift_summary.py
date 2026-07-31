@@ -170,7 +170,7 @@ def test_apply_evidence_summaries_offline() -> None:
         "as inflation cooled only gradually and labour markets stayed tight. "
         "Markets priced a delayed easing path for AUD."
     )
-    items = [_e("S1", title="RBA holds cash rate", note=long_note)]
+    items = [_e("S1", title="RBA holds cash rate", note=long_note, category="rba", direction=0)]
     headlines = [
         Headline(
             title="RBA holds cash rate",
@@ -184,11 +184,52 @@ def test_apply_evidence_summaries_offline() -> None:
             provider="test",
         )
     ]
-    meta = apply_evidence_summaries(items, headlines=headlines, prefer_llm=False)
+    meta = apply_evidence_summaries(
+        items, headlines=headlines, prefer_llm=False, pair="AUD/USD"
+    )
     assert meta["summarized_n"] == 1
     assert items[0].summary
     assert len(items[0].summary) <= 220
     assert "summary:extractive" in (items[0].note or "")
+    assert items[0].support_quote
+    assert items[0].support_quote_quality in {"support", "weak", "title"}
+    assert meta.get("support_quote_n", 0) >= 1
+    # Support quote should come from available text, not invent new claims
+    sq = items[0].support_quote.lower()
+    assert any(
+        k in sq for k in ("rba", "rate", "inflation", "aud", "cash", "easing", "hold")
+    )
+
+
+def test_apply_support_quote_prefers_hawkish_over_junk() -> None:
+    items = [
+        _e(
+            "H1",
+            title="Fed hike odds rise",
+            direction=1,
+            category="fed",
+            note="",
+        )
+    ]
+    headlines = [
+        Headline(
+            title="Fed hike odds rise",
+            summary=(
+                "Advertisement: subscribe now for premium alerts. "
+                "Hawkish Fed commentary lifted rate-hike odds and supported the dollar. "
+                "Also: celebrity gossip from Hollywood this week."
+            ),
+            source="test",
+            url="https://example.com/fed",
+            published=None,
+            provider="tavily",
+        )
+    ]
+    apply_evidence_summaries(items, headlines=headlines, prefer_llm=False, pair="USD/AUD")
+    sq = items[0].support_quote or ""
+    assert "Hawkish" in sq or "hike" in sq.lower() or "dollar" in sq.lower()
+    assert "subscribe" not in sq.lower()
+    assert "celebrity" not in sq.lower()
 
 
 def test_drift_tv_and_warn(tmp_path: Path) -> None:

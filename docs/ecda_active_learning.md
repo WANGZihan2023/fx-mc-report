@@ -34,11 +34,18 @@ UI 展示 `AL优先#k` 与不确定度分数。
 - 审计字段：`drift_adapted=true|false`、`adapt_changes[]`（id / before / after / shrink）、`adapt_note`
 - Streamlit「本次分析审计」会显示 `drift_adapted` 与适应说明
 
-## 3. 证据摘要层
+## 3. 证据摘要层 + 支撑引用
 
 | 组件 | 路径 |
 |---|---|
 | 抽取式压缩（离线） | `fx_report/news/summarize.py` |
-| 字段 | `EvidenceItem.summary` |
+| 字段 | `EvidenceItem.summary` · `support_quote` · `support_quote_quality` |
+| References 展示 | `fx_report/report/evidence_refs.py` |
 
-在聚类 / HITL / 赋权前，把标题+headline.summary+长 note 压成 ≤220 字可审计 blurb。默认 **extractive**；有 LLM key 时可 `prefer_llm=True`，失败自动回退。HITL `snippet` 优先用 `summary`。
+在聚类 / HITL / 赋权前：
+
+1. 把标题+headline.summary+长 note 压成 ≤220 字可审计 **summary** blurb（默认 extractive）  
+2. 同时按证据 **direction / category / pair** 抽取 **support_quote**：优先含加息、走弱、RBA/Fed、铁矿石等与 Higher/Lower/Context 同向的句子；弱匹配标 `weak`，仅标题标 `title`  
+3. HITL `snippet` 优先用 `summary`；PDF/HTML References 显示「支撑引用」
+
+**不编造**原文没有的句子；历史 cheap 路径只用已有 snippet/标题。

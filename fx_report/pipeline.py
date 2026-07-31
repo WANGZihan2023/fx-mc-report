@@ -817,6 +817,7 @@ def step4_evaluate_impact(
         evidence,
         headlines=headlines,
         prefer_llm=False,  # offline-safe default; LLM only if explicitly enabled later
+        pair=spec,
     )
     meta["summary_meta"] = summary_meta
 
@@ -1065,7 +1066,7 @@ def step7_build_report(
 
 ---
 
-## References / 证据库（id · 引用摘录 · 来源链接）
+## References / 证据库（id · 支撑引用 · 来源链接）
 
 {refs_md if refs_md else "_（无存储语句）_"}
 

@@ -50,7 +50,10 @@
 PDF/HTML **Evidence Base · 证据库** 每条显示：
 
 1. 证据 ID + 强弱标签 + 标题  
-2. **引用**摘录（优先 `summary` 抽取句，否则 headline description / note）  
+2. **支撑引用**：从文章/snippet 里挑出能支撑 Higher/Lower/Context 判定的句子（加息、AUD 走弱、RBA/Fed、铁矿石、中国需求等），**不是** SEO 导语或随便首句  
+   - 优先字段 `support_quote`（流水线在摘要层按方向/类别抽取）  
+   - 弱匹配或只剩标题时标 **「支撑引用（弱）」**  
+   - **不编造**原文没有的句子  
 3. 来源链接（优先稳定 URL；Google News 跳转尽量解析；软探测 404 则去掉超链并标「链接可能失效」）
 
-诚实约定不变：不发明 URL、不用模板灌水凑条数。
+诚实约定不变：不发明 URL、不用模板灌水凑条数。历史 cheap 路径无 Tavily，仍从 GDELT snippet / 标题等已有文本抽取。

@@ -1,10 +1,11 @@
-"""Tests for Evidence Base quote helpers and URL hygiene."""
+"""Tests for Evidence Base support-quote helpers and URL hygiene."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
 from fx_report.model.weights import EvidenceItem
+from fx_report.news.summarize import extract_support_quote
 from fx_report.news.urls import (
     is_fragile_url,
     prefer_stable_url,
@@ -12,8 +13,11 @@ from fx_report.news.urls import (
     sanitize_evidence_urls,
 )
 from fx_report.report.evidence_refs import (
+    LABEL_SUPPORT_WEAK_ZH,
+    LABEL_SUPPORT_ZH,
     evidence_link_meta,
     evidence_quote,
+    evidence_support_meta,
     format_reference_markdown_row,
 )
 from fx_report.ui.ux_helpers import refs_statement_cap, step3_pool_size
@@ -33,31 +37,98 @@ def _ev(**kwargs) -> EvidenceItem:
     return EvidenceItem(**base)
 
 
-def test_evidence_quote_prefers_summary():
+def test_extract_support_quote_picks_stance_sentence():
+    """Higher (+1) item should prefer hawkish/hike sentence over SEO junk."""
+    text = (
+        "Subscribe to our newsletter for daily market alerts. "
+        "The Federal Reserve signaled it may hike rates again if inflation stays sticky. "
+        "Click here for more sports news from Sydney."
+    )
+    quote, quality = extract_support_quote(
+        text,
+        title="Fed higher for longer",
+        direction=1,
+        category="fed",
+        pair="USD/AUD",
+        max_sentences=1,
+    )
+    assert "Federal Reserve" in quote or "hike" in quote.lower()
+    assert "Subscribe" not in quote
+    assert "Click here" not in quote
+    assert quality in {"support", "weak"}
+
+
+def test_extract_support_quote_bearish_prefers_cut_language():
+    text = (
+        "Local weather remained mild through the weekend. "
+        "Iron ore prices slumped on weak China demand, pressuring the Aussie. "
+        "A cooking blog shared a new pasta recipe."
+    )
+    quote, quality = extract_support_quote(
+        text,
+        title="AUD soft on iron ore",
+        direction=-1,
+        category="china_iron",
+        pair="AUD/USD",
+        max_sentences=1,
+    )
+    assert "iron ore" in quote.lower() or "Aussie" in quote or "China" in quote
+    assert "weather" not in quote.lower()
+    assert "pasta" not in quote.lower()
+    assert quality in {"support", "weak"}
+
+
+def test_extract_support_quote_no_invent_from_empty():
+    quote, quality = extract_support_quote(
+        "",
+        title="RBA holds cash rate",
+        direction=0,
+        category="rba",
+    )
+    assert quote == "RBA holds cash rate"
+    assert quality == "title"
+
+
+def test_evidence_quote_prefers_support_quote_field():
     e = _ev(
-        summary="The Federal Reserve kept rates unchanged and signaled patience.",
+        support_quote="The Fed kept rates unchanged and signaled patience on cuts.",
+        support_quote_quality="support",
+        summary="Generic SEO blurb about markets today.",
         note="https://example.com/a｜extra",
         title="Short title",
     )
-    q = evidence_quote(e)
-    assert "Federal Reserve" in q
-    assert "https://" not in q
+    meta = evidence_support_meta(e)
+    assert "Fed kept rates" in meta["quote"]
+    assert "SEO" not in meta["quote"]
+    assert meta["label_zh"] == LABEL_SUPPORT_ZH
+    assert evidence_quote(e) == meta["quote"]
 
 
 def test_evidence_quote_falls_back_to_title():
-    e = _ev(summary="", note="", title="Iron ore softens AUD pressure")
+    e = _ev(summary="", note="", title="Iron ore softens AUD pressure", support_quote="")
     assert "Iron ore" in evidence_quote(e)
 
 
-def test_format_reference_markdown_includes_quote_and_url():
+def test_format_reference_markdown_includes_support_label_and_url():
     e = _ev(
-        summary="AUD firmer after RBA minutes.",
+        support_quote="AUD firmer after RBA minutes.",
+        support_quote_quality="support",
         url="https://think.ing.com/real-article",
     )
     line = format_reference_markdown_row(e, index=1)
     assert "U-1" in line
+    assert LABEL_SUPPORT_ZH in line
     assert "「" in line and "」" in line
     assert "think.ing.com" in line
+
+
+def test_weak_support_label():
+    e = _ev(
+        support_quote="Markets opened mixed in Asia.",
+        support_quote_quality="weak",
+    )
+    meta = evidence_support_meta(e)
+    assert meta["label_zh"] == LABEL_SUPPORT_WEAK_ZH
 
 
 def test_dead_link_meta_clears_url_display():
@@ -137,11 +208,12 @@ def test_live_research_budget_tavily():
     assert b["max_headlines"] >= 80
 
 
-def test_html_evidence_renders_quote():
+def test_html_evidence_renders_support_quote():
     from fx_report.report.torchcast import TorchcastReport, render_html
 
     e = _ev(
-        summary="USD strength persists amid rate differentials.",
+        support_quote="USD strength persists amid rate differentials.",
+        support_quote_quality="support",
         url="https://www.reuters.com/example",
     )
     report = TorchcastReport(
@@ -164,7 +236,7 @@ def test_html_evidence_renders_quote():
         spot=1.5,
     )
     html = render_html(report)
-    assert "引用" in html
+    assert "支撑引用" in html
     assert "USD strength" in html
     assert "Evidence Base" in html
     assert "reuters.com" in html

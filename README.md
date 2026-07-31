@@ -165,7 +165,7 @@ Key 本机默认读：`/Users/wangzihan/Desktop/工作_汇率/fx_data_apis/.env`
 
 ## 输出
 
-主交付物为 **FX Analyse 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、**证据库/References（含引用摘录）**、What to Watch），落在 `output/{PAIR}_fx_analyse.pdf`。  
+主交付物为 **FX Analyse 风格 PDF / HTML**（WeasyPrint 渲染，封面概率条、上行/下行、执行摘要、**证据库/References（含支撑引用句）**、What to Watch），落在 `output/{PAIR}_fx_analyse.pdf`。  
 Live 「最多头条证据条数」滑块 **3–120**（有 Tavily 默认≈**80**，无 Key≈**30**）；AI 检索员目标约 **80–100** 条真实链接（上限/目标约 100，取决于源与配额，不保证每次满额）。历史回放不强制冲 100。详见 `docs/ai_research.md`。  
 Markdown 仍写入 `output/{PAIR}_report.md` 作调试副本。
 

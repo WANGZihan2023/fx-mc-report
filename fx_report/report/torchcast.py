@@ -21,7 +21,7 @@ from fx_report.format_rate import format_rate
 from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec
-from fx_report.report.evidence_refs import evidence_link_meta, evidence_quote
+from fx_report.report.evidence_refs import evidence_link_meta, evidence_support_meta
 
 # ---------------------------------------------------------------------------
 # Colors (Torchcast palette)
@@ -743,14 +743,16 @@ def render_html(report: TorchcastReport) -> str:
         rows = []
         for e in items:
             lab = (e.strength_label or "MODERATE").upper()
-            quote = evidence_quote(e)
+            sq = evidence_support_meta(e)
+            quote = sq.get("quote") or ""
             link_meta = evidence_link_meta(e)
             url = link_meta.get("url") or ""
             quote_html = ""
             if quote:
+                qlab = _esc(str(sq.get("label_zh") or "支撑引用"))
                 quote_html = (
                     f'<div class="ev-quote">'
-                    f'<span class="ev-quote-label">引用</span>'
+                    f'<span class="ev-quote-label">{qlab}</span>'
                     f"「{_esc(quote)}」"
                     f"</div>"
                 )
@@ -1137,11 +1139,13 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
                 f"<font backColor='#3D7A6A' color='white' size='7'> {lab} </font> "
                 f"{_esc(_evidence_display_title(e))}"
             )
-            quote = evidence_quote(e)
+            sq = evidence_support_meta(e)
+            quote = sq.get("quote") or ""
             if quote:
+                qlab = _esc(str(sq.get("label_zh") or "支撑引用"))
                 body += (
                     f"<br/><font color='#6B6B6B' size='8'><i>"
-                    f"引用 「{_esc(quote)}」"
+                    f"{qlab} 「{_esc(quote)}」"
                     f"</i></font>"
                 )
             link_meta = evidence_link_meta(e)

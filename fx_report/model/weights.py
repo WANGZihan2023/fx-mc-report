@@ -53,6 +53,10 @@ class EvidenceItem:
     cluster_role: str = ""  # rep | dup | solo | ""
     # Short auditable blurb (extractive/LLM) before HITL / weighting
     summary: str = ""
+    # Stance-aligned excerpt for References (not SEO lead / generic blurb)
+    support_quote: str = ""
+    # support | weak | title — how grounded the support quote is
+    support_quote_quality: str = ""
 
 
 @dataclass
