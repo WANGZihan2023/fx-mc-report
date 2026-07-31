@@ -94,11 +94,34 @@ def test_provider_rank_prefers_tavily_over_google():
 
 
 def test_live_caps_raised():
+    from fx_report.ui.ux_helpers import (
+        clamp_live_max_news,
+        default_live_max_news,
+        refs_statement_cap,
+        step3_pool_size,
+    )
+
     assert step3_pool_size(10, historical=False) == 40
     assert step3_pool_size(40, historical=False) == 120
+    assert step3_pool_size(100, historical=False) == 200
     assert step3_pool_size(10, historical=True) >= 10
-    assert refs_statement_cap(30) == 60
-    assert refs_statement_cap(None) == 80
+    assert refs_statement_cap(30) == 100
+    assert refs_statement_cap(80) == 100
+    assert refs_statement_cap(100) == 100
+    assert refs_statement_cap(120) == 120
+    assert refs_statement_cap(None) == 120
+    assert clamp_live_max_news(200) == 120
+    assert clamp_live_max_news(1) == 3
+    with patch(
+        "fx_report.news.ai_research.search_hands_available",
+        return_value={"tavily": True, "brave": False},
+    ):
+        assert default_live_max_news() == 80
+    with patch(
+        "fx_report.news.ai_research.search_hands_available",
+        return_value={"tavily": False, "brave": False},
+    ):
+        assert default_live_max_news() == 30
 
 
 def test_live_research_budget_tavily():
@@ -109,8 +132,9 @@ def test_live_research_budget_tavily():
         return_value={"tavily": True, "brave": False, "newsapi": True, "google_news_rss": True},
     ):
         b = live_research_budget({})
-    assert b["target_keep"] >= 30
-    assert b["max_rounds"] >= 6
+    assert b["target_keep"] >= 80
+    assert b["max_rounds"] >= 8
+    assert b["max_headlines"] >= 80
 
 
 def test_html_evidence_renders_quote():

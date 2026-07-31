@@ -295,18 +295,51 @@ def format_cheap_historical_caption(
     )
 
 
+# Live UI/CLI evidence slider range (historical stays cheap; do not force 100).
+LIVE_MAX_NEWS_MIN = 3
+LIVE_MAX_NEWS_MAX = 120
+LIVE_MAX_NEWS_DEFAULT_PLAIN = 30
+LIVE_MAX_NEWS_DEFAULT_RICH = 80  # Tavily/Brave present — toward ~100 achievable
+AI_KEEP_HARD_CAP = 120
+
+
+def default_live_max_news(cfg: Mapping[str, str] | None = None) -> int:
+    """
+    Default evidence-bar count for live runs.
+    Rich search Key (Tavily/Brave) → 80 toward ~100; else keep 30 (RSS/NewsAPI only).
+    """
+    try:
+        from fx_report.news.ai_research import search_hands_available
+
+        hands = search_hands_available(dict(cfg) if cfg is not None else None)
+        if hands.get("tavily") or hands.get("brave"):
+            return LIVE_MAX_NEWS_DEFAULT_RICH
+    except Exception:
+        pass
+    return LIVE_MAX_NEWS_DEFAULT_PLAIN
+
+
+def clamp_live_max_news(n: int | None) -> int:
+    """Clamp UI/CLI max_news into the live allowed range."""
+    if n is None:
+        return default_live_max_news()
+    return max(LIVE_MAX_NEWS_MIN, min(LIVE_MAX_NEWS_MAX, int(n)))
+
+
 def step3_pool_size(max_news: int, *, historical: bool = False) -> int:
     """Headline pool for step3 relative to evidence cap (live can go higher)."""
     n = max(1, int(max_news))
     if historical:
         # Keep historical cheap/light: modest pool, still >= evidence cap.
         return max(n, min(40, max(25, n * 2)))
-    # Live: raise with slider (UI up to 50); floor 40, ceiling 120 for richer refs.
-    return max(40, min(120, n * 3))
+    # Live: 3× slider (UI up to 120); floor 40, ceiling ~200 for richer refs.
+    return max(40, min(200, n * 3))
 
 
 def refs_statement_cap(max_news: int | None = None) -> int:
-    """Markdown References slice — align with raised live evidence caps (40–80)."""
+    """Markdown References slice — live target/ceiling ~100 (not padding)."""
     if max_news is None:
-        return 80
-    return max(40, min(80, int(max_news) * 2))
+        return 120
+    n = max(1, int(max_news))
+    # Cap at least 100 so a high slider is not truncated in MD; never invent rows.
+    return max(100, min(120, max(n, n * 2 if n < 50 else n)))

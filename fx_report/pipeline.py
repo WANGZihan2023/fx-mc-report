@@ -38,6 +38,8 @@ from fx_report.market.pair_drivers import DRIVER_CATALOG, describe_pair_factors,
 from fx_report.market.pairs import PairSpec, get_pair, make_custom_pair, resolve_pair_for_bullish
 from fx_report.report.text import build_diagnostics, build_report_markdown
 from fx_report.ui.ux_helpers import (
+    AI_KEEP_HARD_CAP,
+    clamp_live_max_news,
     format_cheap_historical_caption,
     refs_statement_cap,
     step3_pool_size,
@@ -472,7 +474,8 @@ def step3_collect_and_store_statements(
     budget = live_research_budget()
     ai_keep = int(ai_cap) if ai_cap is not None else int(budget["target_keep"])
     ai_keep = max(ai_keep, int(budget["target_keep"]) if as_of_date is None else ai_keep)
-    ai_keep = min(max(12, ai_keep), 50)  # hard ceiling: useful refs, not credit burn
+    # Hard ceiling ~100–120: useful refs without unbounded Tavily burn
+    ai_keep = min(max(12, ai_keep), int(AI_KEEP_HARD_CAP))
 
     market = fetch_market(
         spec,
@@ -824,7 +827,7 @@ def step4_evaluate_impact(
         meta["url_hygiene"] = sanitize_evidence_urls(
             evidence,
             soft_check=True,
-            max_checks=min(40, max(12, len(evidence))),
+            max_checks=min(80, max(12, len(evidence))),
             timeout=1.8,
         )
     else:
@@ -1162,7 +1165,7 @@ def run_pipeline(
     jump_model: str = "merton",
     jump_compensate: bool = False,
     mode: ClassifyMode = "hybrid",
-    max_news: int = 30,
+    max_news: int | None = None,
     keep_templates: bool = False,
     template_policy: TemplatePolicy = "off",
     no_news: bool = False,
@@ -1201,6 +1204,7 @@ def run_pipeline(
       `_phase_a_only`：Phase A 专用；返回 checkpoint（不跑 MC）。
     """
     log: list[str] = []
+    max_news = clamp_live_max_news(max_news)
 
     def say(msg: str) -> None:
         log.append(msg)

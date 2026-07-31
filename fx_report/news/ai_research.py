@@ -56,11 +56,12 @@ BANK_PUBLIC_URLS: dict[str, list[tuple[str, str]]] = {
 }
 
 DEFAULT_MAX_ROUNDS = 4
-DEFAULT_TARGET_KEEP = 20
-# When Tavily/Brave present: aim for Torchcast-like volume (still real URLs only)
-TAVILY_MAX_ROUNDS = 7
-TAVILY_TARGET_KEEP = 40
-TAVILY_SEARCH_LIMIT = 8
+DEFAULT_TARGET_KEEP = 24
+# When Tavily/Brave present: aim ~80–100 real refs (cost-aware for ~2–3 live reports/day)
+TAVILY_MAX_ROUNDS = 10
+TAVILY_TARGET_KEEP = 90
+TAVILY_SEARCH_LIMIT = 10
+TAVILY_PER_ROUND_KEEP = 10
 
 
 @dataclass
@@ -149,11 +150,18 @@ def _html_to_text(html: str, max_chars: int = 4000) -> str:
 def _seed_queries(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
     """Fallback query list when LLM planner unavailable — still one-at-a-time."""
     pair = spec.pair
+    # Diversify themes: macro, rates, base/quote, China, commodities, bank outlooks
     q = [
         f"{pair} forecast outlook bank",
-        f"{spec.base} {spec.quote} FX outlook MUFG OR ING OR UBS OR Goldman",
+        f"{spec.base} {spec.quote} FX outlook MUFG OR ING OR UBS OR Goldman OR ANZ",
         f"{pair} central bank policy outlook",
         f"{spec.base} {spec.quote} currency forecast Reuters OR Bloomberg",
+        f"USD dollar index DXY macro outlook rates",
+        f"{spec.base} interest rate differential FX {spec.quote}",
+        f"global macro risk-off USD {pair}",
+        f"bank FX quarterly outlook {pair}",
+        f"commodities iron ore copper gold {spec.base} currency",
+        f"China growth stimulus property CNH {spec.base}",
     ]
     if "oil" in info_need_ids or "geopolitics" in info_need_ids:
         q.append(f"{pair} oil geopolitics dollar")
@@ -182,7 +190,7 @@ def _seed_queries(spec: PairSpec, info_need_ids: list[str]) -> list[str]:
             continue
         seen.add(item)
         out.append(item)
-    return out[:12]
+    return out[:18]
 
 
 def _whitelist_urls(spec: PairSpec) -> list[tuple[str, str]]:
@@ -455,6 +463,9 @@ def live_research_budget(cfg: dict[str, str] | None = None) -> dict[str, int]:
     """
     Live-report keep/rounds budget. Historical cheap path must not call this
     with Tavily burning — pipeline already disables AI there.
+
+    With Tavily/Brave: target_keep ≈ 80–100 (not a guarantee — depends on
+    source hits / quota). Cost-aware for ~2–3 live reports/day.
     """
     cfg = cfg or load_config()
     hands = search_hands_available(cfg)
@@ -465,13 +476,15 @@ def live_research_budget(cfg: dict[str, str] | None = None) -> dict[str, int]:
             "target_keep": TAVILY_TARGET_KEEP,
             "search_limit": TAVILY_SEARCH_LIMIT,
             "max_headlines": TAVILY_TARGET_KEEP,
+            "per_round_keep": TAVILY_PER_ROUND_KEEP,
         }
     # NewsAPI / free RSS only — modest bump over legacy 10
     return {
         "max_rounds": DEFAULT_MAX_ROUNDS + 1,
         "target_keep": DEFAULT_TARGET_KEEP,
         "search_limit": 6,
-        "max_headlines": max(DEFAULT_TARGET_KEEP, 24),
+        "max_headlines": max(DEFAULT_TARGET_KEEP, 28),
+        "per_round_keep": 6,
     }
 
 
@@ -494,6 +507,8 @@ def _llm_plan_next_query(
         "You are an FX research librarian. Mimic a human who searches one query at a time. "
         "Return ONLY JSON: "
         '{"action":"search"|"stop","query":str,"reason":str}. '
+        "Diversify themes across rounds: macro, rates/Fed, AUD/local CB, USD/DXY, "
+        "China, commodities, bank outlooks — avoid near-duplicate queries. "
         "Prefer bank outlooks, central-bank, CPI, oil/geopolitics relevant to the pair. "
         "Do not invent URLs. If enough material exists or queries exhausted, action=stop."
     )
@@ -539,21 +554,27 @@ def _llm_select_hits(
             f"title={h.title}\nurl={h.url}\nsnippet={h.snippet[:280]}\n"
         )
     need = max(0, target - already_kept)
+    per_round = min(TAVILY_PER_ROUND_KEEP, max(4, need))
     system = (
         "You select FX-relevant headlines for a research memo. "
         f"Return ONLY JSON: {{\"keep\":[int,...]}} with 0-based indices. "
-        f"Keep at most {min(need + 2, 6)} items that help {spec.pair} outlook "
-        "(banks, CB, CPI, geopolitics, commodities). Drop clickbait/unrelated."
+        f"Keep at most {min(need + 2, per_round)} items that help {spec.pair} outlook "
+        "(banks, CB, CPI, geopolitics, commodities). Prefer items with real URL + snippet. "
+        "Drop clickbait/unrelated."
     )
     user = "Candidates:\n" + "\n".join(lines)
     try:
         data = _chat_json(llm, system, user)
     except Exception:
         # Fallback: keep first few with http URLs
-        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][: min(4, need or 4)]
+        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][
+            : min(per_round, need or per_round)
+        ]
     keep = data.get("keep") if isinstance(data, dict) else None
     if not isinstance(keep, list):
-        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][: min(4, need or 4)]
+        return [i for i, h in enumerate(candidates) if (h.url or "").startswith("http")][
+            : min(per_round, need or per_round)
+        ]
     out: list[int] = []
     for x in keep:
         try:
@@ -562,7 +583,7 @@ def _llm_select_hits(
             continue
         if 0 <= idx < len(candidates) and idx not in out:
             out.append(idx)
-    return out[:6]
+    return out[:per_round]
 
 
 def _llm_extract_outlooks(
@@ -577,7 +598,7 @@ def _llm_extract_outlooks(
     from fx_report.news.llm import _chat_json
 
     materials = []
-    for i, h in enumerate(hits[:12], 1):
+    for i, h in enumerate(hits[:24], 1):
         materials.append(
             f"[{i}] source={h.source} provider={h.provider}\n"
             f"title={h.title}\nurl={h.url}\ntext={h.snippet[:700]}\n"
@@ -689,7 +710,7 @@ def run_ai_research(
     results are still live-web and may leak non-historical info.
 
     When Tavily/Brave Key present, default target_keep/rounds rise toward
-    ~40 displayable refs (still no invented URLs).
+    ~80–100 displayable refs (still no invented URLs; not a hard guarantee).
     """
     cfg = load_config()
     budget = live_research_budget(cfg)
@@ -700,6 +721,7 @@ def run_ai_research(
     if target_keep is None:
         target_keep = int(budget["target_keep"])
     search_limit = int(budget["search_limit"])
+    per_round_keep = int(budget.get("per_round_keep") or TAVILY_PER_ROUND_KEEP)
     need_ids = info_need_ids or list(spec.default_drivers)
     hands = search_hands_available(cfg)
     paid_search = has_paid_search_api(cfg)
@@ -835,7 +857,7 @@ def run_ai_research(
             selected = [fresh[i] for i in idxs if 0 <= i < len(fresh)]
         elif fresh:
             selected = [h for h in fresh if (h.url or "").startswith("http")][
-                : min(6, max(4, target_keep - len(kept)))
+                : min(per_round_keep, max(4, target_keep - len(kept)))
             ]
 
         kept.extend(selected)
@@ -866,6 +888,18 @@ def run_ai_research(
             # Extract returned empty (or all URLs rejected) — use raw kept with real URLs
             headlines = _hits_to_headlines(kept, max_n=max_headlines)
             meta["errors"].append("llm_extract_empty_used_raw_kept")
+        else:
+            # Fill remaining slots from ranked raw kept (quote+URL) so ~100 is reachable
+            raw = _hits_to_headlines(kept, max_n=max_headlines)
+            seen = {(h.url or "").strip().lower() for h in headlines if h.url}
+            for h in raw:
+                if len(headlines) >= max_headlines:
+                    break
+                key = (h.url or "").strip().lower()
+                if key and key not in seen:
+                    headlines.append(h)
+                    seen.add(key)
+            meta["filled_from_raw_kept"] = True
     else:
         headlines = _hits_to_headlines(kept or all_hits, max_n=max_headlines)
         if not llm:

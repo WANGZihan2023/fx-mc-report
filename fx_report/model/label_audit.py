@@ -665,14 +665,15 @@ def thin_refs_message(
         parts.append(
             "未检测到 `NEWSAPI_KEY`/`FINNHUB_API_KEY`："
             "目前主要靠央行 RSS + Google News；相关度过滤后常只剩很少几条。"
-            "要更多带引用摘录的 References：侧栏证据条数调到 30+，"
+            "要更多带引用摘录的 References：侧栏证据条数调到 60–100，"
             "开「AI 检索员」并填 `TAVILY_API_KEY`（DeepSeek 当脑、Tavily 当手）；"
-            "单独填 LLM 不会虚构链接。"
+            "单独填 LLM 不会虚构链接。有搜索 Key 时可冲到约 100 条；无 Key 仍可能很少。"
         )
     else:
         parts.append(
             "已有新闻 Key 但仍偏少：可能是相关度过滤过严或当日头条与货币对匹配弱。"
-            "可把「最多头条证据条数」调到 30–50、确认「AI 检索员」已开并加 Tavily/Brave。"
+            "可把「最多头条证据条数」调到 80–100、确认「AI 检索员」已开并加 Tavily/Brave。"
+            "上限/目标约 100，取决于源与配额。"
         )
     return " ".join(parts)
 

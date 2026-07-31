@@ -9,6 +9,14 @@ from pathlib import Path
 from fx_report.config.api_config import status_text
 from fx_report.market.pairs import list_pairs
 from fx_report.pipeline import run_pipeline
+from fx_report.ui.ux_helpers import clamp_live_max_news, default_live_max_news
+
+
+def _resolve_max_news(raw: int | None, *, historical: bool = False) -> int:
+    """Live defaults toward ~80–100 with Tavily; historical stays modest."""
+    if raw is None:
+        return 10 if historical else default_live_max_news()
+    return clamp_live_max_news(raw)
 
 
 def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
@@ -58,7 +66,15 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
         default="off",
         help="新闻证据为空时：off=不用模板；prior_only=标记降权模板；fallback_warn=调试告警回退",
     )
-    p.add_argument("--max-news", type=int, default=30)
+    p.add_argument(
+        "--max-news",
+        type=int,
+        default=None,
+        help=(
+            "Live 证据条数上限（3–120）。默认：有 Tavily/Brave≈80，否则≈30；"
+            "冲约 100 条请设 80–100 并开 AI 检索员。历史回放不强制满额。"
+        ),
+    )
     p.add_argument("--mode", choices=["hybrid", "llm", "rules"], default="hybrid")
     p.add_argument("--no-fulltext", action="store_true")
     p.add_argument(
@@ -114,7 +130,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         jump_model=args.jump_model,
         jump_compensate=bool(args.jump_compensate),
         mode=args.mode,  # type: ignore[arg-type]
-        max_news=args.max_news,
+        max_news=_resolve_max_news(getattr(args, "max_news", None)),
         keep_templates=args.keep_templates,
         template_policy=args.template_policy,
         no_news=args.no_news,
@@ -226,7 +242,7 @@ def _cmd_replay_backtest(args: argparse.Namespace) -> int:
             jump_model=args.jump_model,
             jump_compensate=bool(args.jump_compensate),
             mode=args.mode,
-            max_news=args.max_news,
+            max_news=_resolve_max_news(getattr(args, "max_news", None), historical=True),
             keep_templates=args.keep_templates,
             template_policy=args.template_policy,
             no_news=args.no_news,
@@ -307,7 +323,7 @@ def _cmd_replay_engine_compare(args: argparse.Namespace) -> int:
             days=args.days,
             seed=args.seed,
             lookback=args.lookback,
-            max_news=args.max_news,
+            max_news=_resolve_max_news(getattr(args, "max_news", None), historical=True),
             mode=args.mode,
             out_dir=args.out,
             bullish_currency=args.bullish,

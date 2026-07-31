@@ -38,6 +38,7 @@ from fx_report.ui.ux_helpers import (
     START_SIMPLE_DIALOG_KEYS,
     app_password_expected,
     bb_jump_compensate_warning,
+    default_live_max_news,
     format_cheap_historical_caption,
     format_missing_start_message,
     is_unset_choice,
@@ -1712,11 +1713,19 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "新闻有证据时也合并模板（标记为先验）",
             value=False,
         )
-        max_news_ev = st.slider("最多头条证据条数", 3, 50, 30, 1)
+        max_news_ev = st.slider(
+            "最多头条证据条数",
+            3,
+            120,
+            int(default_live_max_news()),
+            1,
+        )
         st.caption(
-            "Live 默认 30（可到 50）：目标约 40–80 条带引用摘录的 References。"
-            "步骤3抓取池约 3×（上限约 120）。历史回放仍走省钱路径，不烧 Tavily、不虚构证据。"
-            "请保持「AI 检索员」开启并配置 TAVILY_API_KEY 以接近 Torchcast 体量。"
+            "有搜索 Key（Tavily/Brave）时可冲到约 100 条；无 Key 仍可能很少。"
+            "上限/目标约 100，取决于源与配额（不保证每次满额，不编造 URL）。"
+            "默认：有 Tavily≈80，无 Key≈30；滑块 3–120。步骤3抓取池约 3×（上限约 200）。"
+            "历史回放仍走省钱路径，不烧 Tavily、不强制 100。"
+            "请保持「AI 检索员」开启并配置 TAVILY_API_KEY。"
         )
         fetch_fulltext = st.checkbox("抓正文供 LLM", value=True)
         use_label_learned = st.checkbox(

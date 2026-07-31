@@ -192,4 +192,5 @@ def test_format_cheap_historical_caption():
     assert "GDELT缓存命中" in cap
     assert step3_pool_size(10, historical=False) == 40
     assert step3_pool_size(40, historical=False) == 120
+    assert step3_pool_size(100, historical=False) == 200
     assert step3_pool_size(10, historical=True) >= 10
