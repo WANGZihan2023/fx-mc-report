@@ -2661,6 +2661,13 @@ def main() -> None:
 
     weights, news_opts = sidebar_weights(base, analysis_spec.pair)
 
+    from fx_report.config.api_config import has_news_api, load_config
+    from fx_report.model.label_learn import MIN_LABELS_FOR_LEARN, fit_label_learned_params
+
+    learned_side = fit_label_learned_params()
+    n_lab = int(learned_side.n_labeled or 0)
+    news_ok = has_news_api(load_config())
+
     with st.sidebar.expander(t("side.label_audit"), expanded=False):
         if "last_report" in st.session_state:
             n_ev = len(st.session_state.get("last_auto_evidence") or [])
@@ -2672,27 +2679,22 @@ def main() -> None:
             st.markdown(t("side.label_audit.jump"))
         else:
             st.caption(t("side.label_audit.need_run"))
+        # Scale-up reminder only (Keys/口令已在云端配好，不再挂「待你完成」)
+        if n_lab < MIN_LABELS_FOR_LEARN:
+            st.caption(
+                t(
+                    "side.label_audit.learn_progress",
+                    n=n_lab,
+                    need=MIN_LABELS_FOR_LEARN,
+                )
+            )
+        else:
+            st.caption(t("side.label_audit.learn_ready", n=n_lab))
 
-    with st.sidebar.expander(t("side.todo"), expanded=True):
-        from fx_report.config.api_config import has_news_api, load_config
-        from fx_report.model.label_learn import MIN_LABELS_FOR_LEARN, fit_label_learned_params
-
-        cfg_side = load_config()
-        news_ok = has_news_api(cfg_side)
-        learned_side = fit_label_learned_params()
-        n_lab = int(learned_side.n_labeled or 0)
-        st.markdown(
-            f"""
-**仍需你在 Railway / 本机完成：**
-
-- {'✅' if news_ok else '☐'} 填 `NEWSAPI_KEY` / `FINNHUB_API_KEY`（**决定 References 条数**；LLM/DeepSeek 可选，只做判定）
-- ✅ 访问口令已启用（默认 `uniocean`；可用 `APP_PASSWORD` 覆盖）
-- {'✅' if n_lab >= MIN_LABELS_FOR_LEARN else '☐'} 实盘标注 ≥{MIN_LABELS_FOR_LEARN} 条（当前 **{n_lab}**）
-
-无 Key 时仍会试央行 RSS + Google News；只填 DeepSeek **不会**自动多出参考链接。标注够后可勾「使用标签学习到的强度」。
-详见 `docs/deploy-docker.md` / `docs/label_audit.md`。
-""".strip()
-        )
+    # 仅当新闻 Key 仍缺时提示；配齐后整块不出现（避免永久「请你完成」）
+    if not news_ok:
+        with st.sidebar.expander(t("side.setup_gap"), expanded=True):
+            st.markdown(t("side.setup_gap.body"))
 
     st.title(f"FX Analyse · {display_spec.pair}")
     if bullish_ok:

@@ -130,12 +130,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "side.rubric": "⑦ 强弱判定规则",
         "side.sources": "⑧ 数据源状态",
         "side.label_audit": "⑨ 证据人工标注",
-        "side.todo": "⑩ 待你完成（云端）",
+        "side.setup_gap": "配置缺口（新闻 Key）",
+        "side.setup_gap.body": (
+            "未检测到 `NEWSAPI_KEY` / `FINNHUB_API_KEY`。"
+            "无 Key 时仍会试央行 RSS + Google News；References 往往偏少。"
+            "只填 DeepSeek **不会**自动多出链接。详见 `docs/deploy-docker.md`。"
+        ),
         "side.label_audit.has_run": "标注区在主区 **「本次分析审计」正下方**（完整报告与流水线明细之上，不必滚到页底）。",
         "side.label_audit.n": "当前证据条数：{n}",
         "side.label_audit.demo_hint": " · 无证据时可点「加载练习样例」",
         "side.label_audit.jump": "[↓ 跳到证据人工标注](#label-audit-section)",
         "side.label_audit.need_run": "先点主区「运行分析」。标注区会出现在审计面板正下方；即使没有新闻证据，也会显示「怎么填？」与「加载练习样例」。",
+        "side.label_audit.learn_progress": "可选进阶：实盘标注 {n}/{need}（够后可勾「使用标签学习到的强度」）",
+        "side.label_audit.learn_ready": "标签学习可用（已标 {n} 条）",
         "side.cal.use": "校准参数：开始设置已选「使用」",
         "side.cal.skip": "校准参数：开始设置已选「不使用」",
         "side.cal.unset": "校准参数：尚未在开始设置中选择",
@@ -257,12 +264,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "side.rubric": "⑦ Strength rubric",
         "side.sources": "⑧ Data source status",
         "side.label_audit": "⑨ Evidence labeling",
-        "side.todo": "⑩ Your to-dos (cloud)",
+        "side.setup_gap": "Setup gap (news keys)",
+        "side.setup_gap.body": (
+            "`NEWSAPI_KEY` / `FINNHUB_API_KEY` not detected. "
+            "Without them the app still tries central-bank RSS + Google News; References stay thin. "
+            "DeepSeek alone does **not** invent links. See `docs/deploy-docker.md`."
+        ),
         "side.label_audit.has_run": "Labeling lives in the main area **just under “This-run audit”** (above the full report—no need to scroll to the bottom).",
         "side.label_audit.n": "Evidence rows: {n}",
         "side.label_audit.demo_hint": " · with no evidence, load the practice demo",
         "side.label_audit.jump": "[↓ Jump to labeling](#label-audit-section)",
         "side.label_audit.need_run": "Click Run analysis in the main area first. The labeling block appears under the audit panel; even with no news evidence you’ll see How to fill + Load practice demo.",
+        "side.label_audit.learn_progress": "Optional: live labels {n}/{need} (then enable learned strength)",
+        "side.label_audit.learn_ready": "Label learning ready ({n} labels)",
         "side.cal.use": "Calibration: Start setup chose Use",
         "side.cal.skip": "Calibration: Start setup chose Don't use",
         "side.cal.unset": "Calibration: not chosen in Start setup yet",
