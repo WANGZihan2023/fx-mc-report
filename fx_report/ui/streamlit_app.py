@@ -35,7 +35,14 @@ from fx_report.ui.i18n import (
 )
 from fx_report.format_rate import format_rate, rate_input_format, rate_input_step
 from fx_report.report.cost_estimate import cost_caption_zh, cost_table_rows_zh
-from fx_report.report.strings import DEFAULT_REPORT_LANG, normalize_report_lang
+from fx_report.report.strings import (
+    DEFAULT_REPORT_MODE,
+    LANG_BOTH,
+    LANG_EN as REPORT_LANG_EN,
+    LANG_ZH as REPORT_LANG_ZH,
+    normalize_report_mode,
+    report_lang_suffix,
+)
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
@@ -138,18 +145,55 @@ def _app_password() -> str:
 
 def _store_pipeline_result(result) -> None:
     """Persist PipelineResult fields into session_state for the results panel."""
+    from fx_report.report.torchcast import write_pdf
+    import tempfile
+
+    by_lang = getattr(result, "reports_by_lang", None) or {}
+    if not by_lang:
+        by_lang = {
+            "zh": {
+                "md": result.report_md,
+                "html": result.report_html,
+                "torchcast": result.torchcast,
+            }
+        }
+
     st.session_state["last_report"] = result.report_md
     st.session_state["last_report_html"] = result.report_html
     st.session_state["last_pdf_bytes"] = None
-    try:
-        from fx_report.report.torchcast import write_pdf
-        import tempfile
+    st.session_state["last_pdf_error"] = None
+    st.session_state["last_reports_by_lang"] = {}
+    pdf_by_lang: dict[str, bytes] = {}
+    pdf_errors: dict[str, str] = {}
 
-        with tempfile.TemporaryDirectory() as td:
-            pdf_path = write_pdf(result.torchcast, Path(td) / "report.pdf")
-            st.session_state["last_pdf_bytes"] = pdf_path.read_bytes()
-    except Exception as e:
-        st.session_state["last_pdf_error"] = str(e)
+    for lang, bundle in by_lang.items():
+        md = bundle.get("md") or ""
+        html = bundle.get("html") or ""
+        tc = bundle.get("torchcast")
+        entry: dict[str, Any] = {"md": md, "html": html, "lang": lang}
+        if tc is not None:
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    pdf_path = write_pdf(tc, Path(td) / f"report_{lang}.pdf")
+                    pdf_by_lang[lang] = pdf_path.read_bytes()
+                    entry["pdf_bytes"] = pdf_by_lang[lang]
+            except Exception as e:
+                pdf_errors[lang] = str(e)
+                entry["pdf_error"] = str(e)
+        st.session_state["last_reports_by_lang"][lang] = entry
+
+    # Primary (= first lang in bilingual, else the only lang)
+    primary_lang = next(iter(by_lang.keys()), "zh")
+    if primary_lang in pdf_by_lang:
+        st.session_state["last_pdf_bytes"] = pdf_by_lang[primary_lang]
+    elif pdf_errors:
+        st.session_state["last_pdf_error"] = pdf_errors.get(primary_lang) or next(
+            iter(pdf_errors.values())
+        )
+    st.session_state["last_pdf_by_lang"] = pdf_by_lang
+    st.session_state["last_pdf_errors_by_lang"] = pdf_errors
+    st.session_state["last_report_langs"] = list(by_lang.keys())
+
     st.session_state["last_diag"] = result.diagnostics
     st.session_state["last_probs"] = result.probs
     st.session_state["last_edges"] = list(result.edges)
@@ -2616,10 +2660,14 @@ def main() -> None:
     # Language toggle at top of sidebar (persistent via session + ?lang=)
     render_language_selector(location="sidebar", key="sidebar_ui_lang_select")
     if "report_lang" not in st.session_state:
-        st.session_state["report_lang"] = DEFAULT_REPORT_LANG
-    _rlang_opts = [LANG_ZH, LANG_EN]
-    _rlang_labels = {LANG_ZH: "中文", LANG_EN: "English"}
-    _cur_rlang = normalize_report_lang(st.session_state.get("report_lang"))
+        st.session_state["report_lang"] = DEFAULT_REPORT_MODE
+    _rlang_opts = [LANG_BOTH, REPORT_LANG_ZH, REPORT_LANG_EN]
+    _rlang_labels = {
+        LANG_BOTH: t("report.lang.both"),
+        REPORT_LANG_ZH: "中文",
+        REPORT_LANG_EN: "English",
+    }
+    _cur_rlang = normalize_report_mode(st.session_state.get("report_lang"))
     _rlang_idx = _rlang_opts.index(_cur_rlang) if _cur_rlang in _rlang_opts else 0
     _picked_rlang = st.sidebar.selectbox(
         t("report.lang"),
@@ -2629,7 +2677,7 @@ def main() -> None:
         key="sidebar_report_lang_select",
         help=t("report.lang.help"),
     )
-    st.session_state["report_lang"] = normalize_report_lang(_picked_rlang)
+    st.session_state["report_lang"] = normalize_report_mode(_picked_rlang)
     with st.sidebar.expander(t("side.cost"), expanded=False):
         st.caption(cost_caption_zh())
         try:
@@ -3270,8 +3318,8 @@ def main() -> None:
                     news_opts.get("use_label_learned_strength")
                 ),
                 max_uncertain=5,
-                report_lang=normalize_report_lang(
-                    st.session_state.get("report_lang") or DEFAULT_REPORT_LANG
+                report_lang=normalize_report_mode(
+                    st.session_state.get("report_lang") or DEFAULT_REPORT_MODE
                 ),
                 stance_summaries=True,
                 force_stance_llm=bool(news_opts.get("force_stance_llm", False)),
@@ -3573,32 +3621,64 @@ def main() -> None:
     )
 
     with st.expander("完整报告（FX Analyse 格式）", expanded=False):
-        pdf_bytes = st.session_state.get("last_pdf_bytes")
-        html_doc = st.session_state.get("last_report_html")
-        c1, c2, c3 = st.columns(3)
         pair_safe = diag["market"]["pair"].replace("/", "")
-        if pdf_bytes:
-            c1.download_button(
-                "下载 PDF（FX Analyse）",
-                pdf_bytes,
-                file_name=f"{pair_safe}_fx_analyse.pdf",
-                mime="application/pdf",
-            )
-        elif st.session_state.get("last_pdf_error"):
-            c1.caption(f"PDF 生成失败：{st.session_state['last_pdf_error']}")
-        if html_doc:
-            c2.download_button(
-                "下载 HTML",
-                html_doc.encode("utf-8"),
-                file_name=f"{pair_safe}_fx_analyse.html",
-                mime="text/html",
-            )
-        c3.download_button(
-            "下载 Markdown（调试）",
-            report.encode("utf-8"),
-            file_name=f"{pair_safe}_mc_report.md",
-            mime="text/markdown",
+        by_lang = st.session_state.get("last_reports_by_lang") or {}
+        pdf_by_lang = st.session_state.get("last_pdf_by_lang") or {}
+        pdf_errs = st.session_state.get("last_pdf_errors_by_lang") or {}
+        langs = list(by_lang.keys()) or list(
+            st.session_state.get("last_report_langs") or []
         )
+        if not langs:
+            # Legacy single-artifact session
+            langs = ["zh"]
+            by_lang = {
+                "zh": {
+                    "md": report,
+                    "html": st.session_state.get("last_report_html") or "",
+                }
+            }
+            if st.session_state.get("last_pdf_bytes"):
+                pdf_by_lang = {"zh": st.session_state["last_pdf_bytes"]}
+
+        lang_title = {"zh": "中文", "en": "English"}
+        for lang in langs:
+            bundle = by_lang.get(lang) or {}
+            suf = report_lang_suffix(lang)
+            label = lang_title.get(lang, lang)
+            st.markdown(f"**{label}报告**")
+            c1, c2, c3 = st.columns(3)
+            pdf_bytes = pdf_by_lang.get(lang) or bundle.get("pdf_bytes")
+            if pdf_bytes:
+                c1.download_button(
+                    f"下载 PDF（{label}）",
+                    pdf_bytes,
+                    file_name=f"{pair_safe}{suf}_fx_analyse.pdf",
+                    mime="application/pdf",
+                    key=f"dl_pdf_{lang}",
+                )
+            else:
+                err = pdf_errs.get(lang) or bundle.get("pdf_error")
+                if err:
+                    c1.caption(f"PDF 生成失败（{label}）：{err}")
+            html_doc = bundle.get("html") or ""
+            if html_doc:
+                c2.download_button(
+                    f"下载 HTML（{label}）",
+                    html_doc.encode("utf-8"),
+                    file_name=f"{pair_safe}{suf}_fx_analyse.html",
+                    mime="text/html",
+                    key=f"dl_html_{lang}",
+                )
+            md_doc = bundle.get("md") or (report if lang == langs[0] else "")
+            if md_doc:
+                c3.download_button(
+                    f"下载 Markdown（{label}）",
+                    md_doc.encode("utf-8"),
+                    file_name=f"{pair_safe}{suf}_mc_report.md",
+                    mime="text/markdown",
+                    key=f"dl_md_{lang}",
+                )
+
         audit_csv = st.session_state.get("last_label_audit_csv")
         if audit_csv:
             st.caption(
@@ -3611,8 +3691,16 @@ def main() -> None:
                 mime="text/csv",
                 help="列含 statement_id/title/url/model_*；在「证据人工标注」填写 human_* 与 agree",
             )
-        if html_doc:
-            st.components.v1.html(html_doc, height=900, scrolling=True)
+        # Preview: prefer Chinese HTML when bilingual, else first available
+        preview_html = ""
+        for pref in ("zh", "en"):
+            if pref in by_lang and by_lang[pref].get("html"):
+                preview_html = by_lang[pref]["html"]
+                break
+        if not preview_html:
+            preview_html = st.session_state.get("last_report_html") or ""
+        if preview_html:
+            st.components.v1.html(preview_html, height=900, scrolling=True)
         else:
             st.markdown(report)
 

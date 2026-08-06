@@ -124,7 +124,7 @@ streamlit run app.py
 
 **界面语言**：侧栏顶部或登录页可选 **中文 / English**（默认中文）；选择写入 `session_state` 与网址 `?lang=zh|en`，刷新仍保留。当前已覆盖密码门、开始设置、运行按钮、侧栏分区标题、证据标注等高流量文案；其余页面文案仍以中文为主，可继续按 key 扩展 `fx_report/ui/i18n.py`。
 
-**报告语言 / 引用总结 / 费用**：侧栏可选 PDF·HTML·Markdown 的 **报告语言（默认中文）**，与界面语言独立；References 含「总结」+「支撑引用」（原文）。Live 可分批 LLM 总结，历史 cheap 默认抽取式。费用粗估见侧栏与 [`docs/report_language_cost.md`](docs/report_language_cost.md)。
+**报告语言 / 引用总结 / 费用**：侧栏可选 PDF·HTML·Markdown 的 **报告语言（默认中英双语一起出）**，与界面语言独立；双语时新闻/MC 只跑一次、模板各渲染中英两份（`_zh` / `_en`）。References 含「总结」+「支撑引用」（原文）。Live 可分批 LLM 总结，历史 cheap 默认抽取式。费用粗估见侧栏与 [`docs/report_language_cost.md`](docs/report_language_cost.md)。
 
 **UI 快捷操作**（现价 + 看涨 + 分档就绪后）：
 - **双引擎对比**：`path_max` vs `brownian_bridge` 同现价/分档并排概率与 Δ（降采样 MC）

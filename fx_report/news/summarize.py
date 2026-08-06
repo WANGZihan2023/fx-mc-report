@@ -777,10 +777,91 @@ def _llm_batch_stance_summaries(
     return out
 
 
+def _llm_batch_stance_summaries_bilingual(
+    batch: list[EvidenceItem],
+    *,
+    pair: str,
+    cfg: Any,
+) -> dict[str, dict[str, str]]:
+    """One LLM call returning id → {zh, en} stance summaries (quotes stay source)."""
+    from fx_report.news.llm import _chat_json
+
+    rows = []
+    for e in batch:
+        rows.append(
+            {
+                "id": e.id,
+                "title": (e.title or "")[:160],
+                "direction": int(e.direction or 0),
+                "category": e.category or "",
+                "summary": (e.summary or "")[:280],
+                "support_quote": (e.support_quote or "")[:220],
+                "note": (e.note or "")[:200],
+            }
+        )
+    system = (
+        "You write short audit summaries for FX evidence references. "
+        "Output JSON only: "
+        "{\"items\":[{\"id\":\"...\",\"stance_summary_zh\":\"...\","
+        "\"stance_summary_en\":\"...\"}]}. "
+        "Each summary is 1–2 sentences: what the source says, and how it "
+        "supports Higher/Lower/Context. zh=简体中文, en=English. "
+        "Do NOT invent facts, URLs, or quotes absent from the input fields. "
+        "If text is thin, say so briefly in both languages."
+    )
+    user = (
+        f"pair={pair}\n"
+        "Write stance_summary_zh and stance_summary_en for each item.\n\n"
+        + __import__("json").dumps({"items": rows}, ensure_ascii=False)
+    )
+    try:
+        raw = _chat_json(cfg, system, user)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    items = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(items, list):
+        return {}
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        eid = str(row.get("id") or "").strip()
+        if not eid:
+            continue
+        zh = str(row.get("stance_summary_zh") or row.get("zh") or "").strip().strip('"')
+        en = str(row.get("stance_summary_en") or row.get("en") or "").strip().strip('"')
+        # Fallback if model returned single stance_summary
+        single = str(row.get("stance_summary") or "").strip().strip('"')
+        if not zh and single:
+            zh = single
+        if not en and single:
+            en = single
+        entry: dict[str, str] = {}
+        if len(zh) >= 8:
+            entry["zh"] = zh[:280]
+        if len(en) >= 8:
+            entry["en"] = en[:280]
+        if entry:
+            out[eid] = entry
+    return out
+
+
+def _set_stance_i18n(e: EvidenceItem, lang: str, text: str) -> None:
+    text = (text or "").strip()
+    if not text:
+        return
+    bag = getattr(e, "stance_summary_i18n", None)
+    if not isinstance(bag, dict):
+        bag = {}
+        e.stance_summary_i18n = bag
+    bag[lang] = text[:280]
+
+
 def apply_stance_summaries(
     items: list[EvidenceItem],
     *,
     lang: str = "zh",
+    langs: list[str] | tuple[str, ...] | None = None,
     pair: PairSpec | str | None = None,
     llm_cfg: Any | None = None,
     enabled: bool = True,
@@ -791,12 +872,23 @@ def apply_stance_summaries(
     skip_priors: bool = True,
 ) -> dict[str, Any]:
     """
-    Fill ``EvidenceItem.stance_summary`` for References display.
+    Fill ``EvidenceItem.stance_summary`` (+ optional ``stance_summary_i18n``).
 
-    Prefer one batched LLM call per chunk (default 20). Historical cheap path
-    and missing LLM → extractive/template only. Does not invent quotes.
+    Prefer one batched LLM call per chunk (default 20). When ``langs`` has both
+    zh and en, use one bilingual LLM pass (or extractive for each). Historical
+    cheap path and missing LLM → extractive/template only. Does not invent quotes.
     """
-    lang = "en" if str(lang).lower().startswith("en") else "zh"
+    if langs:
+        want = []
+        for x in langs:
+            lx = "en" if str(x).lower().startswith("en") else "zh"
+            if lx not in want:
+                want.append(lx)
+    else:
+        want = ["en" if str(lang).lower().startswith("en") else "zh"]
+    primary = want[0]
+    bilingual = len(want) >= 2
+
     pair_s = ""
     if isinstance(pair, str):
         pair_s = pair
@@ -805,7 +897,9 @@ def apply_stance_summaries(
 
     meta: dict[str, Any] = {
         "enabled": bool(enabled),
-        "lang": lang,
+        "lang": primary,
+        "langs": list(want),
+        "bilingual": bilingual,
         "cheap_historical": bool(cheap_historical),
         "method": "skipped",
         "n_set": 0,
@@ -830,41 +924,83 @@ def apply_stance_summaries(
         and bool(getattr(llm_cfg, "api_key", None))
     )
 
-    # Pre-fill extractive; LLM overwrites when available
+    # Pre-fill extractive for every requested language; LLM overwrites when available
     for e in targets:
-        if (getattr(e, "stance_summary", None) or "").strip():
-            meta["n_set"] += 1
-            continue
-        e.stance_summary = extractive_stance_summary(e, lang=lang)
-        if e.stance_summary:
-            meta["n_extractive"] += 1
+        existing_i18n = getattr(e, "stance_summary_i18n", None) or {}
+        if not isinstance(existing_i18n, dict):
+            existing_i18n = {}
+        had_any = False
+        for lx in want:
+            cur = (existing_i18n.get(lx) or "").strip()
+            if not cur and lx == primary:
+                cur = (getattr(e, "stance_summary", None) or "").strip()
+            if cur:
+                _set_stance_i18n(e, lx, cur)
+                had_any = True
+                continue
+            text = extractive_stance_summary(e, lang=lx)
+            if text:
+                _set_stance_i18n(e, lx, text)
+                meta["n_extractive"] += 1
+                had_any = True
+        if had_any:
+            bag = e.stance_summary_i18n or {}
+            e.stance_summary = bag.get(primary) or next(iter(bag.values()), "") or e.stance_summary
             meta["n_set"] += 1
 
     if not use_llm:
         meta["method"] = "extractive"
         return meta
 
-    meta["method"] = "llm_batch"
+    meta["method"] = "llm_batch_bilingual" if bilingual else "llm_batch"
     size = max(1, int(chunk_size))
     try:
         for i in range(0, len(targets), size):
             chunk = targets[i : i + size]
-            mapped = _llm_batch_stance_summaries(
-                chunk, lang=lang, pair=pair_s or "FX", cfg=llm_cfg
-            )
             meta["chunks"] += 1
-            for e in chunk:
-                text = mapped.get(e.id or "")
-                if text:
-                    e.stance_summary = text
-                    meta["n_llm"] += 1
-                    tag = "stance:llm"
-                    if tag not in (e.note or ""):
-                        e.note = f"{tag}｜{e.note}" if e.note else tag
-                elif e.stance_summary:
-                    tag = "stance:extractive"
-                    if tag not in (e.note or ""):
-                        e.note = f"{tag}｜{e.note}" if e.note else tag
+            if bilingual:
+                mapped = _llm_batch_stance_summaries_bilingual(
+                    chunk, pair=pair_s or "FX", cfg=llm_cfg
+                )
+                for e in chunk:
+                    entry = mapped.get(e.id or "") or {}
+                    got = False
+                    for lx in want:
+                        text = entry.get(lx) or ""
+                        if text:
+                            _set_stance_i18n(e, lx, text)
+                            got = True
+                    if got:
+                        meta["n_llm"] += 1
+                        bag = e.stance_summary_i18n or {}
+                        e.stance_summary = (
+                            bag.get(primary) or next(iter(bag.values()), "") or e.stance_summary
+                        )
+                        tag = "stance:llm"
+                        if tag not in (e.note or ""):
+                            e.note = f"{tag}｜{e.note}" if e.note else tag
+                    elif e.stance_summary:
+                        tag = "stance:extractive"
+                        if tag not in (e.note or ""):
+                            e.note = f"{tag}｜{e.note}" if e.note else tag
+            else:
+                mapped = _llm_batch_stance_summaries(
+                    chunk, lang=primary, pair=pair_s or "FX", cfg=llm_cfg
+                )
+                for e in chunk:
+                    text = mapped.get(e.id or "")
+                    if text:
+                        e.stance_summary = text
+                        _set_stance_i18n(e, primary, text)
+                        meta["n_llm"] += 1
+                        tag = "stance:llm"
+                        if tag not in (e.note or ""):
+                            e.note = f"{tag}｜{e.note}" if e.note else tag
+                    elif e.stance_summary:
+                        _set_stance_i18n(e, primary, e.stance_summary)
+                        tag = "stance:extractive"
+                        if tag not in (e.note or ""):
+                            e.note = f"{tag}｜{e.note}" if e.note else tag
     except Exception as exc:
         meta["error"] = str(exc)[:240]
         meta["method"] = "extractive_fallback"

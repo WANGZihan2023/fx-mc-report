@@ -60,6 +60,9 @@ class EvidenceItem:
     # 1–2 sentence report-lang summary: what source says + how it backs stance
     # (distinct from verbatim support_quote; optional LLM batch)
     stance_summary: str = ""
+    # Optional per-language stance texts for bilingual report render (zh/en).
+    # When present, report builders prefer ``stance_summary_i18n[lang]``.
+    stance_summary_i18n: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

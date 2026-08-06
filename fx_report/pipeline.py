@@ -141,19 +141,62 @@ class PipelineResult:
     diagnostics: dict[str, Any]
     news_meta: dict[str, Any]
     horizon_label: str
+    # Bilingual (or multi-lang) artifacts: lang → {md, html, torchcast, horizon}
+    # Primary fields above mirror the first language (zh when mode=both).
+    reports_by_lang: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def save(self, out_dir: str | Path) -> dict[str, Path]:
+        from fx_report.report.strings import (
+            normalize_report_mode,
+            report_lang_suffix,
+            report_langs_for_mode,
+        )
+
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         safe = self.pair.replace("/", "")
+        mode = normalize_report_mode(
+            (self.news_meta or {}).get("report_lang_mode")
+            or (self.diagnostics or {}).get("report_lang")
+            or "zh"
+        )
+        langs = report_langs_for_mode(mode)
+        by_lang = self.reports_by_lang or {}
+        if not by_lang:
+            # Legacy single-artifact result
+            by_lang = {
+                langs[0]: {
+                    "md": self.report_md,
+                    "html": self.report_html,
+                    "torchcast": self.torchcast,
+                    "horizon": self.horizon_label,
+                }
+            }
+
         paths: dict[str, Path] = {
-            "report": out / f"{safe}_report.md",
             "diagnostics": out / f"{safe}_diagnostics.json",
             "statements": out / f"{safe}_statements.json",
             "info_needs": out / f"{safe}_info_needs.json",
             "pipeline": out / f"{safe}_pipeline.json",
         }
-        paths["report"].write_text(self.report_md, encoding="utf-8")
+        primary_lang = langs[0]
+        for lang, bundle in by_lang.items():
+            suf = report_lang_suffix(lang)
+            md = bundle.get("md") or ""
+            md_path = out / f"{safe}{suf}_report.md"
+            md_path.write_text(str(md), encoding="utf-8")
+            paths[f"report_{lang}"] = md_path
+            if lang == primary_lang:
+                paths["report"] = md_path
+            tc = bundle.get("torchcast")
+            if tc is not None:
+                tc_paths = export_torchcast(tc, out, stem=f"{safe}{suf}")
+                paths[f"html_{lang}"] = tc_paths["html"]
+                paths[f"pdf_{lang}"] = tc_paths["pdf"]
+                if lang == primary_lang:
+                    paths["html"] = tc_paths["html"]
+                    paths["pdf"] = tc_paths["pdf"]
+
         paths["diagnostics"].write_text(
             json.dumps(self.diagnostics, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -173,6 +216,8 @@ class PipelineResult:
                     "score": self.score,
                     "probs": self.probs,
                     "horizon_label": self.horizon_label,
+                    "report_lang_mode": mode,
+                    "report_langs": list(by_lang.keys()),
                     "weighted": [w.to_dict() for w in self.weighted],
                 },
                 ensure_ascii=False,
@@ -180,10 +225,6 @@ class PipelineResult:
             ),
             encoding="utf-8",
         )
-        # Torchcast-style primary deliverable
-        tc_paths = export_torchcast(self.torchcast, out, stem=safe)
-        paths["html"] = tc_paths["html"]
-        paths["pdf"] = tc_paths["pdf"]
         return paths
 
 
@@ -1428,9 +1469,18 @@ def run_pipeline(
     news_meta["max_news"] = int(max_news)
     news_meta["step3_pool"] = int(step3_items)
     news_meta["calibrated_params"] = cal_source
-    from fx_report.report.strings import normalize_report_lang as _norm_rlang
+    from fx_report.report.strings import (
+        normalize_report_lang as _norm_rlang,
+        normalize_report_mode as _norm_rmode,
+        report_langs_for_mode as _langs_for_mode,
+    )
 
-    news_meta["report_lang"] = _norm_rlang(report_lang)
+    _mode = _norm_rmode(report_lang)
+    news_meta["report_lang_mode"] = _mode
+    news_meta["report_lang"] = _norm_rlang(
+        _langs_for_mode(_mode)[0]
+    )  # primary render lang
+    news_meta["report_langs"] = _langs_for_mode(_mode)
     news_meta["stance_summaries"] = bool(stance_summaries)
     news_meta["force_stance_llm"] = bool(force_stance_llm)
     say(
@@ -1586,7 +1636,11 @@ def run_pipeline_phase_b(
         save_spotcheck_stats,
     )
     from fx_report.news.summarize import apply_stance_summaries
-    from fx_report.report.strings import normalize_report_lang
+    from fx_report.report.strings import (
+        normalize_report_lang,
+        normalize_report_mode,
+        report_langs_for_mode,
+    )
     import pandas as pd
 
     if isinstance(checkpoint, dict):
@@ -1613,7 +1667,14 @@ def run_pipeline_phase_b(
     cal_source = cp.cal_source
     variance_reduction = cp.variance_reduction
     as_of_date = cp.as_of_date
-    report_lang = normalize_report_lang(news_meta.get("report_lang") or "zh")
+    report_mode = normalize_report_mode(
+        news_meta.get("report_lang_mode") or news_meta.get("report_lang") or "both"
+    )
+    report_langs = report_langs_for_mode(report_mode)
+    report_lang = normalize_report_lang(report_langs[0])
+    news_meta["report_lang_mode"] = report_mode
+    news_meta["report_langs"] = list(report_langs)
+    news_meta["report_lang"] = report_lang
     want_stance = bool(news_meta.get("stance_summaries", True))
     force_stance = bool(news_meta.get("force_stance_llm", False))
     cheap_hist = bool(news_meta.get("cheap_historical", False))
@@ -1677,11 +1738,12 @@ def run_pipeline_phase_b(
     for k, v in probs.items():
         say(f"  · {k}: {v:.1%}")
 
-    # 6b · per-reference 总结（报告语言；历史 cheap 默认抽取式）
+    # 6b · per-reference 总结（报告语言；双语一次填齐；历史 cheap 默认抽取式）
     if want_stance:
         stance_meta = apply_stance_summaries(
             evidence,
             lang=report_lang,
+            langs=report_langs,
             pair=cp.pair,
             llm_cfg=llm_cfg,
             enabled=True,
@@ -1690,38 +1752,67 @@ def run_pipeline_phase_b(
         )
         news_meta["stance_summary_meta"] = stance_meta
         say(
-            f"  → 引用总结 lang={report_lang} method={stance_meta.get('method')} "
+            f"  → 引用总结 langs={report_langs} method={stance_meta.get('method')} "
             f"set={stance_meta.get('n_set')} llm={stance_meta.get('n_llm')} "
             f"extractive={stance_meta.get('n_extractive')}"
         )
     else:
         news_meta["stance_summary_meta"] = {"enabled": False, "method": "skipped"}
 
-    # 7
-    say("【7/7】输出 FX Analyse 格式报告（PDF / HTML）")
-    report_md, report_html, torchcast, diagnostics, horizon = step7_build_report(
-        market=market,
-        weights=base,
-        scenarios=scenarios,
-        mc=mc,
-        probs=probs,
-        score=score,
-        mu_shift=mu_shift,
-        sigma_extra=sigma_extra,
-        edges=edges,
-        info_needs=info_needs,
-        statements=statements,
-        weighted=weighted,
-        stage_log=log,
-        headlines=headlines,
-        news_meta=news_meta,
-        bullish_currency=bullish,
-        as_of_date=as_of_date,
-        report_lang=report_lang,
+    # 7 · 输出报告：新闻/MC 只跑一次；按语言各渲染一份模板（双语 ≈ 便宜）
+    say(
+        "【7/7】输出 FX Analyse 格式报告（PDF / HTML）"
+        + (f" · langs={'+'.join(report_langs)}" if len(report_langs) > 1 else f" · lang={report_lang}")
     )
+    reports_by_lang: dict[str, dict[str, Any]] = {}
+    primary_md = ""
+    primary_html = ""
+    primary_tc = None
+    primary_diag: dict[str, Any] = {}
+    primary_horizon = ""
+    for lang in report_langs:
+        report_md, report_html, torchcast, diagnostics, horizon = step7_build_report(
+            market=market,
+            weights=base,
+            scenarios=scenarios,
+            mc=mc,
+            probs=probs,
+            score=score,
+            mu_shift=mu_shift,
+            sigma_extra=sigma_extra,
+            edges=edges,
+            info_needs=info_needs,
+            statements=statements,
+            weighted=weighted,
+            stage_log=log,
+            headlines=headlines,
+            news_meta=news_meta,
+            bullish_currency=bullish,
+            as_of_date=as_of_date,
+            report_lang=lang,
+        )
+        reports_by_lang[lang] = {
+            "md": report_md,
+            "html": report_html,
+            "torchcast": torchcast,
+            "horizon": horizon,
+            "diagnostics": diagnostics,
+        }
+        if primary_tc is None:
+            primary_md = report_md
+            primary_html = report_html
+            primary_tc = torchcast
+            primary_diag = diagnostics
+            primary_horizon = horizon
+
+    diagnostics = dict(primary_diag)
     diagnostics["calibrated_params"] = cal_source
     diagnostics["human_review"] = news_meta.get("human_review")
     diagnostics["pending_reviews"] = news_meta.get("pending_reviews")
+    diagnostics["report_lang_mode"] = report_mode
+    diagnostics["report_langs"] = list(report_langs)
+    torchcast = primary_tc
+    assert torchcast is not None
     torchcast.extra["calibrated_params"] = cal_source
     torchcast.extra["human_review"] = news_meta.get("human_review")
 
@@ -1740,12 +1831,13 @@ def run_pipeline_phase_b(
         mc=mc,
         probs=probs,
         weights=base,
-        report_md=report_md,
-        report_html=report_html,
+        report_md=primary_md,
+        report_html=primary_html,
         torchcast=torchcast,
         diagnostics=diagnostics,
         news_meta=news_meta,
-        horizon_label=horizon,
+        horizon_label=primary_horizon,
+        reports_by_lang=reports_by_lang,
     )
     if out_dir is not None:
         paths = result.save(out_dir)

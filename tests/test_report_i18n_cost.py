@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from fx_report.model.weights import EvidenceItem
 from fx_report.news.summarize import (
@@ -20,11 +21,16 @@ from fx_report.report.evidence_refs import (
 )
 from fx_report.report.strings import (
     DEFAULT_REPORT_LANG,
+    DEFAULT_REPORT_MODE,
+    LANG_BOTH,
     LANG_EN,
     LANG_ZH,
     L,
     normalize_report_lang,
+    normalize_report_mode,
     pair_phrase,
+    report_lang_suffix,
+    report_langs_for_mode,
 )
 from fx_report.report.torchcast import TorchcastReport, render_html
 
@@ -51,6 +57,19 @@ def test_normalize_report_lang_defaults_zh():
     assert normalize_report_lang(None) == DEFAULT_REPORT_LANG == LANG_ZH
     assert normalize_report_lang("EN") == LANG_EN
     assert normalize_report_lang("中文") == LANG_ZH
+    assert normalize_report_lang("both") == LANG_ZH  # primary for single-lang helpers
+
+
+def test_normalize_report_mode_bilingual_default():
+    assert normalize_report_mode(None) == DEFAULT_REPORT_MODE == LANG_BOTH
+    assert normalize_report_mode("中英双语") == LANG_BOTH
+    assert normalize_report_mode("bilingual") == LANG_BOTH
+    assert normalize_report_mode("EN") == LANG_EN
+    assert normalize_report_mode("中文") == LANG_ZH
+    assert report_langs_for_mode("both") == [LANG_ZH, LANG_EN]
+    assert report_langs_for_mode("en") == [LANG_EN]
+    assert report_lang_suffix("zh") == "_zh"
+    assert report_lang_suffix("en") == "_en"
 
 
 def test_labels_zh_en_distinct():
@@ -89,6 +108,23 @@ def test_apply_stance_summaries_cheap_historical_skips_llm():
     assert meta["method"] == "extractive"
     assert meta["n_llm"] == 0
     assert all((e.stance_summary or "").strip() for e in items)
+
+
+def test_apply_stance_summaries_bilingual_extractive_fills_i18n():
+    items = [_ev()]
+    meta = apply_stance_summaries(
+        items, langs=["zh", "en"], llm_cfg=None, cheap_historical=False
+    )
+    assert meta["bilingual"] is True
+    assert meta["method"] == "extractive"
+    bag = items[0].stance_summary_i18n
+    assert "zh" in bag and "en" in bag
+    assert "该来源称" in bag["zh"] or "上行" in bag["zh"]
+    assert "Source indicates" in bag["en"]
+    zh_meta = evidence_stance_summary_meta(items[0], lang="zh")
+    en_meta = evidence_stance_summary_meta(items[0], lang="en")
+    assert zh_meta["text"]
+    assert "Source indicates" in en_meta["text"]
 
 
 def test_apply_stance_summaries_force_extractive_without_key():
@@ -189,6 +225,7 @@ def test_cost_table_has_baseline_and_ref_tiers():
     assert "基线" in blob
     assert "30" in blob and "80" in blob and "100" in blob
     assert "2–3" in blob or "2-3" in blob
+    assert "双语" in blob or "不重跑" in blob
     base = estimate_live_report_cost(n_refs=80, include_stance_summaries=False)
     with_sum = estimate_live_report_cost(n_refs=80, include_stance_summaries=True)
     assert with_sum["total_usd"] > base["total_usd"]
@@ -200,3 +237,100 @@ def test_cost_table_has_baseline_and_ref_tiers():
         ]
         == 0.0
     )
+
+
+def test_pipeline_result_save_bilingual_filenames(tmp_path: Path):
+    """Dual-lang artifacts get ``_zh`` / ``_en`` stems; news/MC not re-run here."""
+    from fx_report.pipeline import PipelineResult
+    from fx_report.market.fetch_data import MarketSnapshot
+    from fx_report.model.monte_carlo import MCResult
+    from fx_report.model.weights import ModelWeights
+
+    tc_zh = TorchcastReport(
+        pair="USD/AUD",
+        question="中文问",
+        forecast_date="2026-08-06",
+        n_evidence=0,
+        n_buckets=2,
+        probs={"a": 1.0},
+        top_bucket="a",
+        top_prob=1.0,
+        upside_bullets=[],
+        downside_bullets=[],
+        executive_summary="中文摘要",
+        narratives=[],
+        higher_evidence=[],
+        lower_evidence=[],
+        context_evidence=[],
+        watches=[],
+        spot=1.5,
+        lang="zh",
+    )
+    tc_en = TorchcastReport(
+        pair="USD/AUD",
+        question="EN Q",
+        forecast_date="2026-08-06",
+        n_evidence=0,
+        n_buckets=2,
+        probs={"a": 1.0},
+        top_bucket="a",
+        top_prob=1.0,
+        upside_bullets=[],
+        downside_bullets=[],
+        executive_summary="EN summary",
+        narratives=[],
+        higher_evidence=[],
+        lower_evidence=[],
+        context_evidence=[],
+        watches=[],
+        spot=1.5,
+        lang="en",
+    )
+    market = MagicMock(spec=MarketSnapshot)
+    mc = MagicMock(spec=MCResult)
+    result = PipelineResult(
+        pair="USD/AUD",
+        stage_log=[],
+        info_needs=[],
+        market=market,
+        statements=[],
+        weighted=[],
+        score=0.0,
+        mu_shift=0.0,
+        sigma_extra=1.0,
+        scenarios=[],
+        edges=(1.0, 1.1, 1.2, 1.3),
+        mc=mc,
+        probs={"a": 1.0},
+        weights=ModelWeights(),
+        report_md="# zh",
+        report_html="<html lang=zh>",
+        torchcast=tc_zh,
+        diagnostics={},
+        news_meta={"report_lang_mode": "both", "report_langs": ["zh", "en"]},
+        horizon_label="h",
+        reports_by_lang={
+            "zh": {"md": "# zh", "html": "<zh/>", "torchcast": tc_zh, "horizon": "h"},
+            "en": {"md": "# en", "html": "<en/>", "torchcast": tc_en, "horizon": "h"},
+        },
+    )
+    with patch("fx_report.pipeline.export_torchcast") as exp:
+        def _fake_export(report, out_dir, *, stem):
+            out = Path(out_dir)
+            html = out / f"{stem}_fx_analyse.html"
+            pdf = out / f"{stem}_fx_analyse.pdf"
+            html.write_text("ok", encoding="utf-8")
+            pdf.write_bytes(b"%PDF")
+            return {"html": html, "pdf": pdf}
+
+        exp.side_effect = _fake_export
+        paths = result.save(tmp_path)
+
+    assert paths["report_zh"].name == "USDAUD_zh_report.md"
+    assert paths["report_en"].name == "USDAUD_en_report.md"
+    assert paths["pdf_zh"].name == "USDAUD_zh_fx_analyse.pdf"
+    assert paths["pdf_en"].name == "USDAUD_en_fx_analyse.pdf"
+    assert paths["html_zh"].name.endswith("_zh_fx_analyse.html")
+    assert "# zh" in paths["report_zh"].read_text(encoding="utf-8")
+    assert "# en" in paths["report_en"].read_text(encoding="utf-8")
+    assert exp.call_count == 2

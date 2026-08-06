@@ -106,8 +106,8 @@ def cost_table_rows_zh() -> list[dict[str, str]]:
             "约 USD/份": f"${base['total_usd']:.3f}",
         },
         {
-            "场景": "+ 中文报告（模板双语，无整篇 LLM 翻译）",
-            "约 USD/份": f"+$0.000（合计 ${zh_tmpl['total_usd']:.3f}）",
+            "场景": "+ 中文 / 英 / 双语报告（模板切换，无整篇 LLM 翻译）",
+            "约 USD/份": f"+$0.000（合计 ${zh_tmpl['total_usd']:.3f}；双语不重跑新闻/MC）",
         },
         {
             "场景": "+ 中文报告（若整篇 LLM 翻译，不推荐）",
@@ -148,6 +148,6 @@ def cost_caption_zh() -> str:
     for r in rows:
         lines.append(f"- {r['场景']}：{r['约 USD/份']}")
     lines.append(
-        "说明：模板中文≈$0；逐条总结按批处理（约 20 条/次），无 Key 时退回抽取式。"
+        "说明：模板中/英/双语双渲染≈$0（不重跑新闻与 MC）；逐条总结按批处理（约 20 条/次），无 Key 时退回抽取式。"
     )
     return "\n".join(lines)

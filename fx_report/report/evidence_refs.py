@@ -167,7 +167,12 @@ def evidence_stance_summary_meta(
 ) -> dict[str, Any]:
     """Report-lang 总结 for References — distinct from verbatim support quote."""
     lang = normalize_report_lang(lang)
-    text = _clean_quote_candidate(getattr(e, "stance_summary", None) or "")
+    i18n = getattr(e, "stance_summary_i18n", None) or {}
+    text = ""
+    if isinstance(i18n, dict):
+        text = _clean_quote_candidate(i18n.get(lang) or "")
+    if not text:
+        text = _clean_quote_candidate(getattr(e, "stance_summary", None) or "")
     if not text:
         # Soft fallback: extractive summary field (not a fake quote)
         text = _clean_quote_candidate(getattr(e, "summary", None) or "")

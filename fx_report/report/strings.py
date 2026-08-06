@@ -11,16 +11,52 @@ from typing import Any
 
 LANG_ZH = "zh"
 LANG_EN = "en"
+LANG_BOTH = "both"
 DEFAULT_REPORT_LANG = LANG_ZH
+# UI / pipeline mode: zh | en | both (default bilingual — one MC, two renders)
+DEFAULT_REPORT_MODE = LANG_BOTH
+REPORT_LANGS = (LANG_ZH, LANG_EN)
+REPORT_MODES = (LANG_BOTH, LANG_ZH, LANG_EN)
 
 
 def normalize_report_lang(value: object | None) -> str:
+    """Normalize to a single render language ``zh`` or ``en``.
+
+    ``both`` / bilingual aliases map to ``zh`` (primary) for single-lang helpers.
+    """
     raw = str(value or "").strip().lower()
     if raw in ("en", "en-us", "en-gb", "english"):
         return LANG_EN
     if raw in ("zh", "zh-cn", "zh-hans", "cn", "chinese", "中文"):
         return LANG_ZH
+    if raw in ("both", "bilingual", "zh+en", "en+zh", "zh_en", "中英", "中英双语", "双语"):
+        return LANG_ZH
     return DEFAULT_REPORT_LANG
+
+
+def normalize_report_mode(value: object | None) -> str:
+    """Normalize report language *mode*: ``zh`` | ``en`` | ``both``."""
+    raw = str(value or "").strip().lower()
+    if raw in ("both", "bilingual", "zh+en", "en+zh", "zh_en", "中英", "中英双语", "双语"):
+        return LANG_BOTH
+    if raw in ("en", "en-us", "en-gb", "english"):
+        return LANG_EN
+    if raw in ("zh", "zh-cn", "zh-hans", "cn", "chinese", "中文"):
+        return LANG_ZH
+    return DEFAULT_REPORT_MODE
+
+
+def report_langs_for_mode(mode: object | None) -> list[str]:
+    """Languages to render for a mode (news/MC run once; templates twice if both)."""
+    m = normalize_report_mode(mode)
+    if m == LANG_BOTH:
+        return [LANG_ZH, LANG_EN]
+    return [m]
+
+
+def report_lang_suffix(lang: object | None) -> str:
+    """Filename token: ``_zh`` or ``_en``."""
+    return f"_{normalize_report_lang(lang)}"
 
 
 CCY_NAME: dict[str, dict[str, str]] = {
