@@ -39,6 +39,8 @@ from fx_report.ui.ux_helpers import (
     START_SIMPLE_DIALOG_KEYS,
     app_password_expected,
     bb_jump_compensate_warning,
+    clear_run_blocking_state,
+    consume_force_run,
     default_live_max_news,
     format_cheap_historical_caption,
     format_missing_start_message,
@@ -46,6 +48,8 @@ from fx_report.ui.ux_helpers import (
     missing_start_choices,
     password_accepted,
     pct_cuts_in_bounds,
+    request_force_run,
+    request_new_report_setup,
     resolve_replay_ai_research,
     seed_pct_widget_value,
     should_heal_floor_clamp,
@@ -1220,6 +1224,36 @@ def _dismiss_start_setup() -> None:
 def _dismiss_missing_start() -> None:
     st.session_state.pop("_show_missing_start", None)
     st.session_state.pop("_missing_start_labels", None)
+
+
+def _render_after_report_actions(*, key_prefix: str) -> None:
+    """
+    Always-visible CTAs after a finished report so the user can start again
+    without scrolling back to the top run button / fighting a stuck HITL lock.
+    Keeps last_* downloads until the next pipeline overwrite.
+    """
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button(
+            t("main.rerun"),
+            type="primary",
+            use_container_width=True,
+            key=f"{key_prefix}_rerun",
+            help=t("main.rerun.help"),
+        ):
+            request_force_run(st.session_state)
+            st.rerun()
+    with c2:
+        if st.button(
+            t("main.new_report"),
+            use_container_width=True,
+            key=f"{key_prefix}_new_report",
+            help=t("main.new_report.help"),
+        ):
+            request_new_report_setup(st.session_state)
+            st.rerun()
+    with c3:
+        st.caption(t("main.after_report_hint"))
 
 
 def _apply_order_pdf_to_dialog_state(result: OrderDocParse) -> None:
@@ -2752,7 +2786,7 @@ def main() -> None:
         with c3:
             st.write("")
             can_run = bool(spot_row and spot_row.get("ok"))
-            run = st.button(
+            run_clicked = st.button(
                 t("main.run"),
                 type="primary",
                 use_container_width=True,
@@ -2767,6 +2801,10 @@ def main() -> None:
                 disabled=not can_run,
                 help=t("main.compare.help"),
             )
+        force_run = consume_force_run(st.session_state)
+        run = bool(run_clicked or force_run)
+        if "last_report" in st.session_state:
+            _render_after_report_actions(key_prefix="after_report_top")
         if not can_run:
             st.caption(t("main.no_spot"))
         elif "last_report" not in st.session_state and not run:
@@ -3123,16 +3161,14 @@ def main() -> None:
     else:
         start = date.today()
         end = date.today() + timedelta(days=92)
-        run = False
+        # Still honor 「再跑一份」 if start/bullish briefly unset but force was queued
+        run = consume_force_run(st.session_state)
 
-    # HITL: restore pending reviews across refresh (blocking section before results)
-    if st.session_state.get("hitl_checkpoint"):
-        render_hitl_uncertain_form()
-        # While waiting for human, do not show a stale finished report underneath
-        if st.session_state.get("hitl_checkpoint"):
-            return
-
+    # New run always wins over a stuck HITL pause / leftover dialog overlay.
+    # (Previously HITL returned *before* `if run:`, so 「运行分析」 did nothing
+    # while hitl_checkpoint remained — users could not start another report.)
     if run:
+        clear_run_blocking_state(st.session_state, also_clear_force_run=True)
         missing = _missing_for_start_cfg(
             st.session_state.get("start_cfg"),
             bucket_mode=bucket_mode_choice,
@@ -3253,6 +3289,12 @@ def main() -> None:
             }
             _store_pipeline_result(result)
 
+    # HITL: restore pending reviews across refresh (only when not starting a new run)
+    if st.session_state.get("hitl_checkpoint"):
+        render_hitl_uncertain_form()
+        # While waiting for human, do not show a stale finished report underneath
+        if st.session_state.get("hitl_checkpoint"):
+            return
 
     if "last_report" not in st.session_state:
         return
@@ -3263,6 +3305,7 @@ def main() -> None:
 
     st.markdown("---")
     st.subheader("分析结果")
+    _render_after_report_actions(key_prefix="after_report_results")
     k1, k2, k3, k4 = st.columns(4)
     top = max(probs, key=probs.get)
     k1.metric("货币对", diag["market"]["pair"])

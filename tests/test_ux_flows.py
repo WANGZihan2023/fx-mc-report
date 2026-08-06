@@ -23,14 +23,21 @@ from fx_report.pipeline import step4_evaluate_impact
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MIN,
     START_CHOICE_PLACEHOLDER,
+    FORCE_RUN_STATE_KEY,
+    LAST_REPORT_ARTIFACT_KEYS,
+    RUN_BLOCKING_STATE_KEYS,
     abs_edges_to_pct_cuts,
     app_password_expected,
     bb_jump_compensate_warning,
+    clear_run_blocking_state,
+    consume_force_run,
     format_missing_start_message,
     is_unset_choice,
     missing_start_choices,
     password_accepted,
     pct_cuts_in_bounds,
+    request_force_run,
+    request_new_report_setup,
     seed_pct_widget_value,
     should_heal_floor_clamp,
 )
@@ -300,6 +307,72 @@ def test_missing_start_choices_invalid_engine_and_bucket():
     )
     assert "峰值引擎" in missing
     assert "分档边界方式" in missing
+
+
+# ---------------------------------------------------------------------------
+# After-report re-run locks (HITL / dialog stickiness)
+# ---------------------------------------------------------------------------
+
+
+def test_clear_run_blocking_preserves_last_report_artifacts():
+    state = {
+        "hitl_checkpoint": {"pair": "USD/AUD"},
+        "hitl_choices": {"N-01": "skip"},
+        "_open_start_setup": True,
+        "_show_missing_start": True,
+        "_missing_start_labels": ["分档边界方式"],
+        FORCE_RUN_STATE_KEY: True,
+        "last_report": "# report",
+        "last_pdf_bytes": b"%PDF",
+        "last_diag": {"score_S": 0.1},
+        "start_cfg": {"pair": "USD/AUD"},
+    }
+    cleared = clear_run_blocking_state(state)
+    assert "hitl_checkpoint" in cleared
+    assert "_open_start_setup" in cleared
+    assert FORCE_RUN_STATE_KEY in cleared
+    assert "hitl_checkpoint" not in state
+    assert "_show_missing_start" not in state
+    # Downloads / report body stay until the next pipeline overwrite
+    assert state["last_report"] == "# report"
+    assert state["last_pdf_bytes"] == b"%PDF"
+    assert state["last_diag"]["score_S"] == 0.1
+    assert state["start_cfg"]["pair"] == "USD/AUD"
+    for key in LAST_REPORT_ARTIFACT_KEYS:
+        assert key not in RUN_BLOCKING_STATE_KEYS
+
+
+def test_request_force_run_clears_hitl_and_queues_rerun():
+    state = {
+        "hitl_checkpoint": {"pending": 1},
+        "hitl_choices": {},
+        "_open_start_setup": True,
+        "last_report": "keep me",
+    }
+    request_force_run(state)
+    assert "hitl_checkpoint" not in state
+    assert "_open_start_setup" not in state
+    assert state[FORCE_RUN_STATE_KEY] is True
+    assert state["last_report"] == "keep me"
+    assert consume_force_run(state) is True
+    assert FORCE_RUN_STATE_KEY not in state
+    assert consume_force_run(state) is False
+
+
+def test_request_new_report_setup_reopens_dialog_keeps_artifacts():
+    state = {
+        "hitl_checkpoint": {"x": 1},
+        "_show_missing_start": True,
+        "last_report_html": "<html/>",
+        "last_pdf_bytes": b"pdf",
+    }
+    request_new_report_setup(state)
+    assert "hitl_checkpoint" not in state
+    assert "_show_missing_start" not in state
+    assert state.get("_open_start_setup") is True
+    assert FORCE_RUN_STATE_KEY not in state
+    assert state["last_report_html"] == "<html/>"
+    assert state["last_pdf_bytes"] == b"pdf"
 
 
 # ---------------------------------------------------------------------------

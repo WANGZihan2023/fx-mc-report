@@ -8,7 +8,7 @@ start-setup required choices (no silent defaults).
 from __future__ import annotations
 
 import os
-from typing import Mapping, Sequence
+from typing import Mapping, MutableMapping, Sequence
 
 from fx_report.ui.i18n import (
     CHOICE_PLACEHOLDERS,
@@ -210,6 +210,83 @@ def format_missing_start_message(
 ) -> str:
     """Popup copy listing what the user still needs to pick (localized)."""
     return format_missing_message(list(missing_labels), lang=lang)
+
+
+# Session keys that can block starting another analysis after a finished run.
+# Cleared by 「再跑一份 / 新报告」 and when the user clicks 「运行分析」 again.
+# Do NOT include last_report / last_pdf_* / last_diag — keep downloads until
+# the next successful (or HITL mid-flight) overwrite.
+RUN_BLOCKING_STATE_KEYS: tuple[str, ...] = (
+    "hitl_checkpoint",
+    "hitl_choices",
+    "_open_start_setup",
+    "_show_missing_start",
+    "_missing_start_labels",
+)
+
+# Prior-report artifacts kept across 「再跑一份 / 新报告」 until overwritten.
+LAST_REPORT_ARTIFACT_KEYS: tuple[str, ...] = (
+    "last_report",
+    "last_report_html",
+    "last_pdf_bytes",
+    "last_pdf_error",
+    "last_diag",
+    "last_probs",
+    "last_edges",
+    "last_headlines",
+    "last_news_meta",
+    "last_info_needs",
+    "last_statements",
+    "last_auto_evidence",
+    "last_base_scenarios",
+    "last_weight_mapping",
+    "last_label_audit_csv",
+    "last_stage_log",
+    "last_source",
+)
+
+FORCE_RUN_STATE_KEY = "_force_run_analysis"
+
+
+def clear_run_blocking_state(
+    state: MutableMapping[str, object],
+    *,
+    also_clear_force_run: bool = True,
+) -> list[str]:
+    """
+    Drop locks that prevent a fresh analysis (HITL pause, start/missing dialogs).
+
+    Preserves last_* report artifacts so PDF/HTML/MD downloads stay available
+    until the next pipeline overwrite. Returns the keys that were removed.
+    """
+    cleared: list[str] = []
+    for key in RUN_BLOCKING_STATE_KEYS:
+        if key in state:
+            state.pop(key, None)
+            cleared.append(key)
+    if also_clear_force_run and FORCE_RUN_STATE_KEY in state:
+        state.pop(FORCE_RUN_STATE_KEY, None)
+        cleared.append(FORCE_RUN_STATE_KEY)
+    return cleared
+
+
+def request_force_run(state: MutableMapping[str, object]) -> None:
+    """Clear blocking locks and ask the next script run to treat Run as clicked."""
+    clear_run_blocking_state(state, also_clear_force_run=True)
+    state[FORCE_RUN_STATE_KEY] = True
+
+
+def request_new_report_setup(state: MutableMapping[str, object]) -> None:
+    """Clear blocking locks and reopen Start setup; keep last_* downloads."""
+    clear_run_blocking_state(state, also_clear_force_run=True)
+    state["_open_start_setup"] = True
+
+
+def consume_force_run(state: MutableMapping[str, object]) -> bool:
+    """Return True once if 「再跑一份」 (or equivalent) requested a forced run."""
+    if not state.pop(FORCE_RUN_STATE_KEY, None):
+        return False
+    return True
 
 
 def resolve_replay_ai_research(
