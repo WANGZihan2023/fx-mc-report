@@ -919,10 +919,11 @@ def render_html(report: TorchcastReport) -> str:
             quote_html = ""
             if quote:
                 qlab = _esc(str(sq.get("label") or L("support", lang=lang)))
+                q_open, q_close = ('"', '"') if lang == "en" else ("「", "」")
                 quote_html = (
                     f'<div class="ev-quote">'
                     f'<span class="ev-quote-label">{qlab}</span>'
-                    f"「{_esc(quote)}」"
+                    f"{q_open}{_esc(quote)}{q_close}"
                     f"</div>"
                 )
             warn_lab = link_meta.get("label") or ""
@@ -1000,7 +1001,7 @@ def render_html(report: TorchcastReport) -> str:
     <span>{_esc(L("meta_quote", lang=lang, p=report.pair))}</span>
     <span>{_esc(L("meta_peak", lang=lang, e=str(report.extra.get("peak_engine") or "path_max")))}</span>
     <span>{_esc(L("meta_ev_quality", lang=lang, q=str(report.extra.get("evidence_quality") or "n/a")))}</span>
-    <span>{_esc(L("meta_clusters", lang=lang, c=str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"), r=str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence)))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}{(" · ⚠" + str(len(report.extra.get("cluster_warnings") or [])) + ("告警" if lang == "zh" else " warns")) if (report.extra.get("cluster_warnings") or []) else ""}</span>
+    <span>{_esc(L("meta_clusters", lang=lang, c=str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"), r=str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence)))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}{(" · ⚠" + str(len(report.extra.get("cluster_warnings") or [])) + " " + L("warns", lang=lang)) if (report.extra.get("cluster_warnings") or []) else ""}</span>
     {_oos_meta_span(report.extra.get("calib_oos"))}
   </div>
 
@@ -1205,7 +1206,7 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     dedup_bit = " · dedup" if report.extra.get("cluster_dedup_applied") else ""
     warn_list = list(report.extra.get("cluster_warnings") or [])
     warn_bit = (
-        f" · ⚠{len(warn_list)}" + ("告警" if lang == "zh" else " warns")
+        f" · ⚠{len(warn_list)} {L('warns', lang=lang)}"
         if warn_list
         else ""
     )
@@ -1348,9 +1349,10 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
             quote = sq.get("quote") or ""
             if quote:
                 qlab = _esc(str(sq.get("label") or L("support", lang=lang)))
+                q_open, q_close = ('"', '"') if lang == "en" else ("「", "」")
                 body += (
                     f"<br/><font color='#6B6B6B' size='8'><i>"
-                    f"{qlab} 「{_esc(quote)}」"
+                    f"{qlab} {q_open}{_esc(quote)}{q_close}"
                     f"</i></font>"
                 )
             link_meta = evidence_link_meta(e, lang=lang)

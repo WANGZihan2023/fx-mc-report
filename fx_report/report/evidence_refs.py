@@ -245,7 +245,10 @@ def format_reference_markdown_row(
         bits.append(f"{stance['label']}：{stance['text']}")
     quote = meta.get("quote") or ""
     if quote:
-        bits.append(f"{meta.get('label') or L('support', lang=lang)} 「{quote}」")
+        q_open, q_close = ('"', '"') if lang == "en" else ("「", "」")
+        bits.append(
+            f"{meta.get('label') or L('support', lang=lang)} {q_open}{quote}{q_close}"
+        )
     line = prefix + " · ".join(bits)
     if link["url"]:
         line += f" — {link['url']}"

@@ -207,6 +207,248 @@ def test_html_en_chrome():
     assert "Summary" in html
     assert "Support quote" in html
     assert "Probability Distribution" in html
+    assert "总结" not in html
+    assert "支撑引用" not in html
+    assert "概率分布" not in html
+
+
+def test_build_torchcast_and_markdown_en_headings():
+    """Key EN chrome must appear when lang=en (no ZH section titles)."""
+    from datetime import date
+
+    import numpy as np
+
+    from fx_report.market.fetch_data import MarketSnapshot
+    from fx_report.model.monte_carlo import MCResult
+    from fx_report.model.weights import ModelWeights, default_scenarios
+    from fx_report.report.text import build_report_markdown
+    from fx_report.report.torchcast import build_torchcast_report
+
+    market = MarketSnapshot(
+        asof="2026-08-06",
+        pair="USD/AUD",
+        spot=1.55,
+        provider_raw=1.55,
+        sigma_daily=0.006,
+        sigma_annual=0.095,
+        mean_daily_return=0.0,
+        n_returns=60,
+        lookback_days=60,
+        history_start="2025-01-01",
+        history_end="2026-08-01",
+        source="test",
+        brent=None,
+        dxy_proxy=None,
+        notes=["unit test"],
+        history_ticker="TEST",
+        spot_ticker="TEST",
+    )
+    edges = (1.50, 1.55, 1.60, 1.65)
+    labels = ["< 1.500000", "1.500000 to 1.550000", "1.550000 to 1.600000", "1.600000 to 1.650000", ">= 1.650000"]
+    probs = {lab: 0.2 for lab in labels}
+    probs[labels[2]] = 0.4
+    probs[labels[0]] = 0.0
+    weights = ModelWeights()
+    weights.evidence = [
+        _ev(id="U-1", direction=1),
+        _ev(id="D-1", direction=-1, title="AUD soft on China data", category="china_growth"),
+    ]
+    weights.evidence[0].stance_summary_i18n = {
+        "zh": "该来源称偏鹰。",
+        "en": "Source indicates a hawkish Fed bias.",
+    }
+    weights.evidence[0].stance_summary = "该来源称偏鹰。"
+    scens = default_scenarios("USD/AUD")
+    mc = MCResult(
+        maxima=np.array([1.56, 1.58]),
+        bucket_labels=list(labels),
+        raw_probs=dict(probs),
+        scenario_counts={"baseline": 2},
+        n_sims=2,
+        spot=1.55,
+        sigma_daily_base=0.006,
+        trading_days=20,
+        percentiles={"p50": 1.56, "p90": 1.60, "p95": 1.62},
+        peak_engine="path_max",
+    )
+    tc = build_torchcast_report(
+        market,
+        weights,
+        scens,
+        mc,
+        probs,
+        score=0.5,
+        mu_shift=0.01,
+        sigma_extra=1.05,
+        horizon_start=date(2026, 8, 6),
+        horizon_end=date(2026, 9, 5),
+        bucket_edges=edges,
+        bullish_currency="USD",
+        lang="en",
+    )
+    html = render_html(tc)
+    for needle in (
+        "Probability Distribution",
+        "Executive Summary",
+        "Evidence Base",
+        "What to Watch",
+        "Higher",
+        "Lower",
+        "Summary",
+        "Support quote",
+        "Mathematical Floor",
+        "If → Then",
+    ):
+        assert needle in html, needle
+    for zh in ("概率分布", "执行摘要", "证据库", "关注事项", "支撑引用", "数学地板", "若→则"):
+        assert zh not in html, zh
+    assert "Source indicates a hawkish Fed bias" in html
+
+    md = build_report_markdown(
+        market,
+        weights,
+        scens,
+        mc,
+        probs,
+        score=0.5,
+        mu_shift=0.01,
+        sigma_extra=1.05,
+        horizon_label="2026-08-06 to 2026-09-05",
+        bucket_edges=edges,
+        lang="en",
+    )
+    for needle in (
+        "Probability distribution",
+        "Market anchors",
+        "Executive summary",
+        "Scenario weights",
+        "Raw MC frequencies",
+        "Strength rubric",
+        "What to Watch",
+        "How strength is scored",
+        "Risk-on / safe-haven",
+        "contrib",
+        "Summary",
+    ):
+        assert needle in md, needle
+    for zh in (
+        "概率分布",
+        "行情锚点",
+        "执行摘要",
+        "情景权重",
+        "原始 MC",
+        "信息强弱如何判定",
+        "风险升高",
+        "贡献",
+        "计分",
+    ):
+        assert zh not in md, zh
+
+
+def test_pipeline_preface_en_localized():
+    """Markdown preface/appendix chrome must be English when report_lang=en."""
+    from datetime import date
+
+    import numpy as np
+
+    from fx_report.market.fetch_data import MarketSnapshot
+    from fx_report.model.monte_carlo import MCResult
+    from fx_report.model.weights import ModelWeights, default_scenarios
+    from fx_report.pipeline import InfoNeed, WeightedEvidence, step7_build_report
+
+    market = MarketSnapshot(
+        asof="2026-08-06",
+        pair="USD/AUD",
+        spot=1.55,
+        provider_raw=1.55,
+        sigma_daily=0.006,
+        sigma_annual=0.095,
+        mean_daily_return=0.0,
+        n_returns=60,
+        lookback_days=60,
+        history_start="2025-01-01",
+        history_end="2026-08-01",
+        source="test",
+        brent=None,
+        dxy_proxy=None,
+        notes=[],
+    )
+    edges = (1.50, 1.55, 1.60, 1.65)
+    labels = ["a", "b", "c", "d", "e"]
+    probs = {lab: 0.2 for lab in labels}
+    weights = ModelWeights()
+    e = _ev()
+    e.stance_summary_i18n = {"en": "Source indicates Fed patience.", "zh": "偏鹰"}
+    weights.evidence = [e]
+    weighted = [
+        WeightedEvidence(evidence=e, impact_note="中文不应出现", weight_contrib=0.5)
+    ]
+    scens = default_scenarios("USD/AUD")
+    mc = MCResult(
+        maxima=np.array([1.56]),
+        bucket_labels=labels,
+        raw_probs=probs,
+        scenario_counts={"baseline": 1},
+        n_sims=1,
+        spot=1.55,
+        sigma_daily_base=0.006,
+        trading_days=20,
+        percentiles={"p50": 1.56, "p90": 1.60, "p95": 1.62},
+    )
+    needs = [
+        InfoNeed(
+            id="fed",
+            need="FOMC 决议",
+            why="美元利率",
+            sources="Fed",
+            driver="fed",
+        )
+    ]
+    md, html, tc, diag, horizon = step7_build_report(
+        market=market,
+        weights=weights,
+        scenarios=scens,
+        mc=mc,
+        probs=probs,
+        score=0.1,
+        mu_shift=0.0,
+        sigma_extra=1.0,
+        edges=edges,
+        info_needs=needs,
+        statements=[],
+        weighted=weighted,
+        stage_log=[],
+        headlines=[],
+        news_meta={"max_news": 10},
+        bullish_currency="USD",
+        as_of_date=date(2026, 8, 6),
+        report_lang="en",
+    )
+    assert "Analysis pipeline" in md
+    assert "Information needs" in md
+    assert "Weight contributions" in md
+    assert "References / Evidence base" in md
+    assert "FOMC decisions" in md  # localized from DRIVER_CATALOG_EN
+    assert "Lifts upper tail" in md or "Caps peak" in md or "Neutral" in md
+    assert "分析流程" not in md
+    assert "需要什么" not in md
+    assert "生成时间" not in md
+    assert "Probability Distribution" in html
+    assert tc.lang == "en"
+    assert "to" in horizon
+
+
+def test_scenario_narrative_and_impact_note_i18n():
+    from fx_report.report.strings import format_impact_note, scenario_narrative
+
+    assert "Risk-on" in scenario_narrative("escalation", "USD/AUD", lang="en")
+    assert "风险升高" in scenario_narrative("escalation", "USD/AUD", lang="zh")
+    e = _ev(direction=1, category="fed")
+    en = format_impact_note(e, 0.5, lang="en")
+    zh = format_impact_note(e, 0.5, lang="zh")
+    assert "Lifts upper tail" in en
+    assert "推高" in zh
+    assert "中文不应" not in en
 
 
 def test_stance_meta_distinct_from_support_quote():

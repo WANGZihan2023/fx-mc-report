@@ -1063,14 +1063,32 @@ def step7_build_report(
         lang=report_lang,
     )
 
-    # 前置流程说明 + References（Markdown 调试副本）
-    needs_md = "\n".join(
-        f"| {n.id} | {n.need} | {n.why} | {n.sources} |" for n in info_needs
-    )
+    # 前置流程说明 + References（Markdown 调试副本）— fully localized by report_lang
+    from fx_report.market.pair_drivers import localize_info_need
+    from fx_report.report.evidence_refs import format_reference_markdown_row
+    from fx_report.report.strings import L, format_impact_note
+
+    need_rows: list[str] = []
+    for n in info_needs:
+        loc = localize_info_need(
+            {
+                "id": n.id,
+                "need": n.need,
+                "why": n.why,
+                "sources": n.sources,
+                "driver": n.driver or n.id,
+                "label": "",
+            },
+            lang=report_lang,
+        )
+        need_rows.append(
+            f"| {loc.get('id') or n.id} | {loc.get('need') or n.need} | "
+            f"{loc.get('why') or n.why} | {loc.get('sources') or n.sources} |"
+        )
+    needs_md = "\n".join(need_rows)
     ref_cap = refs_statement_cap(int(news_meta.get("max_news") or len(weighted) or 30))
     # Prefer evidence-base rows with quoted excerpts (Torchcast-like); fall back to statements
-    from fx_report.report.evidence_refs import format_reference_markdown_row
-
+    q_open, q_close = ('"', '"') if report_lang == "en" else ("「", "」")
     if weights.evidence:
         refs_md = "\n".join(
             format_reference_markdown_row(w.evidence, index=i, lang=report_lang)
@@ -1078,54 +1096,56 @@ def step7_build_report(
         )
     else:
         refs_md = "\n".join(
-            f"{i}. [{s.source}] 「{(s.statement or '')[:160]}」"
+            f"{i}. [{s.source}] {q_open}{(s.statement or '')[:160]}{q_close}"
             + (f" — {s.url}" if s.url else "")
             for i, s in enumerate(statements[:ref_cap], 1)
         )
     weights_md = "\n".join(
-        f"| {w.evidence.id} | {w.evidence.strength_label} | {w.weight_contrib:+.3f} | {w.impact_note} |"
+        f"| {w.evidence.id} | {w.evidence.strength_label} | {w.weight_contrib:+.3f} | "
+        f"{format_impact_note(w.evidence, w.weight_contrib, lang=report_lang)} |"
         for w in weighted
     )
     bullish_line = (
-        f"Bullish: **{bullish_currency}**｜Analysis quote: **{market.pair}**\n\n"
+        L("preface_bullish", lang=report_lang, c=bullish_currency, p=market.pair) + "\n\n"
         if bullish_currency
         else ""
     )
-    preface = f"""## 分析流程（固定七步）
+    preface = f"""{L("preface_title", lang=report_lang)}
 
-{bullish_line}1. 选择货币对 → **{market.pair}**
-2. 评估所需信息 → {len(info_needs)} 项
-3. 存储有影响语句 → {len(statements)} 条
-4. 评估影响 → 证据 {len(weights.evidence)} 条
-5. 赋予权重 → 见下表
-6. 数学分析 → 蒙特卡洛 {mc.n_sims:,} 次
-7. 输出本报告（Torchcast PDF / HTML 为主）
+{bullish_line}{L("preface_1", lang=report_lang, pair=market.pair)}
+{L("preface_2", lang=report_lang, n=len(info_needs))}
+{L("preface_3", lang=report_lang, n=len(statements))}
+{L("preface_4", lang=report_lang, n=len(weights.evidence))}
+{L("preface_5", lang=report_lang)}
+{L("preface_6", lang=report_lang, n=f"{mc.n_sims:,}")}
+{L("preface_7", lang=report_lang)}
 
-### 步骤2 · 信息需求
+{L("preface_needs", lang=report_lang)}
 
-| ID | 需要什么 | 为何需要 | 来源设想 |
+{L("preface_needs_cols", lang=report_lang)}
 |----|----------|----------|----------|
 {needs_md}
 
-### 步骤5 · 权重贡献
+{L("preface_weights", lang=report_lang)}
 
-| ID | 强弱 | 贡献分 | 影响说明 |
+{L("preface_weights_cols", lang=report_lang)}
 |----|------|--------|----------|
 {weights_md}
 
 ---
 """
+    gen_t = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     appendix = f"""
 
 ---
 
-## References / 证据库（id · 总结 · 支撑引用 · 来源链接）
+{L("refs_heading", lang=report_lang)}
 
-{refs_md if refs_md else ("_(none)_" if report_lang == "en" else "_（无存储语句）_")}
+{refs_md if refs_md else L("refs_empty", lang=report_lang)}
 
-_{"Each row prefers a stance summary + verbatim support quote (from summary/snippet; never invented). Dead links are unlinked and marked." if report_lang == "en" else "每条尽量含「总结」与「支撑引用」摘录（来自 summary/snippet，非编造）。失效链接已去掉超链并标注「链接可能失效」。"}_
+_{L("refs_note", lang=report_lang)}_
 
-_生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
+{L("refs_generated", lang=report_lang, t=gen_t)}
 """
     full_report = preface + report + appendix
 

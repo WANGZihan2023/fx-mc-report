@@ -155,11 +155,41 @@ def label_strength(strength: float) -> str:
     return "STRONG"
 
 
-def rubric_markdown() -> str:
+def rubric_markdown(*, lang: str = "zh") -> str:
     """Human-readable explanation for the sidebar / report."""
     src = "\n".join(f"| `{k}` | {v:.2f} |" for k, v in SOURCE_TIER_POINTS.items())
     sur = "\n".join(f"| `{k}` | {v:.2f} |" for k, v in SURPRISE_POINTS.items())
     sco = "\n".join(f"| `{k}` | {v:.2f} |" for k, v in SCOPE_POINTS.items())
+    en = str(lang or "").lower().startswith("en")
+    if en:
+        return f"""
+### How strength is scored (rules, not vibes)
+
+**Contribution**  
+`contrib = direction × strength × freshness × unpriced`
+
+**strength (0–3)** = source tier + surprise + scope (capped at 3)
+
+| source_tier | pts |
+|---|---|
+{src}
+
+| surprise | pts |
+|---|---|
+{sur}
+
+| scope | pts |
+|---|---|
+{sco}
+
+**Labels**: ≤1 SLIGHT｜≤2 MODERATE｜>2 STRONG (Torchcast-aligned)
+
+**freshness**: `0.5 ** (age_days / half_life)` — geopolitics ~5d half-life; CPI/central bank ~7–8d.
+
+**unpriced**: 0 = fully priced in, 1 = barely priced; default 0.55. After a large spot jump, lower this.
+
+> Older hard-coded 3/2/1 tags were manual Torchcast labels; the same checklist now applies to every pair and can be overridden in the sidebar.
+"""
     return f"""
 ### 信息强弱如何判定（规则版，非主观拍脑袋）
 

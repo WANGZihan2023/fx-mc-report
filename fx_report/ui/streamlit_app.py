@@ -40,6 +40,7 @@ from fx_report.report.strings import (
     LANG_BOTH,
     LANG_EN as REPORT_LANG_EN,
     LANG_ZH as REPORT_LANG_ZH,
+    L,
     normalize_report_mode,
     report_lang_suffix,
 )
@@ -3620,7 +3621,7 @@ def main() -> None:
         pd.DataFrame({"区间": list(probs), "概率": list(probs.values())}).set_index("区间")
     )
 
-    with st.expander("完整报告（FX Analyse 格式）", expanded=False):
+    with st.expander(L("report_expander", lang="zh"), expanded=False):
         pair_safe = diag["market"]["pair"].replace("/", "")
         by_lang = st.session_state.get("last_reports_by_lang") or {}
         pdf_by_lang = st.session_state.get("last_pdf_by_lang") or {}
@@ -3640,17 +3641,20 @@ def main() -> None:
             if st.session_state.get("last_pdf_bytes"):
                 pdf_by_lang = {"zh": st.session_state["last_pdf_bytes"]}
 
-        lang_title = {"zh": "中文", "en": "English"}
+        lang_title = {
+            "zh": L("lang_zh", lang="zh"),
+            "en": L("lang_en", lang="en"),
+        }
         for lang in langs:
             bundle = by_lang.get(lang) or {}
             suf = report_lang_suffix(lang)
             label = lang_title.get(lang, lang)
-            st.markdown(f"**{label}报告**")
+            st.markdown(L("report_for_lang", lang=lang, label=label))
             c1, c2, c3 = st.columns(3)
             pdf_bytes = pdf_by_lang.get(lang) or bundle.get("pdf_bytes")
             if pdf_bytes:
                 c1.download_button(
-                    f"下载 PDF（{label}）",
+                    L("dl_pdf", lang=lang, label=label),
                     pdf_bytes,
                     file_name=f"{pair_safe}{suf}_fx_analyse.pdf",
                     mime="application/pdf",
@@ -3659,11 +3663,11 @@ def main() -> None:
             else:
                 err = pdf_errs.get(lang) or bundle.get("pdf_error")
                 if err:
-                    c1.caption(f"PDF 生成失败（{label}）：{err}")
+                    c1.caption(f"PDF failed ({label}): {err}")
             html_doc = bundle.get("html") or ""
             if html_doc:
                 c2.download_button(
-                    f"下载 HTML（{label}）",
+                    L("dl_html", lang=lang, label=label),
                     html_doc.encode("utf-8"),
                     file_name=f"{pair_safe}{suf}_fx_analyse.html",
                     mime="text/html",
@@ -3672,7 +3676,7 @@ def main() -> None:
             md_doc = bundle.get("md") or (report if lang == langs[0] else "")
             if md_doc:
                 c3.download_button(
-                    f"下载 Markdown（{label}）",
+                    L("dl_md", lang=lang, label=label),
                     md_doc.encode("utf-8"),
                     file_name=f"{pair_safe}{suf}_mc_report.md",
                     mime="text/markdown",
@@ -3691,18 +3695,45 @@ def main() -> None:
                 mime="text/csv",
                 help="列含 statement_id/title/url/model_*；在「证据人工标注」填写 human_* 与 agree",
             )
-        # Preview: prefer Chinese HTML when bilingual, else first available
-        preview_html = ""
-        for pref in ("zh", "en"):
-            if pref in by_lang and by_lang[pref].get("html"):
-                preview_html = by_lang[pref]["html"]
-                break
-        if not preview_html:
-            preview_html = st.session_state.get("last_report_html") or ""
-        if preview_html:
-            st.components.v1.html(preview_html, height=900, scrolling=True)
+
+        # Online preview: ZH and/or EN — both viewable (tabs when bilingual)
+        preview_langs = [
+            lg
+            for lg in ("zh", "en")
+            if lg in by_lang and (by_lang[lg].get("html") or by_lang[lg].get("md"))
+        ]
+        if not preview_langs:
+            legacy = st.session_state.get("last_report_html") or ""
+            if legacy:
+                st.components.v1.html(legacy, height=900, scrolling=True)
+            else:
+                st.markdown(report)
+        elif len(preview_langs) == 1:
+            lg = preview_langs[0]
+            html_doc = (by_lang.get(lg) or {}).get("html") or ""
+            if html_doc:
+                st.caption(L("preview_zh" if lg == "zh" else "preview_en", lang=lg))
+                st.components.v1.html(html_doc, height=900, scrolling=True)
+            else:
+                st.markdown((by_lang.get(lg) or {}).get("md") or report)
         else:
-            st.markdown(report)
+            tab_zh, tab_en = st.tabs(
+                [L("preview_zh", lang="zh"), L("preview_en", lang="en")]
+            )
+            with tab_zh:
+                zh_html = (by_lang.get("zh") or {}).get("html") or ""
+                if zh_html:
+                    st.components.v1.html(zh_html, height=900, scrolling=True)
+                else:
+                    st.markdown((by_lang.get("zh") or {}).get("md") or report)
+            with tab_en:
+                en_html = (by_lang.get("en") or {}).get("html") or ""
+                if en_html:
+                    st.components.v1.html(en_html, height=900, scrolling=True)
+                else:
+                    st.markdown((by_lang.get("en") or {}).get("md") or "")
+                    if not (by_lang.get("en") or {}).get("md"):
+                        st.info("English report HTML/Markdown not available for this run.")
 
     with st.expander("流水线明细（日志 / 语句 / 证据 / 头条）", expanded=False):
         if st.session_state.get("last_stage_log"):

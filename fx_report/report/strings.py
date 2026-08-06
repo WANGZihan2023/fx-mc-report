@@ -7,7 +7,7 @@ their original language; stance summaries follow ``report_lang``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any  # EvidenceItem duck-typed in format_impact_note
 
 LANG_ZH = "zh"
 LANG_EN = "en"
@@ -186,6 +186,107 @@ LABELS: dict[str, dict[str, str]] = {
         "md_exec": "## Executive summary",
         "md_none": "_(none)_",
         "md_disclaimer": "*Model output only — not investment advice.*",
+        "md_generated": "**Generated:** {d}",
+        "md_sims_line": (
+            "**Sims:** {n}｜**Trading days:** {days}｜**Seed:** {seed}｜**Peak engine:** {peak}"
+        ),
+        "md_market_src": "**Market source:** {s}",
+        "md_bucket_edges": "**Bucket edges:** {e}",
+        "md_col_range": "Range",
+        "md_col_prob": "Probability",
+        "md_col_field": "Field",
+        "md_col_value": "Value",
+        "md_field_pair": "Pair",
+        "md_field_spot": "Spot (analysis quote)",
+        "md_field_raw": "Provider raw",
+        "md_field_source": "Source",
+        "md_field_sigma_d": "Daily σ",
+        "md_field_sigma_a": "Annual σ",
+        "md_field_lookback": "Lookback",
+        "md_field_ret1": "1D return",
+        "md_field_ret5": "5D return",
+        "md_field_ret20": "20D return",
+        "md_field_vol2060": "20D/60D ann. vol",
+        "md_field_tickers": "History / spot ticker",
+        "md_field_basis": "CNH−CNY basis",
+        "md_proxy": "(proxy)",
+        "md_notes": "**Notes:** {n}",
+        "md_notes_empty": "—",
+        "md_exec_body": (
+            "Start **{pair} ≈ {spot}**. {days} trading days, **{n_sims}** Monte Carlo "
+            "mixture (peak `{peak}`), evidence score **S={score}** (μ shift {mu} ann., "
+            "σ ×{sigma})."
+        ),
+        "md_exec_most": (
+            "Most likely: **`{top}` ({p})**. Peak percentiles P50={p50}, P90={p90}, P95={p95}."
+        ),
+        "md_math_floor": (
+            "Math floor: ranges strictly below spot are zeroed then renormalized."
+        ),
+        "md_scen": "## Scenario weights (calibrated)",
+        "md_scen_cols": (
+            "| Scenario | Weight | Drift | σ mult | Jumps | Narrative |"
+        ),
+        "md_raw_mc": "## Raw MC frequencies",
+        "md_col_freq": "Frequency",
+        "md_rubric": "## Strength rubric",
+        "md_watch1": (
+            "1. **Core central bank / data for the pair** — surprise → re-score and re-run."
+        ),
+        "md_watch2": (
+            "2. **Risk assets / safe haven** — systemic shock lifts escalation; "
+            "easing lifts de-escalation."
+        ),
+        "md_watch3": (
+            "3. **Commodities / China demand** (if relevant) — adjust U-CN / oil evidence."
+        ),
+        "md_watch4": (
+            "4. **Already priced** — large spot jump → lower unpriced to avoid double-count."
+        ),
+        "evid_contrib": "contrib",
+        "evid_scoring": "scoring",
+        "scen_escalation": (
+            "Risk-on / safe-haven or one-sided shock → thicker {pair} upper tail"
+        ),
+        "scen_baseline": "Range-bound / sticky mid → {pair} peak often in mid buckets",
+        "scen_deescalation": "De-escalation / headwinds fade → {pair} peak capped",
+        "impact_up": "Lifts upper tail via {cat}",
+        "impact_down": "Caps peak via {cat}",
+        "impact_neutral": "Neutral",
+        "impact_unclassified": "Unclassified — excluded from main score",
+        "impact_prior": "[prior]",
+        "impact_dup": "[cluster downweight {cid}]",
+        "impact_rep": "[cluster rep {cid} n={n}]",
+        "preface_title": "## Analysis pipeline (fixed 7 steps)",
+        "preface_bullish": "Bullish: **{c}**｜Analysis quote: **{p}**",
+        "preface_1": "1. Select pair → **{pair}**",
+        "preface_2": "2. Assess information needs → {n} items",
+        "preface_3": "3. Store influential statements → {n} rows",
+        "preface_4": "4. Score impact → {n} evidence items",
+        "preface_5": "5. Assign weights → see table below",
+        "preface_6": "6. Math analysis → Monte Carlo {n} runs",
+        "preface_7": "7. Emit this report (Torchcast PDF / HTML primary)",
+        "preface_needs": "### Step 2 · Information needs",
+        "preface_needs_cols": "| ID | Need | Why | Sources |",
+        "preface_weights": "### Step 5 · Weight contributions",
+        "preface_weights_cols": "| ID | Strength | Contrib | Impact note |",
+        "refs_heading": "## References / Evidence base (id · Summary · Support quote · URL)",
+        "refs_empty": "_(none)_",
+        "refs_note": (
+            "Each row prefers a stance summary + verbatim support quote "
+            "(from summary/snippet; never invented). Dead links are unlinked and marked."
+        ),
+        "refs_generated": "_Generated {t}_",
+        "warns": "warns",
+        "preview_zh": "Chinese preview",
+        "preview_en": "English preview",
+        "report_expander": "Full report (FX Analyse)",
+        "dl_pdf": "Download PDF ({label})",
+        "dl_html": "Download HTML ({label})",
+        "dl_md": "Download Markdown ({label})",
+        "lang_zh": "Chinese",
+        "lang_en": "English",
+        "report_for_lang": "**{label} report**",
     },
     LANG_ZH: {
         "kicker": "FX ANALYSE · 情报报告",
@@ -233,8 +334,155 @@ LABELS: dict[str, dict[str, str]] = {
         "md_exec": "## 执行摘要",
         "md_none": "_（无）_",
         "md_disclaimer": "*概率模型输出，不构成投资建议。*",
+        "md_generated": "**预测生成：** {d}",
+        "md_sims_line": (
+            "**模拟次数：** {n}｜**交易日：** {days}｜**种子：** {seed}｜**峰值引擎：** {peak}"
+        ),
+        "md_market_src": "**行情来源：** {s}",
+        "md_bucket_edges": "**分档边界：** {e}",
+        "md_col_range": "区间",
+        "md_col_prob": "概率",
+        "md_col_field": "字段",
+        "md_col_value": "值",
+        "md_field_pair": "货币对",
+        "md_field_spot": "现价（分析口径）",
+        "md_field_raw": "源端原始报价",
+        "md_field_source": "行情来源",
+        "md_field_sigma_d": "日波动 σ_d",
+        "md_field_sigma_a": "年化 σ",
+        "md_field_lookback": "回看",
+        "md_field_ret1": "近1日涨跌",
+        "md_field_ret5": "近5日涨跌",
+        "md_field_ret20": "近20日涨跌",
+        "md_field_vol2060": "20D/60D 年化波动",
+        "md_field_tickers": "历史代码 / 现价代码",
+        "md_field_basis": "CNH−CNY 价差",
+        "md_proxy": "（代理）",
+        "md_notes": "**数据说明：** {n}",
+        "md_notes_empty": "无额外备注",
+        "md_exec_body": (
+            "起点 **{pair} ≈ {spot}**。{days} 个交易日、**{n_sims}** 次情景混合蒙特卡洛"
+            "（峰值引擎 `{peak}`），证据分 **S={score}** 校准权重与参数"
+            "（μ 平移 {mu} 年化，σ ×{sigma}）。"
+        ),
+        "md_exec_most": (
+            "最可能：**`{top}`（{p}）**。峰值分位 P50={p50}，P90={p90}，P95={p95}。"
+        ),
+        "md_math_floor": "数学地板：严格低于起点的最高价区间归零后归一化。",
+        "md_scen": "## 情景权重（校准后）",
+        "md_scen_cols": "| 情景 | 权重 | 漂移 | 波动倍数 | 跳跃 | 叙事 |",
+        "md_raw_mc": "## 原始 MC 频率",
+        "md_col_freq": "频率",
+        "md_rubric": "## 信息强弱判定规则",
+        "md_watch1": (
+            "1. **该货币对核心央行/数据** — 决议或重磅意外 → 改 surprise/scope 并重跑。"
+        ),
+        "md_watch2": (
+            "2. **风险资产与避险** — 系统性冲击抬 escalation；缓和抬 deescalation。"
+        ),
+        "md_watch3": (
+            "3. **商品/中国需求**（若相关）— 改 U-CN / 油价证据方向与未定价。"
+        ),
+        "md_watch4": (
+            "4. **已定价程度** — 即期已大跳则下调 unpriced，避免双计。"
+        ),
+        "evid_contrib": "贡献",
+        "evid_scoring": "计分",
+        "scen_escalation": "风险升高 / 避险或单边冲击 → {pair} 上尾加厚",
+        "scen_baseline": "中性胶着 → {pair} 峰值多落在中档",
+        "scen_deescalation": "缓和 / 逆风消退 → {pair} 峰值受压",
+        "impact_up": "推高 {cat} 路径上尾",
+        "impact_down": "压制 {cat} 路径峰值",
+        "impact_neutral": "中性",
+        "impact_unclassified": "未分类｜不计入主分",
+        "impact_prior": "[先验]",
+        "impact_dup": "[簇内降权 {cid}]",
+        "impact_rep": "[簇代表 {cid} n={n}]",
+        "preface_title": "## 分析流程（固定七步）",
+        "preface_bullish": "看涨：**{c}**｜分析报价：**{p}**",
+        "preface_1": "1. 选择货币对 → **{pair}**",
+        "preface_2": "2. 评估所需信息 → {n} 项",
+        "preface_3": "3. 存储有影响语句 → {n} 条",
+        "preface_4": "4. 评估影响 → 证据 {n} 条",
+        "preface_5": "5. 赋予权重 → 见下表",
+        "preface_6": "6. 数学分析 → 蒙特卡洛 {n} 次",
+        "preface_7": "7. 输出本报告（Torchcast PDF / HTML 为主）",
+        "preface_needs": "### 步骤2 · 信息需求",
+        "preface_needs_cols": "| ID | 需要什么 | 为何需要 | 来源设想 |",
+        "preface_weights": "### 步骤5 · 权重贡献",
+        "preface_weights_cols": "| ID | 强弱 | 贡献分 | 影响说明 |",
+        "refs_heading": "## References / 证据库（id · 总结 · 支撑引用 · 来源链接）",
+        "refs_empty": "_（无存储语句）_",
+        "refs_note": (
+            "每条尽量含「总结」与「支撑引用」摘录（来自 summary/snippet，非编造）。"
+            "失效链接已去掉超链并标注「链接可能失效」。"
+        ),
+        "refs_generated": "_生成时间 {t}_",
+        "warns": "告警",
+        "preview_zh": "中文预览",
+        "preview_en": "English preview",
+        "report_expander": "完整报告（FX Analyse 格式）",
+        "dl_pdf": "下载 PDF（{label}）",
+        "dl_html": "下载 HTML（{label}）",
+        "dl_md": "下载 Markdown（{label}）",
+        "lang_zh": "中文",
+        "lang_en": "English",
+        "report_for_lang": "**{label}报告**",
     },
 }
+
+
+SCENARIO_NARRATIVE_KEYS = {
+    "escalation": "scen_escalation",
+    "baseline": "scen_baseline",
+    "deescalation": "scen_deescalation",
+}
+
+
+def scenario_narrative(name: str, pair: str, *, lang: str | None = None) -> str:
+    """Localize default three-regime scenario narratives by scenario name."""
+    key = SCENARIO_NARRATIVE_KEYS.get((name or "").strip().lower())
+    if key:
+        return L(key, lang=lang, pair=pair)
+    return ""
+
+
+def format_impact_note(
+    e: Any,
+    contrib: float,
+    *,
+    lang: str | None = None,
+) -> str:
+    """Language-aware impact note for Markdown weight tables."""
+    lang = normalize_report_lang(lang)
+    cat = getattr(e, "category", None) or "other"
+    if (cat or "").lower() == "unclassified":
+        impact = L("impact_unclassified", lang=lang)
+    else:
+        direction = int(getattr(e, "direction", 0) or 0)
+        if direction > 0:
+            impact = L("impact_up", lang=lang, cat=cat)
+        elif direction < 0:
+            impact = L("impact_down", lang=lang, cat=cat)
+        else:
+            impact = L("impact_neutral", lang=lang)
+        if getattr(e, "is_prior", False):
+            impact = f"{L('impact_prior', lang=lang)} {impact}"
+        role = getattr(e, "cluster_role", None) or ""
+        cid = getattr(e, "cluster_id", None) or ""
+        if role == "dup" and cid:
+            impact = f"{L('impact_dup', lang=lang, cid=cid)} {impact}"
+        elif cid and int(getattr(e, "cluster_size", 0) or 0) > 1 and role == "rep":
+            impact = f"{L('impact_rep', lang=lang, cid=cid, n=int(e.cluster_size))} {impact}"
+    label = getattr(e, "strength_label", None) or "n/a"
+    note = f"{impact}｜label={label}｜contrib={contrib:+.3f}"
+    sid = getattr(e, "statement_id", None) or ""
+    if sid:
+        note += f"｜{sid}"
+    cid = getattr(e, "cluster_id", None) or ""
+    if cid:
+        note += f"｜{cid}/{getattr(e, 'cluster_role', None) or 'n/a'}"
+    return note
 
 
 def L(key: str, *, lang: str | None = None, **kwargs: Any) -> str:

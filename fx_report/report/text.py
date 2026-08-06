@@ -9,7 +9,7 @@ from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.strength import label_strength, rubric_markdown
 from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec, evidence_score
-from fx_report.report.strings import L, normalize_report_lang
+from fx_report.report.strings import L, normalize_report_lang, scenario_narrative
 
 
 def _pct(x: float) -> str:
@@ -19,6 +19,14 @@ def _pct(x: float) -> str:
 def _most_likely(probs: dict[str, float]) -> tuple[str, float]:
     k = max(probs, key=probs.get)
     return k, probs[k]
+
+
+def _scenario_line(s: ScenarioSpec, pair: str, *, lang: str) -> str:
+    narr = scenario_narrative(s.name, pair, lang=lang) or (s.narrative or "")
+    return (
+        f"| {s.name} | {s.weight:.1%} | μ={s.mu_annual:+.2%} | σ×{s.sigma_mult:.2f} | "
+        f"E[jumps]={s.expected_jumps:.2f} | {narr} |"
+    )
 
 
 def build_report_markdown(
@@ -42,6 +50,7 @@ def build_report_markdown(
 
     up = [e for e in weights.evidence if e.direction > 0]
     down = [e for e in weights.evidence if e.direction < 0]
+    sep = "｜"
 
     def evid_lines(items: list[EvidenceItem]) -> str:
         lines = []
@@ -51,135 +60,67 @@ def build_report_markdown(
             br = e.strength_breakdown
             br_s = ""
             if br:
-                br_s = "｜计分 " + ", ".join(f"{k}={v:.2f}" for k, v in br.items() if k != "sum")
+                br_s = (
+                    sep
+                    + L("evid_scoring", lang=lang)
+                    + " "
+                    + ", ".join(f"{k}={v:.2f}" for k, v in br.items() if k != "sum")
+                )
             stance = (getattr(e, "stance_summary", None) or "").strip()
-            stance_bit = f"｜{L('stance_summary', lang=lang)}：{stance}" if stance else ""
+            i18n = getattr(e, "stance_summary_i18n", None) or {}
+            if isinstance(i18n, dict) and (i18n.get(lang) or "").strip():
+                stance = str(i18n[lang]).strip()
+            stance_bit = (
+                f"{sep}{L('stance_summary', lang=lang)}：{stance}" if stance else ""
+            )
             lines.append(
-                f"- **{e.id}** [{lab}] {e.title}｜贡献 {s:+.2f}｜"
-                f"strength={e.strength:.2f} × freshness={e.freshness:.2f} × unpriced={e.unpriced:.2f}"
+                f"- **{e.id}** [{lab}] {e.title}{sep}{L('evid_contrib', lang=lang)} "
+                f"{s:+.2f}{sep}"
+                f"strength={e.strength:.2f} × freshness={e.freshness:.2f} × "
+                f"unpriced={e.unpriced:.2f}"
                 f"{br_s}{stance_bit}"
-                + (f"｜{e.note}" if e.note else "")
+                + (f"{sep}{e.note}" if e.note else "")
             )
         return "\n".join(lines) if lines else L("md_none", lang=lang)
 
-    scen_tbl = "\n".join(
-        f"| {s.name} | {s.weight:.1%} | μ={s.mu_annual:+.2%} | σ×{s.sigma_mult:.2f} | "
-        f"E[jumps]={s.expected_jumps:.2f} | {s.narrative} |"
-        for s in scenarios_adj
-    )
+    scen_tbl = "\n".join(_scenario_line(s, pair, lang=lang) for s in scenarios_adj)
     raw_rows = "\n".join(f"| {k} | {_pct(v)} |" for k, v in mc.raw_probs.items())
     edge_s = " / ".join(format_rate(x) for x in bucket_edges)
     peak = getattr(mc, "peak_engine", weights.peak_engine)
-
-    if lang == "en":
-        md = f"""{L("md_title", lang=lang)}
-
-{L("md_question", lang=lang, horizon=horizon_label, pair=pair)}
-
-**Generated:** {market.asof}  
-**Sims:** {mc.n_sims:,}｜**Trading days:** {mc.trading_days}｜**Seed:** {weights.seed}｜**Peak engine:** {peak}  
-**Market source:** {market.source}  
-**Bucket edges:** {edge_s}
-
----
-
-{L("md_prob", lang=lang)}
-
-| Range | Probability |
-|------|------|
-{rows}
-
-{L("md_most", lang=lang, top=top, p=_pct(top_p))}
-
----
-
-{L("md_anchor", lang=lang)}
-
-| Field | Value |
-|------|-----|
-| Pair | {pair} |
-| Spot (analysis quote) | {format_rate(market.spot)} |
-| Provider raw | {format_rate(market.provider_raw)} |
-| Source | {market.source} |
-| Daily σ | {market.sigma_daily:.4%} |
-| Annual σ | {market.sigma_annual:.2%} |
-| Lookback | {market.lookback_days}d ({market.history_start} → {market.history_end}) |
-| Brent | {f"{market.brent:.2f}" if market.brent else "N/A"} |
-| DXY | {f"{market.dxy_proxy:.2f}" if market.dxy_proxy else "N/A"} |
-
-**Notes:** {"; ".join(market.notes) if market.notes else "—"}
-
----
-
-{L("md_up", lang=lang, pair=pair)}
-
-{evid_lines(up)}
-
-{L("md_down", lang=lang, pair=pair)}
-
-{evid_lines(down)}
-
----
-
-{L("md_exec", lang=lang)}
-
-Start **{pair} ≈ {format_rate(market.spot)}**. {mc.trading_days} trading days, **{mc.n_sims:,}** Monte Carlo mixture (peak `{peak}`), evidence score **S={score:+.2f}** (μ shift {mu_shift:+.2%} ann., σ ×{sigma_extra:.3f}).
-
-Most likely: **`{top}` ({_pct(top_p)})**. Peak percentiles P50={format_rate(mc.percentiles['p50'])}, P90={format_rate(mc.percentiles['p90'])}, P95={format_rate(mc.percentiles['p95'])}.
-
-Math floor: ranges strictly below spot are zeroed then renormalized.
-
----
-
-## Scenario weights (calibrated)
-
-| Scenario | Weight | Drift | σ mult | Jumps | Narrative |
-|------|------|------|----------|------|------|
-{scen_tbl}
-
----
-
-## Raw MC frequencies
-
-| Range | Frequency |
-|------|------|
-{raw_rows}
-
----
-
-## Strength rubric
-
-{rubric_markdown()}
-
----
-
-## {L("watch_title", lang=lang)}
-
-1. **Core central bank / data for the pair** — surprise → re-score and re-run.  
-2. **Risk assets / safe haven** — systemic shock lifts escalation; easing lifts de-escalation.  
-3. **Commodities / China demand** (if relevant) — adjust U-CN / oil evidence.  
-4. **Already priced** — large spot jump → lower unpriced to avoid double-count.
-
----
-
-{L("md_disclaimer", lang=lang)}
-"""
-        return md
+    lookback = (
+        f"{market.lookback_days}d ({market.history_start} → {market.history_end})"
+        if lang == "en"
+        else f"{market.lookback_days} 日（{market.history_start} → {market.history_end}）"
+    )
+    proxy = L("md_proxy", lang=lang) if market.used_proxy else ""
+    notes = (
+        ("; " if lang == "en" else "；").join(market.notes)
+        if market.notes
+        else L("md_notes_empty", lang=lang)
+    )
+    ret1 = f"{100 * market.ret_1d:+.2f}%" if market.ret_1d is not None else "N/A"
+    ret5 = f"{100 * market.ret_5d:+.2f}%" if market.ret_5d is not None else "N/A"
+    ret20 = f"{100 * market.ret_20d:+.2f}%" if market.ret_20d is not None else "N/A"
+    vol2060 = (
+        f"{(market.sigma_20d_ann or 0) * 100:.2f}% / {(market.sigma_60d_ann or 0) * 100:.2f}%"
+        if market.sigma_60d_ann
+        else "N/A"
+    )
 
     md = f"""{L("md_title", lang=lang)}
 
 {L("md_question", lang=lang, horizon=horizon_label, pair=pair)}
 
-**预测生成：** {market.asof}  
-**模拟次数：** {mc.n_sims:,}｜**交易日：** {mc.trading_days}｜**种子：** {weights.seed}｜**峰值引擎：** {peak}  
-**行情来源：** {market.source}  
-**分档边界：** {edge_s}
+{L("md_generated", lang=lang, d=market.asof)}  
+{L("md_sims_line", lang=lang, n=f"{mc.n_sims:,}", days=mc.trading_days, seed=weights.seed, peak=peak)}  
+{L("md_market_src", lang=lang, s=market.source)}  
+{L("md_bucket_edges", lang=lang, e=edge_s)}
 
 ---
 
 {L("md_prob", lang=lang)}
 
-| 区间 | 概率 |
+| {L("md_col_range", lang=lang)} | {L("md_col_prob", lang=lang)} |
 |------|------|
 {rows}
 
@@ -189,25 +130,25 @@ Math floor: ranges strictly below spot are zeroed then renormalized.
 
 {L("md_anchor", lang=lang)}
 
-| 字段 | 值 |
+| {L("md_col_field", lang=lang)} | {L("md_col_value", lang=lang)} |
 |------|-----|
-| 货币对 | {pair} |
-| 现价（分析口径） | {format_rate(market.spot)} |
-| 源端原始报价 | {format_rate(market.provider_raw)} |
-| 行情来源 | {market.source} |
-| 日波动 σ_d | {market.sigma_daily:.4%} |
-| 年化 σ | {market.sigma_annual:.2%} |
-| 回看 | {market.lookback_days} 日（{market.history_start} → {market.history_end}） |
+| {L("md_field_pair", lang=lang)} | {pair} |
+| {L("md_field_spot", lang=lang)} | {format_rate(market.spot)} |
+| {L("md_field_raw", lang=lang)} | {format_rate(market.provider_raw)} |
+| {L("md_field_source", lang=lang)} | {market.source} |
+| {L("md_field_sigma_d", lang=lang)} | {market.sigma_daily:.4%} |
+| {L("md_field_sigma_a", lang=lang)} | {market.sigma_annual:.2%} |
+| {L("md_field_lookback", lang=lang)} | {lookback} |
 | Brent | {f"{market.brent:.2f}" if market.brent else "N/A"} |
 | DXY | {f"{market.dxy_proxy:.2f}" if market.dxy_proxy else "N/A"} |
-| 近1日涨跌 | {f"{100*market.ret_1d:+.2f}%" if market.ret_1d is not None else "N/A"} |
-| 近5日涨跌 | {f"{100*market.ret_5d:+.2f}%" if market.ret_5d is not None else "N/A"} |
-| 近20日涨跌 | {f"{100*market.ret_20d:+.2f}%" if market.ret_20d is not None else "N/A"} |
-| 20D/60D 年化波动 | {f"{(market.sigma_20d_ann or 0)*100:.2f}% / {(market.sigma_60d_ann or 0)*100:.2f}%" if market.sigma_60d_ann else "N/A"} |
-| 历史代码 / 现价代码 | {market.history_ticker} / {market.spot_ticker}{"（代理）" if market.used_proxy else ""} |
-| CNH−CNY 价差 | {format_rate(market.cnh_cny_basis, signed=True, na="N/A")} |
+| {L("md_field_ret1", lang=lang)} | {ret1} |
+| {L("md_field_ret5", lang=lang)} | {ret5} |
+| {L("md_field_ret20", lang=lang)} | {ret20} |
+| {L("md_field_vol2060", lang=lang)} | {vol2060} |
+| {L("md_field_tickers", lang=lang)} | {market.history_ticker} / {market.spot_ticker}{proxy} |
+| {L("md_field_basis", lang=lang)} | {format_rate(market.cnh_cny_basis, signed=True, na="N/A")} |
 
-**数据说明：** {"；".join(market.notes) if market.notes else "无额外备注"}
+{L("md_notes", lang=lang, n=notes)}
 
 ---
 
@@ -223,42 +164,42 @@ Math floor: ranges strictly below spot are zeroed then renormalized.
 
 {L("md_exec", lang=lang)}
 
-起点 **{pair} ≈ {format_rate(market.spot)}**。{mc.trading_days} 个交易日、**{mc.n_sims:,}** 次情景混合蒙特卡洛（峰值引擎 `{peak}`），证据分 **S={score:+.2f}** 校准权重与参数（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）。
+{L("md_exec_body", lang=lang, pair=pair, spot=format_rate(market.spot), days=mc.trading_days, n_sims=f"{mc.n_sims:,}", peak=peak, score=f"{score:+.2f}", mu=f"{mu_shift:+.2%}", sigma=f"{sigma_extra:.3f}")}
 
-最可能：**`{top}`（{_pct(top_p)}）**。峰值分位 P50={format_rate(mc.percentiles['p50'])}，P90={format_rate(mc.percentiles['p90'])}，P95={format_rate(mc.percentiles['p95'])}。
+{L("md_exec_most", lang=lang, top=top, p=_pct(top_p), p50=format_rate(mc.percentiles['p50']), p90=format_rate(mc.percentiles['p90']), p95=format_rate(mc.percentiles['p95']))}
 
-数学地板：严格低于起点的最高价区间归零后归一化。
+{L("md_math_floor", lang=lang)}
 
 ---
 
-## 情景权重（校准后）
+{L("md_scen", lang=lang)}
 
-| 情景 | 权重 | 漂移 | 波动倍数 | 跳跃 | 叙事 |
+{L("md_scen_cols", lang=lang)}
 |------|------|------|----------|------|------|
 {scen_tbl}
 
 ---
 
-## 原始 MC 频率
+{L("md_raw_mc", lang=lang)}
 
-| 区间 | 频率 |
+| {L("md_col_range", lang=lang)} | {L("md_col_freq", lang=lang)} |
 |------|------|
 {raw_rows}
 
 ---
 
-## 信息强弱判定规则
+{L("md_rubric", lang=lang)}
 
-{rubric_markdown()}
+{rubric_markdown(lang=lang)}
 
 ---
 
 ## {L("watch_title", lang=lang)}
 
-1. **该货币对核心央行/数据** — 决议或重磅意外 → 改 surprise/scope 并重跑。  
-2. **风险资产与避险** — 系统性冲击抬 escalation；缓和抬 deescalation。  
-3. **商品/中国需求**（若相关）— 改 U-CN / 油价证据方向与未定价。  
-4. **已定价程度** — 即期已大跳则下调 unpriced，避免双计。
+{L("md_watch1", lang=lang)}  
+{L("md_watch2", lang=lang)}  
+{L("md_watch3", lang=lang)}  
+{L("md_watch4", lang=lang)}
 
 ---
 
