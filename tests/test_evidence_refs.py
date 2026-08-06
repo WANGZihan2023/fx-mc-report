@@ -234,9 +234,10 @@ def test_html_evidence_renders_support_quote():
         context_evidence=[],
         watches=[],
         spot=1.5,
+        lang="zh",
     )
     html = render_html(report)
     assert "支撑引用" in html
     assert "USD strength" in html
-    assert "Evidence Base" in html
+    assert "证据库" in html or "References" in html
     assert "reuters.com" in html

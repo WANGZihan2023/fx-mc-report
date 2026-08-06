@@ -7,15 +7,17 @@ from typing import Any
 
 from fx_report.model.weights import EvidenceItem
 from fx_report.news.urls import is_fragile_url, is_http_url
+from fx_report.report.strings import L, normalize_report_lang
 
 _URL_IN_TEXT = re.compile(r"https?://\S+")
 _DEAD_MARK = "链接可能失效"
 
 DEFAULT_QUOTE_CHARS = 220
 
-# Display labels for References / Evidence Base
+# Back-compat aliases (Chinese defaults)
 LABEL_SUPPORT_ZH = "支撑引用"
 LABEL_SUPPORT_WEAK_ZH = "支撑引用（弱）"
+LABEL_STANCE_ZH = "总结"
 
 
 def evidence_source_url(e: EvidenceItem) -> str:
@@ -36,7 +38,7 @@ def _clean_quote_candidate(text: str) -> str:
         return ""
     t = _URL_IN_TEXT.sub("", t)
     t = re.sub(
-        r"[｜|]\s*(prior_template|downweighted|summary:\w+|support:\w+)\s*",
+        r"[｜|]\s*(prior_template|downweighted|summary:\w+|support:\w+|stance:\w+)\s*",
         " ",
         t,
         flags=re.I,
@@ -53,10 +55,18 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max_chars - 1].rstrip() + "…"
 
 
+def support_label(quality: str, *, lang: str | None = None) -> str:
+    lang = normalize_report_lang(lang)
+    if quality == "support":
+        return L("support", lang=lang)
+    return L("support_weak", lang=lang)
+
+
 def evidence_support_meta(
     e: EvidenceItem,
     *,
     max_chars: int = DEFAULT_QUOTE_CHARS,
+    lang: str | None = None,
 ) -> dict[str, Any]:
     """
     Stance-aligned support quote for References / Evidence cards.
@@ -67,17 +77,19 @@ def evidence_support_meta(
       3. title (last resort)
 
     Returns:
-      quote, quality ('support'|'weak'|'title'), label_zh
+      quote, quality ('support'|'weak'|'title'), label_zh, label
     """
+    lang = normalize_report_lang(lang)
     quality = (getattr(e, "support_quote_quality", None) or "").strip()
     raw_sq = _clean_quote_candidate(getattr(e, "support_quote", None) or "")
     if len(raw_sq) >= 12:
         q = quality if quality in {"support", "weak", "title"} else "support"
-        label = LABEL_SUPPORT_ZH if q == "support" else LABEL_SUPPORT_WEAK_ZH
+        label = support_label(q, lang=lang)
         return {
             "quote": _truncate(raw_sq, max_chars),
             "quality": q,
-            "label_zh": label,
+            "label_zh": label if lang == "zh" else support_label(q, lang="zh"),
+            "label": label,
         }
 
     # Lazy extract from fields already on the item (historical / pre-summary items)
@@ -102,8 +114,13 @@ def evidence_support_meta(
         )
         quote = _clean_quote_candidate(quote)
         if quote:
-            label = LABEL_SUPPORT_ZH if q == "support" else LABEL_SUPPORT_WEAK_ZH
-            return {"quote": _truncate(quote, max_chars), "quality": q, "label_zh": label}
+            label = support_label(q, lang=lang)
+            return {
+                "quote": _truncate(quote, max_chars),
+                "quality": q,
+                "label_zh": label if lang == "zh" else support_label(q, lang="zh"),
+                "label": label,
+            }
     except Exception:
         pass
 
@@ -118,18 +135,47 @@ def evidence_support_meta(
             continue
         if cleaned.lower().startswith("source_tier=") and len(cleaned) < 80:
             continue
+        label = support_label("weak", lang=lang)
         return {
             "quote": _truncate(cleaned, max_chars),
             "quality": "weak",
-            "label_zh": LABEL_SUPPORT_WEAK_ZH,
+            "label_zh": label if lang == "zh" else support_label("weak", lang="zh"),
+            "label": label,
         }
     title = _clean_quote_candidate(getattr(e, "title", None) or "")
+    label = support_label("title", lang=lang)
     if not title:
-        return {"quote": "", "quality": "title", "label_zh": LABEL_SUPPORT_WEAK_ZH}
+        return {
+            "quote": "",
+            "quality": "title",
+            "label_zh": label if lang == "zh" else support_label("title", lang="zh"),
+            "label": label,
+        }
     return {
         "quote": _truncate(title, max_chars),
         "quality": "title",
-        "label_zh": LABEL_SUPPORT_WEAK_ZH,
+        "label_zh": label if lang == "zh" else support_label("title", lang="zh"),
+        "label": label,
+    }
+
+
+def evidence_stance_summary_meta(
+    e: EvidenceItem,
+    *,
+    lang: str | None = None,
+    max_chars: int = 280,
+) -> dict[str, Any]:
+    """Report-lang 总结 for References — distinct from verbatim support quote."""
+    lang = normalize_report_lang(lang)
+    text = _clean_quote_candidate(getattr(e, "stance_summary", None) or "")
+    if not text:
+        # Soft fallback: extractive summary field (not a fake quote)
+        text = _clean_quote_candidate(getattr(e, "summary", None) or "")
+    if not text:
+        return {"text": "", "label": L("stance_summary", lang=lang)}
+    return {
+        "text": _truncate(text, max_chars),
+        "label": L("stance_summary", lang=lang),
     }
 
 
@@ -143,7 +189,7 @@ def evidence_quote(e: EvidenceItem, *, max_chars: int = DEFAULT_QUOTE_CHARS) -> 
     return str(evidence_support_meta(e, max_chars=max_chars).get("quote") or "")
 
 
-def evidence_link_meta(e: EvidenceItem) -> dict[str, Any]:
+def evidence_link_meta(e: EvidenceItem, *, lang: str | None = None) -> dict[str, Any]:
     """
     Display metadata for a reference link.
 
@@ -152,21 +198,26 @@ def evidence_link_meta(e: EvidenceItem) -> dict[str, Any]:
       dead_marked: bool
       fragile: bool
       label_zh: optional warning suffix for UI
+      label: localized warning
     """
+    lang = normalize_report_lang(lang)
     note = getattr(e, "note", None) or ""
     dead = _DEAD_MARK in note
     url = evidence_source_url(e)
     fragile = bool(url) and is_fragile_url(url)
-    label_zh = ""
+    label = ""
     if dead:
-        label_zh = _DEAD_MARK
+        label = L("link_dead", lang=lang)
     elif fragile:
-        label_zh = "链接可能不稳定（Google News 跳转）"
+        label = L("link_fragile", lang=lang)
     return {
         "url": "" if dead else url,
         "dead_marked": dead,
         "fragile": fragile,
-        "label_zh": label_zh,
+        "label_zh": label if lang == "zh" else (L("link_dead", lang="zh") if dead else (
+            L("link_fragile", lang="zh") if fragile else ""
+        )),
+        "label": label,
     }
 
 
@@ -175,19 +226,24 @@ def format_reference_markdown_row(
     *,
     index: int | None = None,
     max_quote: int = DEFAULT_QUOTE_CHARS,
+    lang: str | None = None,
 ) -> str:
-    """One Markdown bullet: id · 支撑引用 · optional URL."""
-    meta = evidence_support_meta(e, max_chars=max_quote)
-    link = evidence_link_meta(e)
+    """One Markdown bullet: id · 总结 · 支撑引用 · optional URL."""
+    lang = normalize_report_lang(lang)
+    meta = evidence_support_meta(e, max_chars=max_quote, lang=lang)
+    stance = evidence_stance_summary_meta(e, lang=lang)
+    link = evidence_link_meta(e, lang=lang)
     eid = (e.id or "").strip() or "?"
     prefix = f"{index}. " if index is not None else ""
     bits = [f"**{eid}**"]
+    if stance.get("text"):
+        bits.append(f"{stance['label']}：{stance['text']}")
     quote = meta.get("quote") or ""
     if quote:
-        bits.append(f"{meta.get('label_zh') or LABEL_SUPPORT_ZH} 「{quote}」")
+        bits.append(f"{meta.get('label') or L('support', lang=lang)} 「{quote}」")
     line = prefix + " · ".join(bits)
     if link["url"]:
         line += f" — {link['url']}"
-    elif link["label_zh"]:
-        line += f" — _{link['label_zh']}_"
+    elif link.get("label"):
+        line += f" — _{link['label']}_"
     return line

@@ -24,6 +24,8 @@ from fx_report.order_doc import (
     preview_lines,
 )
 from fx_report.ui.i18n import (
+    LANG_EN,
+    LANG_ZH,
     choice_placeholder,
     get_lang,
     init_language,
@@ -32,6 +34,8 @@ from fx_report.ui.i18n import (
     t,
 )
 from fx_report.format_rate import format_rate, rate_input_format, rate_input_step
+from fx_report.report.cost_estimate import cost_caption_zh, cost_table_rows_zh
+from fx_report.report.strings import DEFAULT_REPORT_LANG, normalize_report_lang
 from fx_report.ui.ux_helpers import (
     PCT_CUT_MAX,
     PCT_CUT_MIN,
@@ -350,11 +354,13 @@ def render_hitl_uncertain_form() -> bool:
             st.session_state["hitl_choices"] = dict(picks)
         with st.spinner("已收到人工判断，继续赋权与蒙特卡洛…"):
             try:
+                hitl_llm = resolve_llm_config()
                 result = run_pipeline_phase_b(
                     cp,
                     review_overrides=overrides,
                     out_dir="output",
                     verbose=False,
+                    llm_cfg=hitl_llm,
                 )
             except Exception as exc:
                 st.error(f"Phase B 失败：{exc}")
@@ -1744,6 +1750,11 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
             "新闻有证据时也合并模板（标记为先验）",
             value=False,
         )
+        force_stance_llm = st.checkbox(
+            t("report.stance_llm"),
+            value=False,
+            help=t("report.stance_llm.help"),
+        )
         max_news_ev = st.slider(
             "最多头条证据条数",
             3,
@@ -2074,6 +2085,7 @@ def sidebar_weights(base: ModelWeights, pair_name: str) -> tuple[ModelWeights, d
         "use_label_learned_strength": use_label_learned,
         "pause_uncertain": bool(pause_uncertain),
         "variance_reduction": str(variance_reduction),
+        "force_stance_llm": bool(force_stance_llm),
         "cluster_method": str(
             start_cfg.get("cluster_method")
             or (rec.cluster_method if rec else "jaccard")
@@ -2603,6 +2615,27 @@ def main() -> None:
 
     # Language toggle at top of sidebar (persistent via session + ?lang=)
     render_language_selector(location="sidebar", key="sidebar_ui_lang_select")
+    if "report_lang" not in st.session_state:
+        st.session_state["report_lang"] = DEFAULT_REPORT_LANG
+    _rlang_opts = [LANG_ZH, LANG_EN]
+    _rlang_labels = {LANG_ZH: "中文", LANG_EN: "English"}
+    _cur_rlang = normalize_report_lang(st.session_state.get("report_lang"))
+    _rlang_idx = _rlang_opts.index(_cur_rlang) if _cur_rlang in _rlang_opts else 0
+    _picked_rlang = st.sidebar.selectbox(
+        t("report.lang"),
+        options=_rlang_opts,
+        index=_rlang_idx,
+        format_func=lambda c: _rlang_labels.get(c, c),
+        key="sidebar_report_lang_select",
+        help=t("report.lang.help"),
+    )
+    st.session_state["report_lang"] = normalize_report_lang(_picked_rlang)
+    with st.sidebar.expander(t("side.cost"), expanded=False):
+        st.caption(cost_caption_zh())
+        try:
+            st.dataframe(pd.DataFrame(cost_table_rows_zh()), hide_index=True, use_container_width=True)
+        except Exception:
+            pass
 
     # First visit: open 开始设置 once (no silent defaults)
     if "start_cfg" not in st.session_state and not st.session_state.get("_start_setup_shown"):
@@ -3237,6 +3270,11 @@ def main() -> None:
                     news_opts.get("use_label_learned_strength")
                 ),
                 max_uncertain=5,
+                report_lang=normalize_report_lang(
+                    st.session_state.get("report_lang") or DEFAULT_REPORT_LANG
+                ),
+                stance_summaries=True,
+                force_stance_llm=bool(news_opts.get("force_stance_llm", False)),
             )
 
             pause = bool(news_opts.get("pause_uncertain", True))
@@ -3264,6 +3302,7 @@ def main() -> None:
                     review_overrides=None,
                     out_dir="output",
                     verbose=False,
+                    llm_cfg=llm_cfg,
                 )
             else:
                 result = run_pipeline(
@@ -3273,7 +3312,9 @@ def main() -> None:
                     **pipe_kwargs,
                 )
                 if isinstance(result, PipelineCheckpoint):
-                    result = run_pipeline_phase_b(result, out_dir="output", verbose=False)
+                    result = run_pipeline_phase_b(
+                        result, out_dir="output", verbose=False, llm_cfg=llm_cfg
+                    )
 
             if result.market.notes:
                 st.caption("｜".join(result.market.notes[:3]))

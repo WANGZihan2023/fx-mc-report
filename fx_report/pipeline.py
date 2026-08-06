@@ -338,6 +338,9 @@ class PipelineCheckpoint:
                     cluster_size=int(row.get("cluster_size") or 1),
                     cluster_role=str(row.get("cluster_role") or ""),
                     summary=str(row.get("summary") or ""),
+                    support_quote=str(row.get("support_quote") or ""),
+                    support_quote_quality=str(row.get("support_quote_quality") or ""),
+                    stance_summary=str(row.get("stance_summary") or ""),
                 )
             )
         wraw = dict(raw.get("weights") or {})
@@ -967,8 +970,12 @@ def step7_build_report(
     news_meta: dict[str, Any],
     bullish_currency: str | None = None,
     as_of_date: date | datetime | str | None = None,
+    report_lang: str = "zh",
 ) -> tuple[str, str, TorchcastReport, dict[str, Any], str]:
     """7. Torchcast 风格报告（HTML/PDF）+ Markdown 副本 + diagnostics"""
+    from fx_report.report.strings import normalize_report_lang
+
+    report_lang = normalize_report_lang(report_lang)
     if as_of_date is not None:
         if isinstance(as_of_date, date) and not isinstance(as_of_date, datetime):
             start = as_of_date
@@ -979,7 +986,10 @@ def step7_build_report(
     else:
         start = date.today()
     end = start + timedelta(days=max(int(weights.trading_days * 1.4), 1))
-    horizon = f"{start} 至 {end}"
+    if report_lang == "en":
+        horizon = f"{start} to {end}"
+    else:
+        horizon = f"{start} 至 {end}"
 
     tc = build_torchcast_report(
         market,
@@ -994,6 +1004,7 @@ def step7_build_report(
         horizon_end=end,
         bucket_edges=edges,
         bullish_currency=bullish_currency,
+        lang=report_lang,
     )
     report_html = render_html(tc)
 
@@ -1008,6 +1019,7 @@ def step7_build_report(
         sigma_extra=sigma_extra,
         horizon_label=horizon,
         bucket_edges=edges,
+        lang=report_lang,
     )
 
     # 前置流程说明 + References（Markdown 调试副本）
@@ -1020,7 +1032,7 @@ def step7_build_report(
 
     if weights.evidence:
         refs_md = "\n".join(
-            format_reference_markdown_row(w.evidence, index=i)
+            format_reference_markdown_row(w.evidence, index=i, lang=report_lang)
             for i, w in enumerate(weighted[:ref_cap], 1)
         )
     else:
@@ -1066,11 +1078,11 @@ def step7_build_report(
 
 ---
 
-## References / 证据库（id · 支撑引用 · 来源链接）
+## References / 证据库（id · 总结 · 支撑引用 · 来源链接）
 
-{refs_md if refs_md else "_（无存储语句）_"}
+{refs_md if refs_md else ("_(none)_" if report_lang == "en" else "_（无存储语句）_")}
 
-_每条尽量含「引用」摘录（来自 summary/snippet，非编造）。失效链接已去掉超链并标注「链接可能失效」。_
+_{"Each row prefers a stance summary + verbatim support quote (from summary/snippet; never invented). Dead links are unlinked and marked." if report_lang == "en" else "每条尽量含「总结」与「支撑引用」摘录（来自 summary/snippet，非编造）。失效链接已去掉超链并标注「链接可能失效」。"}_
 
 _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
 """
@@ -1080,6 +1092,8 @@ _生成时间 {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}_
         market, weights, scenarios, mc, probs, score, mu_shift, sigma_extra, edges
     )
     diag["stage_log"] = stage_log
+    diag["report_lang"] = report_lang
+    diag["stance_summary_meta"] = dict(news_meta.get("stance_summary_meta") or {})
     diag["info_needs"] = [n.to_dict() for n in info_needs]
     diag["statements"] = [s.to_dict() for s in statements]
     diag["weighted"] = [w.to_dict() for w in weighted]
@@ -1187,6 +1201,9 @@ def run_pipeline(
     max_uncertain: int = 5,
     review_overrides: dict[str, Any] | None = None,
     _phase_a_only: bool = False,
+    report_lang: str = "zh",
+    stance_summaries: bool = True,
+    force_stance_llm: bool = False,
 ) -> PipelineResult | PipelineCheckpoint:
     """跑完整七步；可选写入 output/。
 
@@ -1411,6 +1428,11 @@ def run_pipeline(
     news_meta["max_news"] = int(max_news)
     news_meta["step3_pool"] = int(step3_items)
     news_meta["calibrated_params"] = cal_source
+    from fx_report.report.strings import normalize_report_lang as _norm_rlang
+
+    news_meta["report_lang"] = _norm_rlang(report_lang)
+    news_meta["stance_summaries"] = bool(stance_summaries)
+    news_meta["force_stance_llm"] = bool(force_stance_llm)
     say(
         f"  → 证据 {len(evidence)} 条｜mode={news_meta.get('mode')}｜"
         f"quality={news_meta.get('evidence_quality')}｜"
@@ -1525,6 +1547,7 @@ def run_pipeline(
         review_overrides=review_overrides,
         out_dir=out_dir,
         verbose=verbose,
+        llm_cfg=llm_cfg,
     )
 
 
@@ -1549,6 +1572,7 @@ def run_pipeline_phase_b(
     out_dir: str | Path | None = "output",
     verbose: bool = True,
     save_label_audit: bool = True,
+    llm_cfg: LLMConfig | None = None,
 ) -> PipelineResult:
     """Phase B：应用人工选择 → 赋权 → MC → 报告。"""
     from fx_report.model.human_review import (
@@ -1561,6 +1585,8 @@ def run_pipeline_phase_b(
         save_label_audit as _save_label_audit,
         save_spotcheck_stats,
     )
+    from fx_report.news.summarize import apply_stance_summaries
+    from fx_report.report.strings import normalize_report_lang
     import pandas as pd
 
     if isinstance(checkpoint, dict):
@@ -1587,6 +1613,10 @@ def run_pipeline_phase_b(
     cal_source = cp.cal_source
     variance_reduction = cp.variance_reduction
     as_of_date = cp.as_of_date
+    report_lang = normalize_report_lang(news_meta.get("report_lang") or "zh")
+    want_stance = bool(news_meta.get("stance_summaries", True))
+    force_stance = bool(news_meta.get("force_stance_llm", False))
+    cheap_hist = bool(news_meta.get("cheap_historical", False))
 
     hr = dict(news_meta.get("human_review") or {})
     choices = dict(review_overrides or {})
@@ -1647,6 +1677,26 @@ def run_pipeline_phase_b(
     for k, v in probs.items():
         say(f"  · {k}: {v:.1%}")
 
+    # 6b · per-reference 总结（报告语言；历史 cheap 默认抽取式）
+    if want_stance:
+        stance_meta = apply_stance_summaries(
+            evidence,
+            lang=report_lang,
+            pair=cp.pair,
+            llm_cfg=llm_cfg,
+            enabled=True,
+            cheap_historical=cheap_hist and not force_stance,
+            force_extractive=False,
+        )
+        news_meta["stance_summary_meta"] = stance_meta
+        say(
+            f"  → 引用总结 lang={report_lang} method={stance_meta.get('method')} "
+            f"set={stance_meta.get('n_set')} llm={stance_meta.get('n_llm')} "
+            f"extractive={stance_meta.get('n_extractive')}"
+        )
+    else:
+        news_meta["stance_summary_meta"] = {"enabled": False, "method": "skipped"}
+
     # 7
     say("【7/7】输出 FX Analyse 格式报告（PDF / HTML）")
     report_md, report_html, torchcast, diagnostics, horizon = step7_build_report(
@@ -1667,6 +1717,7 @@ def run_pipeline_phase_b(
         news_meta=news_meta,
         bullish_currency=bullish,
         as_of_date=as_of_date,
+        report_lang=report_lang,
     )
     diagnostics["calibrated_params"] = cal_source
     diagnostics["human_review"] = news_meta.get("human_review")

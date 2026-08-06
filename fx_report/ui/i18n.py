@@ -55,6 +55,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         # Language selector
         "lang.label": "界面语言",
         "lang.help": "切换后立即生效；会写入网址 ?lang= 参数，刷新仍保留。",
+        "report.lang": "报告语言",
+        "report.lang.help": "PDF / HTML / Markdown 正文语言（默认中文）。与界面语言独立；源文引用保持原文。",
+        "report.stance_llm": "历史回放也用 LLM 写引用总结",
+        "report.stance_llm.help": "默认历史 cheap 路径仅抽取式总结（≈$0）；勾选后按批调用 DeepSeek（约 20 条/次）。",
+        "side.cost": "每份报告费用粗估",
         # Password gate
         "auth.caption": "请输入访问密码（可用环境变量 APP_PASSWORD / FX_REPORT_PASSWORD 覆盖默认）。",
         "auth.password": "访问密码",
@@ -197,6 +202,11 @@ _STRINGS: dict[str, dict[str, str]] = {
     LANG_EN: {
         "lang.label": "UI language",
         "lang.help": "Applies immediately; stored in ?lang= so reload keeps your choice.",
+        "report.lang": "Report language",
+        "report.lang.help": "Language for PDF / HTML / Markdown body (default Chinese). Independent of UI language; source quotes stay in original language.",
+        "report.stance_llm": "Also use LLM for reference summaries on historical runs",
+        "report.stance_llm.help": "Historical cheap path defaults to extractive summaries (~$0). Enable to batch DeepSeek (~20 refs/call).",
+        "side.cost": "Per-report cost estimate",
         "auth.caption": "Enter the access password (override default via APP_PASSWORD / FX_REPORT_PASSWORD).",
         "auth.password": "Password",
         "auth.enter": "Enter",

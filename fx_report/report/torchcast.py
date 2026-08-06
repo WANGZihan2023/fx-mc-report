@@ -21,7 +21,18 @@ from fx_report.format_rate import format_rate
 from fx_report.market.fetch_data import MarketSnapshot
 from fx_report.model.monte_carlo import MCResult
 from fx_report.model.weights import EvidenceItem, ModelWeights, ScenarioSpec
-from fx_report.report.evidence_refs import evidence_link_meta, evidence_support_meta
+from fx_report.report.evidence_refs import (
+    evidence_link_meta,
+    evidence_stance_summary_meta,
+    evidence_support_meta,
+)
+from fx_report.report.strings import (
+    L,
+    category_label,
+    normalize_report_lang,
+    pair_phrase,
+    side_word,
+)
 
 # ---------------------------------------------------------------------------
 # Colors (Torchcast palette)
@@ -91,10 +102,14 @@ class TorchcastReport:
     context_evidence: list[EvidenceItem]
     watches: list[WatchItem]
     spot: float
-    disclaimer: str = (
-        "FX Analyse forecasts are probabilistic. Use as one input among many — not as investment advice."
-    )
+    lang: str = "zh"
+    disclaimer: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.lang = normalize_report_lang(self.lang)
+        if not (self.disclaimer or "").strip():
+            self.disclaimer = L("disclaimer", lang=self.lang)
 
 
 def _pct(x: float) -> str:
@@ -106,16 +121,20 @@ def _esc(s: str) -> str:
 
 
 def _pair_english(pair: str) -> str:
-    base, quote = pair.split("/")
-    b = CCY_NAME.get(base, base)
-    q = CCY_NAME.get(quote, quote)
-    return f"{b} to {q} ({pair})"
+    return pair_phrase(pair, lang="en")
 
 
-def _question(pair: str, start: date, end: date) -> str:
+def _question(pair: str, start: date, end: date, *, lang: str = "en") -> str:
+    lang = normalize_report_lang(lang)
+    phrase = pair_phrase(pair, lang=lang)
+    if lang == "zh":
+        return (
+            f"{start.strftime('%Y年%m月%d日')}至{end.strftime('%Y年%m月%d日')}期间，"
+            f"{phrase}的最高日高汇率将落在哪一档？"
+        )
     return (
         f"What will be the highest daily high exchange rate of the "
-        f"{_pair_english(pair)} between {start.strftime('%B %d, %Y')}, "
+        f"{phrase} between {start.strftime('%B %d, %Y')}, "
         f"and {end.strftime('%B %d, %Y')}?"
     )
 
@@ -133,41 +152,25 @@ def _has_cjk(s: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in s)
 
 
-_CATEGORY_EN = {
-    "geopolitics": "Geopolitical / safe-haven pressure on the pair",
-    "oil": "Oil / energy shock affecting terms of trade and risk",
-    "fed": "Federal Reserve policy / hike-path pricing",
-    "ecb": "ECB policy path",
-    "rba": "RBA cash-rate / carry support",
-    "rbnz": "RBNZ policy path",
-    "boj": "BOJ policy path",
-    "boe": "Bank of England policy path",
-    "boc": "Bank of Canada policy path",
-    "snb": "SNB policy path",
-    "pboc": "PBOC / CNH policy signals",
-    "cpi": "Inflation print vs consensus",
-    "china_iron": "Iron ore / China metals demand",
-    "china_growth": "China growth / stimulus impulse",
-    "growth": "Growth / labour-market data",
-    "yields": "Yield differentials",
-    "positioning": "Speculative positioning / sentiment",
-    "other": "Other macro / market evidence",
-}
-
-
-def _evidence_display_title(e: EvidenceItem) -> str:
+def _evidence_display_title(e: EvidenceItem, *, lang: str = "en") -> str:
+    lang = normalize_report_lang(lang)
     title = (e.title or "").strip()
+    # Keep original Latin titles; for CJK titles in EN reports, fall back to category
     if title and not _has_cjk(title):
         return title
-    base = _CATEGORY_EN.get(e.category, e.category or "Evidence")
-    side = "upside" if e.direction > 0 else ("downside" if e.direction < 0 else "context")
-    return f"{base} ({side})"
+    if title and lang == "zh":
+        return title
+    base = category_label(e.category or "", lang=lang)
+    side = side_word(int(e.direction or 0), lang=lang)
+    return f"{base}（{side}）" if lang == "zh" else f"{base} ({side})"
 
 
-def _evidence_bullets(items: Sequence[EvidenceItem], *, limit: int = 3) -> list[str]:
+def _evidence_bullets(
+    items: Sequence[EvidenceItem], *, limit: int = 3, lang: str = "en"
+) -> list[str]:
     out: list[str] = []
     for e in items[:limit]:
-        title = _evidence_display_title(e)
+        title = _evidence_display_title(e, lang=lang)
         if len(title) > 140:
             title = title[:137] + "…"
         out.append(title)
@@ -182,13 +185,79 @@ def _build_narratives(
     weights: ModelWeights,
     up: list[EvidenceItem],
     down: list[EvidenceItem],
+    *,
+    lang: str = "en",
 ) -> list[NarrativeSection]:
+    lang = normalize_report_lang(lang)
     e = list(edges)
     floor = e[0] if e else market.spot
     labels = list(probs.keys())
     top = max(probs, key=probs.get)
     mid = labels[len(labels) // 2] if labels else top
     engine = getattr(mc, "peak_engine", getattr(weights, "peak_engine", "path_max"))
+    if lang == "zh":
+        if engine == "brownian_bridge":
+            engine_phrase = (
+                f"基于 {mc.n_sims:,} 次蒙特卡洛混合、布朗桥连续峰值引擎"
+                f"（日端点间反射原理；不含复合泊松跳跃）给出定量锚点"
+            )
+        else:
+            engine_phrase = (
+                f"基于 {mc.n_sims:,} 次蒙特卡洛混合（含跳跃的 GBM；离散路径最大值）"
+                f"给出定量锚点"
+            )
+        floor_body = (
+            f"预测日 {market.pair} 现价约 {format_rate(market.spot)}，"
+            f"数学上最高日高不可能低于 {format_rate(floor)} [[C-1]]。"
+            f"因此完全低于现价地板的分档概率置 0.0%。{engine_phrase}。"
+            f"所用日频历史为 {market.history_start} → {market.history_end}，"
+            f"日波动约 {market.sigma_daily:.3%}（年化 {market.sigma_annual:.2%}）。"
+            f"峰值引擎：<strong>{_esc(engine)}</strong>。"
+        )
+        up_ids = " ".join(f"[[{x.id}]]" for x in up[:4]) or "[[U-GEO]]"
+        up_titles = "；".join(
+            _evidence_display_title(x, lang=lang)[:80] for x in up[:3]
+        ) or "避险 / 政策驱动"
+        up_body = (
+            f"最高概率分档为 <strong>{_esc(top)}</strong>（{_pct(probs[top])}），"
+            f"上行证据包括 {_esc(up_titles)}。{up_ids} "
+            f"若风险溢价在 {mc.trading_days} 个交易日内延续，报价更易测试更高技术 / 政策位。"
+        )
+        down_ids = " ".join(f"[[{x.id}]]" for x in down[:4]) or "[[D-CPI]]"
+        down_titles = "；".join(
+            _evidence_display_title(x, lang=lang)[:80] for x in down[:3]
+        ) or "通胀降温 / 本地政策支撑"
+        lower = next((k for k, v in probs.items() if k != top and v > 0), mid)
+        down_body = (
+            f"中间区间 <strong>{_esc(lower)}</strong>（{_pct(probs.get(lower, 0.0))}）"
+            f"由下行 / 封顶证据锚定：{_esc(down_titles)}。{down_ids} "
+            f"若风险溢价回吐，{market.pair} 峰值更可能落在该较低带 [[C-2]]。"
+        )
+        return [
+            NarrativeSection(
+                title="数学地板与定量基线",
+                direction="up",
+                lede=(
+                    f"起点现价 {format_rate(market.spot)} 从数学上阻止最高日高"
+                    f"落在 {format_rate(floor)} 以下。"
+                ),
+                body=floor_body,
+            ),
+            NarrativeSection(
+                title="支撑上尾的驱动",
+                direction="up",
+                lede=f"上行证据倾向 {market.pair} 峰值靠近 {top}。",
+                body=up_body,
+            ),
+            NarrativeSection(
+                title="下行 / 封顶压力",
+                direction="down",
+                lede=f"对冲力量更常把峰值压在 {lower} 附近。",
+                body=down_body,
+            ),
+        ]
+
+    # English (legacy)
     if engine == "brownian_bridge":
         engine_phrase = (
             f"A {mc.n_sims:,}-run Monte Carlo mixture using a Brownian-bridge continuous "
@@ -213,8 +282,10 @@ def _build_narratives(
         f"against the starting spot. Peak engine: <strong>{_esc(engine)}</strong>."
     )
 
-    up_ids = " ".join(f"[[{e.id}]]" for e in up[:4]) or "[[U-GEO]]"
-    up_titles = "; ".join(_evidence_display_title(e)[:80] for e in up[:3]) or "safe-haven / policy drivers"
+    up_ids = " ".join(f"[[{x.id}]]" for x in up[:4]) or "[[U-GEO]]"
+    up_titles = "; ".join(
+        _evidence_display_title(x, lang=lang)[:80] for x in up[:3]
+    ) or "safe-haven / policy drivers"
     up_body = (
         f"The highest-probability bucket is <strong>{_esc(top)}</strong> "
         f"({_pct(probs[top])}). This expectation is supported by upside evidence including "
@@ -223,9 +294,10 @@ def _build_narratives(
         f"if risk premia persist through the {mc.trading_days}-trading-day window."
     )
 
-    down_ids = " ".join(f"[[{e.id}]]" for e in down[:4]) or "[[D-CPI]]"
-    down_titles = "; ".join(_evidence_display_title(e)[:80] for e in down[:3]) or "cooling inflation / local-policy support"
-    # pick a lower intermediate label if available
+    down_ids = " ".join(f"[[{x.id}]]" for x in down[:4]) or "[[D-CPI]]"
+    down_titles = "; ".join(
+        _evidence_display_title(x, lang=lang)[:80] for x in down[:3]
+    ) or "cooling inflation / local-policy support"
     lower = next((k for k, v in probs.items() if k != top and v > 0), mid)
     down_body = (
         f"The intermediate range <strong>{_esc(lower)}</strong> "
@@ -260,8 +332,58 @@ def _build_narratives(
     ]
 
 
-def _default_watches(pair: str, top: str, lower: str) -> list[WatchItem]:
+def _default_watches(
+    pair: str, top: str, lower: str, *, lang: str = "en"
+) -> list[WatchItem]:
+    lang = normalize_report_lang(lang)
     base, quote = pair.split("/")
+    if lang == "zh":
+        items = [
+            WatchItem(
+                title="地缘政治与能源价格",
+                lede="风险溢价与油价冲击对避险货币需求杠杆很高。",
+                upside_if="冲突升级且能源价格维持高位",
+                upside_then=f"避险流动与贸易条件压力把峰值推向 {top}（上档概率上升）。",
+                downside_if="停火 / 缓和令风险溢价回吐、油价降温",
+                downside_then=f"{pair} 峰值更可能封顶在 {lower} 附近（上档概率下降）。",
+            ),
+            WatchItem(
+                title=(
+                    "美联储政策决议"
+                    if "USD" in (base, quote)
+                    else f"{base} / {quote} 政策决议"
+                ),
+                lede="下一次政策决议将厘清分歧的利率路径预期。",
+                upside_if="反应函数偏鹰派得到确认",
+                upside_then=f"利差重定价有利于 {pair} 峰值靠近 {top}。",
+                downside_if="持稳 / 偏鸽基调在软数据后占主导",
+                downside_then=f"近端美元（或高息币）动能回落，峰值更多集中在 {lower}。",
+            ),
+        ]
+        if "AUD" in (base, quote) or "NZD" in (base, quote):
+            items.append(
+                WatchItem(
+                    title="中国 / 商品需求",
+                    lede="中国宏观与工业金属需求影响澳纽贸易条件。",
+                    upside_if="刺激不及预期且铁矿石 / 金属偏软",
+                    upside_then=f"商品货币走弱，抬高 {pair} 峰值进入更高分档的概率。",
+                    downside_if="大规模财政 / 地产刺激提振商品需求",
+                    downside_then=f"澳纽走强，{pair} 峰值更可能封顶在 {lower} 附近。",
+                )
+            )
+        if "AUD" in (base, quote):
+            items.append(
+                WatchItem(
+                    title="澳联储政策会议",
+                    lede="国内政策决定缓冲澳元贬值的利差 carry。",
+                    upside_if="增长偏软下澳联储按兵不动、carry 支撑减弱",
+                    upside_then=f"澳元支撑消退，{pair} 更易冲入更高分档。",
+                    downside_if="澳联储加息 / 维持明显紧缩",
+                    downside_then=f"Carry 支撑有助于把 {pair} 峰值压在最高档以下。",
+                )
+            )
+        return items[:4]
+
     items = [
         WatchItem(
             title="Geopolitics and Energy Prices",
@@ -319,7 +441,9 @@ def build_torchcast_report(
     horizon_end: date | None = None,
     bucket_edges: Sequence[float] | None = None,
     bullish_currency: str | None = None,
+    lang: str = "zh",
 ) -> TorchcastReport:
+    lang = normalize_report_lang(lang)
     start = horizon_start or date.today()
     end = horizon_end or (start + timedelta(days=max(int(weights.trading_days * 1.4), 1)))
     edges = tuple(bucket_edges or weights.bucket_edges)
@@ -330,39 +454,59 @@ def build_torchcast_report(
     ctx = [e for e in weights.evidence if e.direction == 0]
     labels = list(probs.keys())
     lower = next((k for k, v in probs.items() if k != top and v > 0), labels[1] if len(labels) > 1 else top)
+    phrase = pair_phrase(market.pair, lang=lang)
+    p50 = format_rate(mc.percentiles.get("p50", 0))
+    p90 = format_rate(mc.percentiles.get("p90", 0))
+    p95 = format_rate(mc.percentiles.get("p95", 0))
 
-    exec_sum = (
-        f"The highest daily high exchange rate of {_pair_english(market.pair)} between "
-        f"{start.strftime('%B %d, %Y')}, and {end.strftime('%B %d, %Y')}, is projected to "
-        f"most likely peak in <strong>{_esc(top)}</strong>, carrying a {_pct(top_p)} probability. "
-        f"Because the starting spot rate is {format_rate(market.spot)}, the exchange rate cannot "
-        f"mathematically peak below the floor bucket during this {mc.trading_days}-trading-day "
-        f"window <span class=\"cite\">C-1</span>. Remaining likelihood is split across intermediate "
-        f"ranges, driven by counter-balancing forces captured in the evidence score "
-        f"S={score:+.2f} (μ shift {mu_shift:+.2%} ann., σ ×{sigma_extra:.3f}). "
-        f"Peak path percentiles: P50={format_rate(mc.percentiles.get('p50', 0))}, "
-        f"P90={format_rate(mc.percentiles.get('p90', 0))}, "
-        f"P95={format_rate(mc.percentiles.get('p95', 0))}."
-    )
+    if lang == "zh":
+        exec_sum = (
+            f"{start.strftime('%Y年%m月%d日')}至{end.strftime('%Y年%m月%d日')}期间，"
+            f"{phrase}的最高日高最可能落在 <strong>{_esc(top)}</strong>，"
+            f"概率 {_pct(top_p)}。"
+            f"起点现价 {format_rate(market.spot)} 从数学上阻止峰值落在地板档以下"
+            f"（本窗口 {mc.trading_days} 个交易日）"
+            f'<span class="cite">C-1</span>。'
+            f"其余概率分布在中间档，由证据分 S={score:+.2f}"
+            f"（μ 平移 {mu_shift:+.2%} 年化，σ ×{sigma_extra:.3f}）驱动。"
+            f"峰值分位：P50={p50}，P90={p90}，P95={p95}。"
+        )
+    else:
+        exec_sum = (
+            f"The highest daily high exchange rate of {_pair_english(market.pair)} between "
+            f"{start.strftime('%B %d, %Y')}, and {end.strftime('%B %d, %Y')}, is projected to "
+            f"most likely peak in <strong>{_esc(top)}</strong>, carrying a {_pct(top_p)} probability. "
+            f"Because the starting spot rate is {format_rate(market.spot)}, the exchange rate cannot "
+            f"mathematically peak below the floor bucket during this {mc.trading_days}-trading-day "
+            f"window <span class=\"cite\">C-1</span>. Remaining likelihood is split across intermediate "
+            f"ranges, driven by counter-balancing forces captured in the evidence score "
+            f"S={score:+.2f} (μ shift {mu_shift:+.2%} ann., σ ×{sigma_extra:.3f}). "
+            f"Peak path percentiles: P50={p50}, P90={p90}, P95={p95}."
+        )
 
     return TorchcastReport(
         pair=market.pair,
-        question=_question(market.pair, start, end),
+        question=_question(market.pair, start, end, lang=lang),
         forecast_date=start.isoformat(),
         n_evidence=len(weights.evidence),
         n_buckets=len(probs),
         probs=dict(probs),
         top_bucket=top,
         top_prob=top_p,
-        upside_bullets=_evidence_bullets(up) or ["Upside evidence thin — check news / templates."],
-        downside_bullets=_evidence_bullets(down) or ["Downside evidence thin — check news / templates."],
+        upside_bullets=_evidence_bullets(up, lang=lang)
+        or [L("thin_up", lang=lang)],
+        downside_bullets=_evidence_bullets(down, lang=lang)
+        or [L("thin_down", lang=lang)],
         executive_summary=exec_sum,
-        narratives=_build_narratives(market, probs, edges, mc, weights, up, down),
+        narratives=_build_narratives(
+            market, probs, edges, mc, weights, up, down, lang=lang
+        ),
         higher_evidence=up,
         lower_evidence=down,
         context_evidence=ctx,
-        watches=_default_watches(market.pair, top, lower),
+        watches=_default_watches(market.pair, top, lower, lang=lang),
         spot=market.spot,
+        lang=lang,
         extra={
             "scenarios": [s.__dict__ for s in scenarios_adj],
             "source": market.source,
@@ -371,6 +515,7 @@ def build_torchcast_report(
             "bullish_currency": (bullish_currency or market.pair.split("/")[0]).upper(),
             "evidence_quality": None,  # filled by pipeline step7 when available
             "fallback_templates": False,
+            "report_lang": lang,
         },
     )
 
@@ -622,6 +767,20 @@ h1.question {{
   margin-right: 4px;
   letter-spacing: 0.02em;
 }}
+.ev-stance {{
+  margin: 3px 0 2px 0;
+  color: {TEXT};
+  font-size: 8.5pt;
+  font-style: normal;
+  line-height: 1.4;
+}}
+.ev-stance-label {{
+  font-size: 7.5pt;
+  color: #5A6A7A;
+  margin-right: 4px;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}}
 .ev-link-warn {{
   color: #8A5A3A;
   font-size: 7.5pt;
@@ -711,6 +870,7 @@ def _oos_meta_span(calib_oos: Any) -> str:
 
 
 def render_html(report: TorchcastReport) -> str:
+    lang = normalize_report_lang(getattr(report, "lang", None) or "zh")
     # probability bars
     max_p = max(report.probs.values()) if report.probs else 1.0
     bars = []
@@ -743,27 +903,37 @@ def render_html(report: TorchcastReport) -> str:
         rows = []
         for e in items:
             lab = (e.strength_label or "MODERATE").upper()
-            sq = evidence_support_meta(e)
+            sq = evidence_support_meta(e, lang=lang)
+            stance = evidence_stance_summary_meta(e, lang=lang)
             quote = sq.get("quote") or ""
-            link_meta = evidence_link_meta(e)
+            link_meta = evidence_link_meta(e, lang=lang)
             url = link_meta.get("url") or ""
+            stance_html = ""
+            if stance.get("text"):
+                stance_html = (
+                    f'<div class="ev-stance">'
+                    f'<span class="ev-stance-label">{_esc(str(stance.get("label") or ""))}</span>'
+                    f"{_esc(str(stance['text']))}"
+                    f"</div>"
+                )
             quote_html = ""
             if quote:
-                qlab = _esc(str(sq.get("label_zh") or "支撑引用"))
+                qlab = _esc(str(sq.get("label") or L("support", lang=lang)))
                 quote_html = (
                     f'<div class="ev-quote">'
                     f'<span class="ev-quote-label">{qlab}</span>'
                     f"「{_esc(quote)}」"
                     f"</div>"
                 )
+            warn_lab = link_meta.get("label") or ""
             if url:
                 link = (
                     f'<div class="ev-links"><a href="{_esc(url)}">{_esc(url)}</a></div>'
                 )
-            elif link_meta.get("label_zh"):
+            elif warn_lab:
                 link = (
                     f'<div class="ev-links ev-link-warn">'
-                    f"{_esc(str(link_meta['label_zh']))}"
+                    f"{_esc(str(warn_lab))}"
                     f"</div>"
                 )
             else:
@@ -772,7 +942,8 @@ def render_html(report: TorchcastReport) -> str:
                 f'<div class="ev-item">'
                 f'<span class="cite">{_esc(e.id)}</span> '
                 f'<span class="badge">{_esc(lab)}</span> '
-                f"{_esc(_evidence_display_title(e))}"
+                f"{_esc(_evidence_display_title(e, lang=lang))}"
+                f"{stance_html}"
                 f"{quote_html}"
                 f"{link}"
                 f"</div>"
@@ -781,14 +952,16 @@ def render_html(report: TorchcastReport) -> str:
 
     evidence_html = (
         '<div class="evidence-box">'
-        f'<div class="section-label">Evidence Base · 证据库 / References</div>'
-        + ev_block("Higher · 上行", report.higher_evidence)
-        + ev_block("Lower · 下行", report.lower_evidence)
-        + ev_block("Context · 背景", report.context_evidence)
+        f'<div class="section-label">{_esc(L("sec_evidence", lang=lang))}</div>'
+        + ev_block(L("ev_higher", lang=lang), report.higher_evidence)
+        + ev_block(L("ev_lower", lang=lang), report.lower_evidence)
+        + ev_block(L("ev_context", lang=lang), report.context_evidence)
         + "</div>"
     )
 
-    watch_html = ['<div class="watch-title-page">What to Watch</div>']
+    watch_html = [
+        f'<div class="watch-title-page">{_esc(L("watch_title", lang=lang))}</div>'
+    ]
     for i, w in enumerate(report.watches, 1):
         watch_html.append(
             f'<section class="watch">'
@@ -796,71 +969,72 @@ def render_html(report: TorchcastReport) -> str:
             f"<h3>{_esc(w.title)}</h3>"
             f'<p class="lede">{_esc(w.lede)}</p>'
             f'<div class="ifthen">'
-            f'<div class="ifbox"><div class="lab up">If → Then (upside)</div>'
-            f"<div><strong>If</strong> {_esc(w.upside_if)}</div>"
-            f"<div><strong>Then</strong> {_esc(w.upside_then)}</div></div>"
-            f'<div class="ifbox" style="margin-left:10px"><div class="lab down">If → Then (downside)</div>'
-            f"<div><strong>If</strong> {_esc(w.downside_if)}</div>"
-            f"<div><strong>Then</strong> {_esc(w.downside_then)}</div></div>"
+            f'<div class="ifbox"><div class="lab up">{_esc(L("if_up", lang=lang))}</div>'
+            f"<div><strong>{_esc(L('if_word', lang=lang))}</strong> {_esc(w.upside_if)}</div>"
+            f"<div><strong>{_esc(L('then_word', lang=lang))}</strong> {_esc(w.upside_then)}</div></div>"
+            f'<div class="ifbox" style="margin-left:10px"><div class="lab down">{_esc(L("if_down", lang=lang))}</div>'
+            f"<div><strong>{_esc(L('if_word', lang=lang))}</strong> {_esc(w.downside_if)}</div>"
+            f"<div><strong>{_esc(L('then_word', lang=lang))}</strong> {_esc(w.downside_then)}</div></div>"
             f"</div></section>"
         )
 
+    html_lang = "zh-CN" if lang == "zh" else "en"
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="{html_lang}">
 <head>
 <meta charset="utf-8"/>
 <title>{_esc(report.question)}</title>
 <style>{CSS}</style>
 </head>
 <body>
-  <p class="kicker">FX ANALYSE · Intelligence Report</p>
+  <p class="kicker">{_esc(L("kicker", lang=lang))}</p>
   <div class="tags">
-    <span class="tag">Ordered</span>
-    <span class="tag">{report.n_buckets} Buckets</span>
+    <span class="tag">{_esc(L("tag_ordered", lang=lang))}</span>
+    <span class="tag">{_esc(L("tag_buckets", lang=lang, n=report.n_buckets))}</span>
   </div>
   <h1 class="question">{_esc(report.question)}</h1>
   <div class="meta">
-    <span>Forecast date {_esc(report.forecast_date)}</span>
-    <span>{report.n_evidence} evidence items</span>
-    <span>Bullish currency {_esc(str(report.extra.get("bullish_currency") or report.pair.split("/")[0]))}</span>
-    <span>Analysis quote {_esc(report.pair)}</span>
-    <span>Peak engine {_esc(str(report.extra.get("peak_engine") or "path_max"))}</span>
-    <span>Evidence {_esc(str(report.extra.get("evidence_quality") or "n/a"))}</span>
-    <span>Clusters {_esc(str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"))} / raw {_esc(str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}{(" · ⚠" + str(len(report.extra.get("cluster_warnings") or [])) + "告警") if (report.extra.get("cluster_warnings") or []) else ""}</span>
+    <span>{_esc(L("meta_forecast", lang=lang, d=report.forecast_date))}</span>
+    <span>{_esc(L("meta_evidence", lang=lang, n=report.n_evidence))}</span>
+    <span>{_esc(L("meta_bullish", lang=lang, c=str(report.extra.get("bullish_currency") or report.pair.split("/")[0])))}</span>
+    <span>{_esc(L("meta_quote", lang=lang, p=report.pair))}</span>
+    <span>{_esc(L("meta_peak", lang=lang, e=str(report.extra.get("peak_engine") or "path_max")))}</span>
+    <span>{_esc(L("meta_ev_quality", lang=lang, q=str(report.extra.get("evidence_quality") or "n/a")))}</span>
+    <span>{_esc(L("meta_clusters", lang=lang, c=str(report.extra.get("cluster_n") if report.extra.get("cluster_n") is not None else "n/a"), r=str(report.extra.get("evidence_raw_n") if report.extra.get("evidence_raw_n") is not None else report.n_evidence)))}{" · dedup" if report.extra.get("cluster_dedup_applied") else ""}{(" · ⚠" + str(len(report.extra.get("cluster_warnings") or [])) + ("告警" if lang == "zh" else " warns")) if (report.extra.get("cluster_warnings") or []) else ""}</span>
     {_oos_meta_span(report.extra.get("calib_oos"))}
   </div>
 
   <div class="panel">
-    <div class="section-label">Probability Distribution</div>
+    <div class="section-label">{_esc(L("sec_prob", lang=lang))}</div>
     <div class="prob-grid">
       <div class="prob-left">
-        <p class="most-label">Most Likely Range</p>
+        <p class="most-label">{_esc(L("most_likely", lang=lang))}</p>
         <p class="most-bucket">{_esc(report.top_bucket)}</p>
-        <p class="most-prob">{_pct(report.top_prob)} probability</p>
+        <p class="most-prob">{_esc(L("probability", lang=lang, p=_pct(report.top_prob)))}</p>
       </div>
       <div class="prob-right">{"".join(bars)}</div>
     </div>
     <div class="split">
       <div class="col">
-        <h3 class="up">↑ UPSIDE</h3>
+        <h3 class="up">{_esc(L("upside", lang=lang))}</h3>
         <ul>{up_li}</ul>
       </div>
       <div class="col">
-        <h3 class="down">↓ DOWNSIDE</h3>
+        <h3 class="down">{_esc(L("downside", lang=lang))}</h3>
         <ul>{down_li}</ul>
       </div>
     </div>
   </div>
 
   <div class="exec">
-    <div class="section-label">Executive Summary</div>
+    <div class="section-label">{_esc(L("sec_exec", lang=lang))}</div>
     <p>{report.executive_summary}</p>
   </div>
 
   {"".join(narr_html)}
   {evidence_html}
   {"".join(watch_html)}
-  <p class="disclaimer">{_esc(report.disclaimer)}</p>
+  <p class="disclaimer">{_esc(report.disclaimer or L("disclaimer", lang=lang))}</p>
 </body>
 </html>
 """
@@ -1011,8 +1185,15 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     styles.add(ParagraphStyle(name="TcDownH", fontName="Helvetica-Bold", fontSize=9, textColor=red, spaceAfter=4))
 
     story: list[Any] = []
-    story.append(Paragraph("FX ANALYSE · INTELLIGENCE REPORT", styles["Kicker"]))
-    story.append(Paragraph(f"Ordered &nbsp;&nbsp; {report.n_buckets} Buckets", styles["Meta"]))
+    lang = normalize_report_lang(getattr(report, "lang", None) or "zh")
+    story.append(Paragraph(_esc(L("kicker", lang=lang)).upper(), styles["Kicker"]))
+    story.append(
+        Paragraph(
+            f"{_esc(L('tag_ordered', lang=lang))} &nbsp;&nbsp; "
+            f"{_esc(L('tag_buckets', lang=lang, n=report.n_buckets))}",
+            styles["Meta"],
+        )
+    )
     story.append(Paragraph(_esc(report.question), styles["Q"]))
     bullish_meta = str(
         report.extra.get("bullish_currency") or report.pair.split("/")[0]
@@ -1023,21 +1204,25 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     raw_n = report.extra.get("evidence_raw_n", report.n_evidence)
     dedup_bit = " · dedup" if report.extra.get("cluster_dedup_applied") else ""
     warn_list = list(report.extra.get("cluster_warnings") or [])
-    warn_bit = f" · ⚠{len(warn_list)}告警" if warn_list else ""
+    warn_bit = (
+        f" · ⚠{len(warn_list)}" + ("告警" if lang == "zh" else " warns")
+        if warn_list
+        else ""
+    )
     cluster_meta = (
-        f"Clusters {cluster_n} / raw {raw_n}{dedup_bit}{warn_bit}"
+        f"{L('meta_clusters', lang=lang, c=cluster_n, r=raw_n)}{dedup_bit}{warn_bit}"
         if cluster_n is not None
         else ""
     )
     story.append(
         Paragraph(
-            f"Forecast date {report.forecast_date} &nbsp;·&nbsp; "
-            f"{report.n_evidence} evidence items &nbsp;·&nbsp; "
-            f"Bullish currency {bullish_meta} &nbsp;·&nbsp; "
-            f"Analysis quote {report.pair} &nbsp;·&nbsp; "
-            f"Peak engine {peak_meta} &nbsp;·&nbsp; "
-            f"Evidence {eq_meta}"
-            + (f" &nbsp;·&nbsp; {cluster_meta}" if cluster_meta else ""),
+            f"{_esc(L('meta_forecast', lang=lang, d=report.forecast_date))} &nbsp;·&nbsp; "
+            f"{_esc(L('meta_evidence', lang=lang, n=report.n_evidence))} &nbsp;·&nbsp; "
+            f"{_esc(L('meta_bullish', lang=lang, c=bullish_meta))} &nbsp;·&nbsp; "
+            f"{_esc(L('meta_quote', lang=lang, p=report.pair))} &nbsp;·&nbsp; "
+            f"{_esc(L('meta_peak', lang=lang, e=peak_meta))} &nbsp;·&nbsp; "
+            f"{_esc(L('meta_ev_quality', lang=lang, q=eq_meta))}"
+            + (f" &nbsp;·&nbsp; {_esc(cluster_meta)}" if cluster_meta else ""),
             styles["Meta"],
         )
     )
@@ -1061,16 +1246,23 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     bars_tbl.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 4), ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
 
     left = [
-        Paragraph("MOST LIKELY RANGE", styles["MostLabel"]),
+        Paragraph(_esc(L("most_likely", lang=lang)).upper(), styles["MostLabel"]),
         Paragraph(_esc(report.top_bucket), styles["MostBucket"]),
-        Paragraph(f"{_pct(report.top_prob)} probability", styles["MostProb"]),
+        Paragraph(
+            _esc(L("probability", lang=lang, p=_pct(report.top_prob))),
+            styles["MostProb"],
+        ),
     ]
     left_t = Table([[left]], colWidths=[2.2 * inch])
     top_grid = Table([[left_t, bars_tbl]], colWidths=[2.3 * inch, 4.6 * inch])
     top_grid.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
 
-    up_paras = [Paragraph("↑ UPSIDE", styles["TcUpH"])] + [Paragraph(f"• {_esc(b)}", styles["TcBullet"]) for b in report.upside_bullets]
-    down_paras = [Paragraph("↓ DOWNSIDE", styles["TcDownH"])] + [Paragraph(f"• {_esc(b)}", styles["TcBullet"]) for b in report.downside_bullets]
+    up_paras = [Paragraph(_esc(L("upside", lang=lang)), styles["TcUpH"])] + [
+        Paragraph(f"• {_esc(b)}", styles["TcBullet"]) for b in report.upside_bullets
+    ]
+    down_paras = [Paragraph(_esc(L("downside", lang=lang)), styles["TcDownH"])] + [
+        Paragraph(f"• {_esc(b)}", styles["TcBullet"]) for b in report.downside_bullets
+    ]
     split = Table([[up_paras, down_paras]], colWidths=[3.4 * inch, 3.4 * inch])
     split.setStyle(
         TableStyle(
@@ -1101,7 +1293,10 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
     story.append(Spacer(1, 10))
 
     exec_tbl = Table(
-        [[Paragraph("EXECUTIVE SUMMARY", styles["SecLabel"])], [Paragraph(cite_rl(report.executive_summary), styles["Body"])]],
+        [
+            [Paragraph(_esc(L("sec_exec", lang=lang)).upper(), styles["SecLabel"])],
+            [Paragraph(cite_rl(report.executive_summary), styles["Body"])],
+        ],
         colWidths=[6.9 * inch],
     )
     exec_tbl.setStyle(
@@ -1126,46 +1321,58 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
 
     # Evidence / References (id · claim/quote · source link)
     story.append(Spacer(1, 8))
-    story.append(Paragraph("EVIDENCE BASE · 证据库 / REFERENCES", styles["SecLabel"]))
+    story.append(
+        Paragraph(_esc(L("sec_evidence", lang=lang)).upper(), styles["SecLabel"])
+    )
 
     def add_ev_group(title: str, items: list[EvidenceItem]) -> None:
         if not items:
             return
-        story.append(Paragraph(title, styles["TcWatchH"]))
+        story.append(Paragraph(_esc(title), styles["TcWatchH"]))
         for e in items:
             lab = (e.strength_label or "MODERATE").upper()
             body = (
                 f"<font backColor='#F3E7C4' size='7'> { _esc(e.id) } </font> "
                 f"<font backColor='#3D7A6A' color='white' size='7'> {lab} </font> "
-                f"{_esc(_evidence_display_title(e))}"
+                f"{_esc(_evidence_display_title(e, lang=lang))}"
             )
-            sq = evidence_support_meta(e)
+            stance = evidence_stance_summary_meta(e, lang=lang)
+            if stance.get("text"):
+                body += (
+                    f"<br/><font color='#1A1A1A' size='8'>"
+                    f"<b>{_esc(str(stance.get('label') or ''))}</b> "
+                    f"{_esc(str(stance['text']))}"
+                    f"</font>"
+                )
+            sq = evidence_support_meta(e, lang=lang)
             quote = sq.get("quote") or ""
             if quote:
-                qlab = _esc(str(sq.get("label_zh") or "支撑引用"))
+                qlab = _esc(str(sq.get("label") or L("support", lang=lang)))
                 body += (
                     f"<br/><font color='#6B6B6B' size='8'><i>"
                     f"{qlab} 「{_esc(quote)}」"
                     f"</i></font>"
                 )
-            link_meta = evidence_link_meta(e)
+            link_meta = evidence_link_meta(e, lang=lang)
             url = link_meta.get("url") or ""
             if url:
                 body += f"<br/><font color='#2B5C9E' size='7'><u>{_esc(url)}</u></font>"
-            elif link_meta.get("label_zh"):
+            elif link_meta.get("label"):
                 body += (
                     f"<br/><font color='#8A5A3A' size='7'>"
-                    f"{_esc(str(link_meta['label_zh']))}"
+                    f"{_esc(str(link_meta['label']))}"
                     f"</font>"
                 )
             story.append(Paragraph(body, styles["TcEv"]))
 
-    add_ev_group("Higher · 上行", report.higher_evidence)
-    add_ev_group("Lower · 下行", report.lower_evidence)
-    add_ev_group("Context · 背景", report.context_evidence)
+    add_ev_group(L("ev_higher", lang=lang), report.higher_evidence)
+    add_ev_group(L("ev_lower", lang=lang), report.lower_evidence)
+    add_ev_group(L("ev_context", lang=lang), report.context_evidence)
 
     # What to watch
-    story.append(Paragraph("WHAT TO WATCH", styles["TcCenterBig"]))
+    story.append(
+        Paragraph(_esc(L("watch_title", lang=lang)).upper(), styles["TcCenterBig"])
+    )
     for i, w in enumerate(report.watches, 1):
         block = [
             Paragraph(f"{i:02d}", styles["TcWatchNum"]),
@@ -1176,11 +1383,15 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
             [
                 [
                     Paragraph(
-                        f"<font color='#2F6B4F'><b>IF → THEN (upside)</b></font><br/><b>If</b> {_esc(w.upside_if)}<br/><b>Then</b> {_esc(w.upside_then)}",
+                        f"<font color='#2F6B4F'><b>{_esc(L('if_up', lang=lang))}</b></font><br/>"
+                        f"<b>{_esc(L('if_word', lang=lang))}</b> {_esc(w.upside_if)}<br/>"
+                        f"<b>{_esc(L('then_word', lang=lang))}</b> {_esc(w.upside_then)}",
                         styles["TcEv"],
                     ),
                     Paragraph(
-                        f"<font color='#9B3B3B'><b>IF → THEN (downside)</b></font><br/><b>If</b> {_esc(w.downside_if)}<br/><b>Then</b> {_esc(w.downside_then)}",
+                        f"<font color='#9B3B3B'><b>{_esc(L('if_down', lang=lang))}</b></font><br/>"
+                        f"<b>{_esc(L('if_word', lang=lang))}</b> {_esc(w.downside_if)}<br/>"
+                        f"<b>{_esc(L('then_word', lang=lang))}</b> {_esc(w.downside_then)}",
                         styles["TcEv"],
                     ),
                 ]
@@ -1204,7 +1415,12 @@ def _write_pdf_reportlab(report: TorchcastReport, path: Path) -> Path:
         block.append(if_tbl)
         story.append(KeepTogether(block))
 
-    story.append(Paragraph(_esc(report.disclaimer), styles["TcDisc"]))
+    story.append(
+        Paragraph(
+            _esc(report.disclaimer or L("disclaimer", lang=lang)),
+            styles["TcDisc"],
+        )
+    )
 
     def _footer(canvas, doc):
         canvas.saveState()

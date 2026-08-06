@@ -57,6 +57,9 @@ class EvidenceItem:
     support_quote: str = ""
     # support | weak | title — how grounded the support quote is
     support_quote_quality: str = ""
+    # 1–2 sentence report-lang summary: what source says + how it backs stance
+    # (distinct from verbatim support_quote; optional LLM batch)
+    stance_summary: str = ""
 
 
 @dataclass

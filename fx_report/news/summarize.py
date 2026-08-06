@@ -672,3 +672,201 @@ def apply_evidence_summaries(
         "max_chars": max_chars,
         "prefer_llm": bool(prefer_llm),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-reference stance summaries (report-lang; distinct from support_quote)
+# ---------------------------------------------------------------------------
+
+DEFAULT_STANCE_CHUNK = 20
+DEFAULT_STANCE_MAX_ITEMS = 100
+
+
+def _direction_phrase(direction: int, *, lang: str) -> str:
+    if lang == "en":
+        if direction > 0:
+            return "Higher / upside"
+        if direction < 0:
+            return "Lower / downside"
+        return "Context / neutral"
+    if direction > 0:
+        return "上行（Higher）"
+    if direction < 0:
+        return "下行（Lower）"
+    return "背景（Context）"
+
+
+def extractive_stance_summary(
+    e: EvidenceItem,
+    *,
+    lang: str = "zh",
+    max_chars: int = 220,
+) -> str:
+    """
+    Cheap fallback: compress existing fields into a 1–2 sentence stance note.
+    Never invents facts beyond title / summary / support_quote.
+    """
+    lang = "en" if str(lang).lower().startswith("en") else "zh"
+    blurb = (getattr(e, "summary", None) or "").strip()
+    quote = (getattr(e, "support_quote", None) or "").strip()
+    title = (getattr(e, "title", None) or "").strip()
+    core = blurb or quote or title
+    if not core:
+        return ""
+    if len(core) > max_chars - 40:
+        core = core[: max_chars - 41].rstrip() + "…"
+    stance = _direction_phrase(int(getattr(e, "direction", 0) or 0), lang=lang)
+    if lang == "en":
+        return f"Source indicates: {core} Supports {stance} stance for this pair."
+    return f"该来源称：{core} 对判定方向「{stance}」提供依据。"
+
+
+def _llm_batch_stance_summaries(
+    batch: list[EvidenceItem],
+    *,
+    lang: str,
+    pair: str,
+    cfg: Any,
+) -> dict[str, str]:
+    """One LLM JSON call for up to ~chunk_size items. Returns id → summary."""
+    from fx_report.news.llm import _chat_json
+
+    lang = "en" if str(lang).lower().startswith("en") else "zh"
+    lang_name = "English" if lang == "en" else "简体中文"
+    rows = []
+    for e in batch:
+        rows.append(
+            {
+                "id": e.id,
+                "title": (e.title or "")[:160],
+                "direction": int(e.direction or 0),
+                "category": e.category or "",
+                "summary": (e.summary or "")[:280],
+                "support_quote": (e.support_quote or "")[:220],
+                "note": (e.note or "")[:200],
+            }
+        )
+    system = (
+        "You write short audit summaries for FX evidence references. "
+        "Output JSON only: {\"items\":[{\"id\":\"...\",\"stance_summary\":\"...\"}]}. "
+        "Each stance_summary is 1–2 sentences in the requested language: "
+        "what the source says, and how it supports Higher/Lower/Context. "
+        "Do NOT invent facts, URLs, or quotes absent from the input fields. "
+        "If text is thin, say so briefly."
+    )
+    user = (
+        f"pair={pair}\noutput_language={lang_name}\n"
+        f"Write stance_summary for each item.\n\n"
+        + __import__("json").dumps({"items": rows}, ensure_ascii=False)
+    )
+    try:
+        raw = _chat_json(cfg, system, user)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    items = raw.get("items") if isinstance(raw, dict) else None
+    if not isinstance(items, list):
+        return {}
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        eid = str(row.get("id") or "").strip()
+        text = str(row.get("stance_summary") or "").strip().strip('"')
+        if eid and len(text) >= 8:
+            out[eid] = text[:280]
+    return out
+
+
+def apply_stance_summaries(
+    items: list[EvidenceItem],
+    *,
+    lang: str = "zh",
+    pair: PairSpec | str | None = None,
+    llm_cfg: Any | None = None,
+    enabled: bool = True,
+    cheap_historical: bool = False,
+    force_extractive: bool = False,
+    chunk_size: int = DEFAULT_STANCE_CHUNK,
+    max_items: int = DEFAULT_STANCE_MAX_ITEMS,
+    skip_priors: bool = True,
+) -> dict[str, Any]:
+    """
+    Fill ``EvidenceItem.stance_summary`` for References display.
+
+    Prefer one batched LLM call per chunk (default 20). Historical cheap path
+    and missing LLM → extractive/template only. Does not invent quotes.
+    """
+    lang = "en" if str(lang).lower().startswith("en") else "zh"
+    pair_s = ""
+    if isinstance(pair, str):
+        pair_s = pair
+    elif pair is not None:
+        pair_s = getattr(pair, "pair", "") or ""
+
+    meta: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "lang": lang,
+        "cheap_historical": bool(cheap_historical),
+        "method": "skipped",
+        "n_set": 0,
+        "n_llm": 0,
+        "n_extractive": 0,
+        "chunks": 0,
+        "error": None,
+    }
+    if not enabled:
+        return meta
+
+    targets = [
+        e
+        for e in items
+        if not (skip_priors and getattr(e, "is_prior", False))
+    ][: max(0, int(max_items))]
+
+    use_llm = (
+        not cheap_historical
+        and not force_extractive
+        and llm_cfg is not None
+        and bool(getattr(llm_cfg, "api_key", None))
+    )
+
+    # Pre-fill extractive; LLM overwrites when available
+    for e in targets:
+        if (getattr(e, "stance_summary", None) or "").strip():
+            meta["n_set"] += 1
+            continue
+        e.stance_summary = extractive_stance_summary(e, lang=lang)
+        if e.stance_summary:
+            meta["n_extractive"] += 1
+            meta["n_set"] += 1
+
+    if not use_llm:
+        meta["method"] = "extractive"
+        return meta
+
+    meta["method"] = "llm_batch"
+    size = max(1, int(chunk_size))
+    try:
+        for i in range(0, len(targets), size):
+            chunk = targets[i : i + size]
+            mapped = _llm_batch_stance_summaries(
+                chunk, lang=lang, pair=pair_s or "FX", cfg=llm_cfg
+            )
+            meta["chunks"] += 1
+            for e in chunk:
+                text = mapped.get(e.id or "")
+                if text:
+                    e.stance_summary = text
+                    meta["n_llm"] += 1
+                    tag = "stance:llm"
+                    if tag not in (e.note or ""):
+                        e.note = f"{tag}｜{e.note}" if e.note else tag
+                elif e.stance_summary:
+                    tag = "stance:extractive"
+                    if tag not in (e.note or ""):
+                        e.note = f"{tag}｜{e.note}" if e.note else tag
+    except Exception as exc:
+        meta["error"] = str(exc)[:240]
+        meta["method"] = "extractive_fallback"
+    return meta
+
