@@ -408,12 +408,12 @@ def _render_persistence_banner(cloud: bool) -> None:
             "- 「下载 .env」→ 只得到本机文件；网站**不会**自动读你 Mac 上的文件\n\n"
             "**持久方案（推荐）**：Railway 控制台 → Service → **Variables**，"
             "按下方清单填一次同名变量 → 每次开机自动进 `os.environ`，页面显示「已从环境变量加载」。\n\n"
-            "**临时恢复**：用下方「从本机 .env 上传」把上次下载的文件贴回本会话。"
+            "**临时恢复 / 一键使用**：用下方「上传 .env → 一键加载到本会话」把文件贴回本会话。"
         )
     else:
         st.info(
             "本机：点「保存到本机 .env」写入 vault + 仓库 `.env`（gitignore）。"
-            "云端持久请用 Railway Variables；也可用「下载 .env」+ 网页「上传恢复」。"
+            "云端持久请用 Railway Variables；也可用「下载 .env」+ 网页「上传 → 一键加载」。"
         )
 
 
@@ -432,19 +432,20 @@ def _render_env_upload_and_railway(
     if "admin_save_unlocked" not in st.session_state:
         st.session_state["admin_save_unlocked"] = False
 
-    st.markdown("#### 仅本次会话")
+    st.markdown("#### 仅本次会话 · 一键使用")
     up = st.file_uploader(
-        "从本机 .env 上传并应用到本会话",
+        "上传 .env / railway-variables.env（一键使用）",
         help=(
-            "接受 `.env`、`env`、无扩展名或 `.txt` 文本文件；"
-            "只按内容里的 `KEY=VALUE` 解析，不依赖后缀名。"
+            "与管理员同格式即可：每行 `KEY=value`（可含 `#` 注释）。"
+            "接受 `.env`、`env`、无扩展名或 `.txt`；只按内容解析，不依赖后缀名。"
+            "上传后点「一键加载到本会话」——无需管理员口令；刷新可能丢失。"
         ),
         key="env_upload_restore",
     )
     c_up, c_rail = st.columns(2)
     with c_up:
         if up is not None and st.button(
-            "应用上传的 .env",
+            "一键加载到本会话",
             type="primary",
             use_container_width=True,
             key="btn_apply_env_upload",
@@ -632,7 +633,7 @@ def render_api_settings_panel() -> dict[str, Any]:
     st.caption(
         "免费按指引申请；付费/AI 有 Key 再填。空=跳过。"
         + (
-            "云端请用 Railway Variables；本会话 Key 刷新即丢（可用上传 .env 恢复）。"
+            "云端请用 Railway Variables；本会话 Key 刷新即丢（可上传 .env →「一键加载到本会话」）。"
             if cloud
             else "「应用到本会话」刷新即丢；点「保存到本机 .env」才会写入 Mac 上的 vault + 仓库 .env（已 gitignore）。"
         )

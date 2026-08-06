@@ -2654,7 +2654,7 @@ def main() -> None:
     if display_spec is None:
         st.title("FX Analyse")
         st.warning(t("main.need_start"))
-        with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
+        with st.expander("API / AI Key（按需；可上传 .env 一键加载）", expanded=False):
             render_api_settings_panel()
         if "last_report" not in st.session_state:
             return
@@ -2778,7 +2778,7 @@ def main() -> None:
     render_current_pair_reliability_board(current_pair=analysis_spec.pair)
     render_replay_summary_board(current_pair=analysis_spec.pair)
 
-    with st.expander("API / AI Key（按需填写，可全空）", expanded=False):
+    with st.expander("API / AI Key（按需；可上传 .env 一键加载）", expanded=False):
         api_opts = render_api_settings_panel()
 
     if not bullish_ok:
